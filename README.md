@@ -65,6 +65,18 @@ directories, reads at most 1 MiB, and rejects malformed restricted-v1 lockfiles.
 It does not verify signatures, compare the manifest, resolve packages or install
 anything; its success output explicitly states that signatures are not verified.
 
+`luc verify-release <metadata> <signature> <trusted-key> <source>` verifies local
+LRS1 metadata with native ML-DSA-65 and binds the exact source bytes with SHA-256.
+The signature and public key are raw binary (3309 and 1952 bytes). Metadata is
+bounded to 1600 bytes and source input to 64 MiB for this initial buffered command.
+Paths are relative to the working directory; no project manifest is required.
+It performs no network requests, extraction, installation or file writes.
+The supplied key must already be trusted: success does not prove origin ownership,
+publisher authorization, freshness or that the release matches a project request.
+Remote installation and registry-root/key-distribution policy are not implemented.
+Tests generate deterministic **test-only** keys in a temporary directory and check
+tampering, truncation, extra bytes, missing files, argument errors and no writes.
+
 `./build.sh` builds luc with the Base commit pinned in `bootstrap/BASE` (fetched into an
 isolated `build/luce-base`); `LUCE_BASE_COMPILER=/path/to/luce-base ./build.sh` uses an
 existing compiler instead. `./test.sh` runs the gate.

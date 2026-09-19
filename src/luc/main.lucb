@@ -315,6 +315,25 @@ func list_tasks(project: Project*) -> !:
 
 # mark: Dependencies ==========================================================================
 
+## Verify exact local release bytes against an explicitly supplied trusted public key.
+## This does not establish key ownership or authorize installation.
+func verify_release_command(own: str[], passthrough: str[]) -> i32!:
+    if own.length != 4 or passthrough.length != 0:
+        error(usage_error, "usage: luc verify-release <metadata> <signature> <trusted-key> <source>")
+    let wire = try files.read_limit((c.str)try strings.copy(own[0]), 1600)
+    defer free(wire) in memory.heap
+    let signature = try files.read_limit((c.str)try strings.copy(own[1]), 3309)
+    defer free(signature) in memory.heap
+    let key = try files.read_limit((c.str)try strings.copy(own[2]), 1952)
+    defer free(key) in memory.heap
+    let source = try files.read_limit((c.str)try strings.copy(own[3]), 67108864)
+    defer free(source) in memory.heap
+    let release = try pkg.decode_release(wire)
+    if not try pkg.verify_release(release, key, signature, source):
+        error(usage_error, "release signature or source digest verification failed")
+    try io.stdout().write(f"verified {release.package}@{release.version} against supplied key (origin ownership not verified)\n")
+    return 0
+
 ## Parse the entire pinned lock profile without changing the project or fetching.
 ## This is structural validation, not release-signature or cache verification.
 func lock_command(project: Project*, own: str[], passthrough: str[]) -> i32!:
@@ -622,6 +641,8 @@ pub func main(arguments: c.str[]) -> i32!:
             return try scaffold_command(command, own)
         if command == "update" or command == "upgrade":
             return try update_command(own)
+        if command == "verify-release":
+            return try verify_release_command(own, passthrough)
         var project = try load_project()
         if command == "lock":
             return try lock_command(&project, own, passthrough)
@@ -662,6 +683,8 @@ func usage(out: io.Writer) -> !:
     try out.write("  add <path>            add a local package dependency to luce.toml\n")
     try out.write("  remove <name>         remove a dependency from luce.toml\n")
     try out.write("  lock --check          validate luc.lock syntax without fetching or changing files\n")
+    try out.write("  verify-release <metadata> <signature> <trusted-key> <source>\n")
+    try out.write("                        verify local release bytes against a supplied ML-DSA-65 key\n")
     try out.write("  build [--release]     build the project into build/<name>\n")
     try out.write("  run [--release]       build and run the project\n")
     try out.write("  run <task>            run a named [tasks] workflow from luce.toml\n")
