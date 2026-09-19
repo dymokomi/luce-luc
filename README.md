@@ -36,13 +36,21 @@ language = "luce-base"   # or "luce"; picks the compiler (override with LUCE_BAS
 # entry = "src/main.lucb"  # optional; defaults to src/main.<ext> then main.<ext>
 
 [tasks]
-dev  = "luc run"
-lint = "luc fmt --check"
-ci   = "luc fmt --check && luc test"
+dev  = "luc run"                       # string form: a shell command
+
+[tasks.lint]
+description = "check formatting"        # shown by `luc run <unknown>`
+cmd = "luc fmt --check"
+
+[tasks.ci]
+cmd = "luc test"
+depends = ["lint"]                     # deps run first (a DAG: each once, topological)
 ```
 
 `luc run <name>` runs a `[tasks]` entry through the system shell, so `&&`, pipes and redirects
-work. The build cache is the project's own `build/.cache`, cleared by `rm -rf build`.
+work; `depends` run first (each at most once; a cycle is an error). Args after `--` pass to the
+target task through `"$@"`: `luc run ci -- --filter parse`. The build cache is the project's own
+`build/.cache`, cleared by `rm -rf build`.
 
 ## Build and test
 
@@ -52,7 +60,6 @@ existing compiler instead. `./test.sh` runs the gate.
 
 ## Not yet (next slices)
 
-Task dependency graphs + object task form + arg passthrough to tasks,
 task input/output caching, a built-in cross-platform shell, workspaces, an ephemeral tool
 runner (`luc x`) and shell completions.
 

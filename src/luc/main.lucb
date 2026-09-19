@@ -22,7 +22,7 @@ import strings
 import memory
 
 ## The luc version, kept in step with VERSION.
-pub let luc_version: str = "0.3.0"
+pub let luc_version: str = "0.4.0"
 
 ## A command-line or manifest problem the user can fix.
 pub let usage_error: ErrorCode = ErrorCode.package(1)
@@ -32,10 +32,13 @@ var message_buffer: u8[512]
 
 # mark: The project ===========================================================================
 
-## One `[tasks]` workflow: its name and the shell command it runs.
+## One `[tasks]` workflow: its name, the shell command it runs, an optional one-line
+## description, and the tasks it depends on (run first).
 struct Task:
     var name: str
     var command: str
+    var description: str
+    var depends: str[]
 
 ## A loaded luce.toml: where it is, the package identity, the chosen entry, and its tasks.
 struct Project:
@@ -119,9 +122,16 @@ func parse_manifest(project: Project*, text: str) -> !:
                 project.language = try strings.copy(value)
             elif key == "entry":
                 project.entry = try strings.copy(value)
-        elif section == "tasks" and project.task_count < project.tasks.length:
-            project.tasks[project.task_count] = Task(name = try strings.copy(key), command = try strings.copy(value))
-            project.task_count += 1
+        elif section == "tasks":
+            project.tasks[try task_slot(project, key)].command = try strings.copy(value)
+        elif strings.starts_with(section, "tasks."):
+            let slot = try task_slot(project, (str)section.bytes[6..])
+            if key == "cmd":
+                project.tasks[slot].command = try strings.copy(value)
+            elif key == "description":
+                project.tasks[slot].description = try strings.copy(value)
+            elif key == "depends":
+                project.tasks[slot].depends = try string_array(value)
 
 func unquote(text: str) -> str:
     if text.length >= 2 and strings.starts_with(text, "\"") and strings.ends_with(text, "\""):
@@ -135,6 +145,30 @@ func strip(text: str, open: str, close: str) -> str:
     if strings.ends_with(inner, close):
         inner = (str)inner.bytes[..<inner.length - close.length]
     return inner
+
+## The index of the task named `name`, creating an empty one when it is new; a task can be
+## introduced by a plain [tasks] line or a [tasks.<name>] subtable, in any order.
+func task_slot(project: Project*, name: str) -> usize!:
+    var index: usize = 0
+    while index < project.task_count:
+        if project.tasks[index].name == name:
+            return index
+        index += 1
+    if project.task_count >= project.tasks.length:
+        error(usage_error, "too many tasks in luce.toml")
+    project.tasks[project.task_count] = Task(name = try strings.copy(name), command = "", description = "")
+    project.task_count += 1
+    return project.task_count - 1
+
+## Parse a `["a", "b"]` TOML string array into a slice; empty items are dropped.
+func string_array(value: str) -> str[]!:
+    let inner = strip(strings.trim(value), "[", "]")
+    var result: str[]
+    for part in try strings.split(inner, ','):
+        let item = unquote(strings.trim(part))
+        if item.length > 0:
+            result = try append(result, try strings.copy(item))
+    return result
 
 # mark: Running things =========================================================================
 
@@ -186,9 +220,62 @@ func run_app(project: Project*, release: bool, arguments: str[]) -> i32!:
         return status
     return try spawn(try output_path(project), arguments)
 
-## Run a `[tasks]` command through the system shell so `&&`, pipes and redirects work.
-func run_task(task: Task) -> i32!:
-    return try spawn("sh", try two("-c", task.command))
+## A task run in progress: the tasks already finished (each runs once) and the tasks on the
+## current dependency chain (to catch a cycle).
+struct Runner:
+    var project: Project*
+    var done: str[]
+    var done_count: usize
+    var active: str[]
+    var active_count: usize
+
+## Run task `name`, its `depends` first (each at most once), forwarding `passthrough` only to
+## the named target. Fails on an unknown task or a dependency cycle.
+func run_task(project: Project*, name: str, passthrough: str[]) -> i32!:
+    var runner = Runner(project = project)
+    runner.done = try alloc str[project.task_count + 1]
+    runner.active = try alloc str[project.task_count + 1]
+    return try run_graph(&runner, name, passthrough, true)
+
+func run_graph(runner: Runner*, name: str, passthrough: str[], target: bool) -> i32!:
+    var index: usize = 0
+    while index < runner.done_count:
+        if runner.done[index] == name:
+            return 0
+        index += 1
+    index = 0
+    while index < runner.active_count:
+        if runner.active[index] == name:
+            error(usage_error, try format(message_buffer[0..], f"task dependency cycle at '{name}'"))
+        index += 1
+    let task = runner.project.find_task(name) else error(usage_error, try format(message_buffer[0..], f"no task named '{name}'"))
+    runner.active[runner.active_count] = name
+    runner.active_count += 1
+    for dependency in task.depends:
+        var none_args: str[]
+        let dependency_status = try run_graph(runner, dependency, none_args, false)
+        if dependency_status != 0:
+            return dependency_status
+    var args: str[]
+    if target:
+        args = passthrough
+    let status = try run_command(task.command, args)
+    runner.active_count -= 1
+    runner.done[runner.done_count] = name
+    runner.done_count += 1
+    return status
+
+## Run a task's command through the system shell (so `&&`, pipes and redirects work),
+## forwarding `args` as positional parameters through "$@".
+func run_command(command: str, args: str[]) -> i32!:
+    var script = command
+    if args.length > 0:
+        var buffer: u8[2048]
+        script = try strings.copy(try format(buffer[0..], f"{command} \"$@\""))
+    var argv: str[]
+    for word in ["-c", script, "sh"]:
+        argv = try append(argv, word)
+    return try spawn("sh", try concat(argv, args))
 
 ## A two-word argument list as a slice (fixed-size literals do not coerce to `str[]`).
 func two(first: str, second: str) -> str[]!:
@@ -204,7 +291,11 @@ func list_tasks(project: Project*) -> !:
     try io.stdout().write("tasks:\n")
     var index: usize = 0
     while index < project.task_count:
-        try io.stdout().write(f"  {project.tasks[index].name}\n")
+        let task = project.tasks[index]
+        if task.description.length > 0:
+            try io.stdout().write(f"  {task.name}  -  {task.description}\n")
+        else:
+            try io.stdout().write(f"  {task.name}\n")
         index += 1
 
 # mark: Dependencies ==========================================================================
@@ -404,9 +495,10 @@ func concat(left: str[], right: str[]) -> str[]!:
     while index < left.length:
         grown[index] = left[index]
         index += 1
-    while index < right.length:
-        grown[left.length + index] = right[index]
-        index += 1
+    var offset: usize = 0
+    while offset < right.length:
+        grown[left.length + offset] = right[offset]
+        offset += 1
     return grown
 
 ## Split the arguments after the command into its own words and the passthrough after `--`.
@@ -467,9 +559,11 @@ pub func main(arguments: c.str[]) -> i32!:
         if command == "run":
             if own.length == 0 or own[0] == "--release":
                 return try run_app(&project, has(own, "--release"), passthrough)
-            if let task = project.find_task(own[0]):
-                return try run_task(task)
-            try io.stderr().write(f"luc: no task named '{own[0]}'; run 'luc run' to list tasks\n")
+            if project.find_task(own[0]) != none:
+                return try run_task(&project, own[0], passthrough)
+            try io.stderr().write(f"luc: no task named '{own[0]}'\n")
+            list_tasks(&project) catch failure:
+                discard(failure)
             return 1
         try io.stderr().write(f"luc: unknown command '{command}'; run 'luc help'\n")
         return 1

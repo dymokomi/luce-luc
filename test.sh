@@ -8,7 +8,7 @@ base=${LUCE_BASE_COMPILER:-../luce-base/build/luce-base}
 [ -n "$base" ] && [ -x "$base" ] || { echo "FAIL: no luce-base compiler (set LUCE_BASE_COMPILER)"; exit 1; }
 LUCE_BASE_COMPILER="$base" ./build.sh > /dev/null
 luc="$PWD/build/luc"
-[ "$("$luc" --version)" = "luc 0.3.0" ] || { echo "FAIL: version"; exit 1; }
+[ "$("$luc" --version)" = "luc 0.4.0" ] || { echo "FAIL: version"; exit 1; }
 export LUCE_BASE="$base"
 # scaffolding: a new app builds and runs; a new package checks
 scaff="build/scaffold"
@@ -31,7 +31,11 @@ grep -q 'mylib =' "$scaff/app1/luce.toml" && { echo "FAIL: dependency not remove
 rm -rf "$scaff"
 work="build/luctest"
 rm -rf "$work"; mkdir -p "$work/src"
-printf '[package]\nname = "hello"\nlanguage = "luce-base"\n\n[tasks]\ngreet = "echo hi from a task"\nchain = "echo a && echo b"\n' > "$work/luce.toml"
+{
+  printf '[package]\nname = "hello"\nlanguage = "luce-base"\n\n[tasks]\ngreet = "echo hi from a task"\nchain = "echo a && echo b"\n\n'
+  printf '[tasks.first]\ncmd = "echo one"\n\n[tasks.second]\ncmd = "echo two"\ndepends = ["first"]\n\n'
+  printf '[tasks.all]\ndescription = "run both"\ncmd = "echo got"\ndepends = ["second", "first"]\n'
+} > "$work/luce.toml"
 printf 'pub func main(arguments: str[]) -> i32:\n    print("ok run")\n    return 0\n' > "$work/src/main.lucb"
 export LUCE_BASE="$base"
 ( cd "$work" && "$luc" check ) || { echo "FAIL: check"; exit 1; }
@@ -39,6 +43,8 @@ export LUCE_BASE="$base"
 [ "$( cd "$work" && "$luc" run greet )" = "hi from a task" ] || { echo "FAIL: run task"; exit 1; }
 [ "$( cd "$work" && "$luc" run chain )" = "$(printf 'a\nb')" ] || { echo "FAIL: shell task"; exit 1; }
 ( cd "$work" && "$luc" run missing ) 2>/dev/null && { echo "FAIL: missing task should error"; exit 1; } || true
+# a task DAG: deps run first (once, in order) and args pass through to the target
+[ "$( cd "$work" && "$luc" run all -- X Y )" = "$(printf 'one\ntwo\ngot X Y')" ] || { echo "FAIL: task DAG / passthrough: got [$( cd "$work" && "$luc" run all -- X Y )]"; exit 1; }
 [ -d "$work/build/.cache" ] || { echo "FAIL: default cache is not project-local build/.cache"; exit 1; }
 rm -rf "$work"
-echo "ok luc: new/init, add/remove deps, version, check, run, tasks, shell tasks, and a project-local cache"
+echo "ok luc: new/init, add/remove, task DAG + passthrough, version, check, run, shell tasks, and a project-local cache"
