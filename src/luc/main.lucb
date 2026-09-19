@@ -22,10 +22,13 @@ import strings
 import memory
 
 ## The luc version, kept in step with VERSION.
-pub let luc_version: str = "0.2.0"
+pub let luc_version: str = "0.3.0"
 
 ## A command-line or manifest problem the user can fix.
 pub let usage_error: ErrorCode = ErrorCode.package(1)
+
+# A scratch buffer for one interpolated error message at a time (errors are terminal).
+var message_buffer: u8[512]
 
 # mark: The project ===========================================================================
 
@@ -204,6 +207,118 @@ func list_tasks(project: Project*) -> !:
         try io.stdout().write(f"  {project.tasks[index].name}\n")
         index += 1
 
+# mark: Dependencies ==========================================================================
+
+## `luc add <path>` (or `luc add <name> <path>`) records a local package dependency in
+## luce.toml. The dependency's own luce.toml gives its name, which Base requires the key to
+## match; the value is the path, relative to this manifest, to that package's directory.
+func add_command(project: Project*, own: str[]) -> i32!:
+    let manifest = try require_manifest(project)
+    var positional: str[]
+    for word in own:
+        if not strings.starts_with(word, "--"):
+            positional = try append(positional, word)
+    if positional.length == 0:
+        error(usage_error, "luc add needs a path: luc add <path-to-package> [as <name>]")
+    let dep_path = positional[positional.length - 1]
+    let dep_manifest = try paths.join(dep_path, "luce.toml")
+    if not files.exists((c.str)try strings.copy(dep_manifest)):
+        error(usage_error, try format(message_buffer[0..], f"no luce.toml at {dep_path}"))
+    let actual = try package_name_at(dep_manifest)
+    if positional.length >= 2 and positional[0] != actual:
+        error(usage_error, try format(message_buffer[0..], f"the package at {dep_path} is named '{actual}', not '{positional[0]}'"))
+    try upsert_dependency(manifest, actual, dep_path)
+    try io.stdout().write(f"added dependency {actual} = \"{dep_path}\"\n")
+    return 0
+
+## `luc remove <name>` drops a dependency from luce.toml.
+func remove_command(project: Project*, own: str[]) -> i32!:
+    let manifest = try require_manifest(project)
+    var positional: str[]
+    for word in own:
+        if not strings.starts_with(word, "--"):
+            positional = try append(positional, word)
+    if positional.length == 0:
+        error(usage_error, "luc remove needs a name: luc remove <name>")
+    let name = positional[0]
+    if not try remove_dependency(manifest, name):
+        try io.stderr().write(f"luc: no dependency named '{name}'\n")
+        return 1
+    try io.stdout().write(f"removed dependency {name}\n")
+    return 0
+
+## This project's luce.toml, or a usage error when there is no project here.
+func require_manifest(project: Project*) -> str!:
+    let manifest = try paths.join(project.root, "luce.toml")
+    if not files.exists((c.str)try strings.copy(manifest)):
+        error(usage_error, "not in a Luce project (no luce.toml found); run 'luc init' first")
+    return manifest
+
+func package_name_at(manifest: str) -> str!:
+    var probe = Project(root = "", name = "", language = "luce-base")
+    probe.tasks = try alloc Task[1]
+    try parse_manifest(&probe, (str)try files.read((c.str)try strings.copy(manifest)))
+    if probe.name.length == 0:
+        error(usage_error, try format(message_buffer[0..], f"the package at {manifest} has no [package] name"))
+    return probe.name
+
+## Add or replace `name = "value"` under `[dependencies]`, creating the section if absent,
+## and preserving the rest of the file line for line.
+func upsert_dependency(manifest: str, name: str, value: str) -> !:
+    let entry = try toml_line(name, value)
+    let text = (str)try files.read((c.str)try strings.copy(manifest))
+    var result: str[]
+    var section = ""
+    var has_section = false
+    for raw in try strings.split(text, '\n'):
+        let trimmed = strings.trim(raw)
+        if strings.starts_with(trimmed, "["):
+            section = trimmed
+            result = try append(result, raw)
+            if trimmed == "[dependencies]":
+                has_section = true
+                result = try append(result, entry)
+            continue
+        if section == "[dependencies]" and dependency_key(trimmed) == name:
+            continue
+        result = try append(result, raw)
+    if not has_section:
+        result = try append(result, "[dependencies]")
+        result = try append(result, entry)
+        result = try append(result, "")
+    try write_file(manifest, try strings.join(result, "\n"))
+
+## Remove `name = ...` under `[dependencies]`; answers whether a line was removed.
+func remove_dependency(manifest: str, name: str) -> bool!:
+    let text = (str)try files.read((c.str)try strings.copy(manifest))
+    var result: str[]
+    var section = ""
+    var removed = false
+    for raw in try strings.split(text, '\n'):
+        let trimmed = strings.trim(raw)
+        if strings.starts_with(trimmed, "["):
+            section = trimmed
+            result = try append(result, raw)
+            continue
+        if section == "[dependencies]" and dependency_key(trimmed) == name:
+            removed = true
+            continue
+        result = try append(result, raw)
+    if removed:
+        try write_file(manifest, try strings.join(result, "\n"))
+    return removed
+
+## The key of a `key = value` line, or empty for anything else.
+func dependency_key(line: str) -> str:
+    if line.length == 0 or strings.starts_with(line, "#"):
+        return ""
+    let (key, _) = strings.split_once(line, "=") else return ""
+    return strings.trim(key)
+
+func toml_line(key: str, value: str) -> str!:
+    var buffer: u8[1024]
+    return try strings.copy(try format(buffer[0..], f"{key} = \"{value}\""))
+
 # mark: Scaffolding ===========================================================================
 
 ## `luc new <path>` creates a project in a new directory; `luc init` in the current one.
@@ -333,6 +448,10 @@ pub func main(arguments: c.str[]) -> i32!:
         if command == "new" or command == "init":
             return try scaffold_command(command, own)
         var project = try load_project()
+        if command == "add":
+            return try add_command(&project, own)
+        if command == "remove":
+            return try remove_command(&project, own)
         if command == "build":
             return try build(&project, has(own, "--release"), passthrough)
         if command == "test":
@@ -359,6 +478,8 @@ func usage(out: io.Writer) -> !:
     try out.write("usage: luc <command> [options] [-- args]\n\n")
     try out.write("  new <dir> [opts]      scaffold a new project (--package|--app, --luce|--luce-base)\n")
     try out.write("  init [opts]           scaffold a project in the current directory\n")
+    try out.write("  add <path>            add a local package dependency to luce.toml\n")
+    try out.write("  remove <name>         remove a dependency from luce.toml\n")
     try out.write("  build [--release]     build the project into build/<name>\n")
     try out.write("  run [--release]       build and run the project\n")
     try out.write("  run <task>            run a named [tasks] workflow from luce.toml\n")

@@ -10,6 +10,8 @@ command to build, run, test and format a project and to run the workflows declar
 ```
 luc new <dir> [opts]      scaffold a new project (--package|--app, --luce|--luce-base)
 luc init [opts]           scaffold a project in the current directory
+luc add <path>            add a local package dependency to luce.toml
+luc remove <name>         remove a dependency from luce.toml
 luc build [--release]     build the project into build/<name>
 luc run [--release]       build and run the project
 luc run <task>            run a named [tasks] workflow from luce.toml
@@ -50,7 +52,7 @@ existing compiler instead. `./test.sh` runs the gate.
 
 ## Not yet (next slices)
 
-Dependency management (`luc add`/`remove` editing `[dependencies]`), task dependency graphs + object task form + arg passthrough to tasks,
+Task dependency graphs + object task form + arg passthrough to tasks,
 task input/output caching, a built-in cross-platform shell, workspaces, an ephemeral tool
 runner (`luc x`) and shell completions.
 

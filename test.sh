@@ -8,7 +8,7 @@ base=${LUCE_BASE_COMPILER:-../luce-base/build/luce-base}
 [ -n "$base" ] && [ -x "$base" ] || { echo "FAIL: no luce-base compiler (set LUCE_BASE_COMPILER)"; exit 1; }
 LUCE_BASE_COMPILER="$base" ./build.sh > /dev/null
 luc="$PWD/build/luc"
-[ "$("$luc" --version)" = "luc 0.2.0" ] || { echo "FAIL: version"; exit 1; }
+[ "$("$luc" --version)" = "luc 0.3.0" ] || { echo "FAIL: version"; exit 1; }
 export LUCE_BASE="$base"
 # scaffolding: a new app builds and runs; a new package checks
 scaff="build/scaffold"
@@ -20,6 +20,14 @@ rm -rf "$scaff"; mkdir -p "$scaff"
 [ -f "$scaff/mylib/src/mylib/mylib.lucb" ] || { echo "FAIL: new package layout"; exit 1; }
 ( cd "$scaff/mylib" && "$luc" check ) || { echo "FAIL: package check"; exit 1; }
 ( cd "$scaff/demo" && "$luc" init ) 2>/dev/null && { echo "FAIL: init over an existing manifest should refuse"; exit 1; } || true
+# dependencies: an app depends on the scaffolded local package and imports its export
+( cd "$scaff" && "$luc" new app1 ) > /dev/null || { echo "FAIL: new app1"; exit 1; }
+( cd "$scaff/app1" && "$luc" add ../mylib ) > /dev/null || { echo "FAIL: add"; exit 1; }
+grep -q '^mylib = "../mylib"' "$scaff/app1/luce.toml" || { echo "FAIL: dependency not written"; cat "$scaff/app1/luce.toml"; exit 1; }
+printf 'import mylib\npub func main(arguments: str[]) -> i32:\n    print(mylib.greeting())\n    return 0\n' > "$scaff/app1/src/main.lucb"
+[ "$( cd "$scaff/app1" && "$luc" run )" = "hello from mylib" ] || { echo "FAIL: dependency import/run"; exit 1; }
+( cd "$scaff/app1" && "$luc" remove mylib ) > /dev/null || { echo "FAIL: remove"; exit 1; }
+grep -q 'mylib =' "$scaff/app1/luce.toml" && { echo "FAIL: dependency not removed"; exit 1; } || true
 rm -rf "$scaff"
 work="build/luctest"
 rm -rf "$work"; mkdir -p "$work/src"
@@ -33,4 +41,4 @@ export LUCE_BASE="$base"
 ( cd "$work" && "$luc" run missing ) 2>/dev/null && { echo "FAIL: missing task should error"; exit 1; } || true
 [ -d "$work/build/.cache" ] || { echo "FAIL: default cache is not project-local build/.cache"; exit 1; }
 rm -rf "$work"
-echo "ok luc: new/init scaffolding, version, check, run, tasks, shell tasks, and a project-local cache"
+echo "ok luc: new/init, add/remove deps, version, check, run, tasks, shell tasks, and a project-local cache"
