@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import heap_process
 
 binary, fixture = (Path(arg).resolve() for arg in sys.argv[1:])
 leaks = os.environ.get('LUCE_TEST_LEAKS') == '1'
@@ -16,8 +17,11 @@ def invoke(arguments, cwd):
     result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=30)
     if leaks:
         # leaks reports its own result, not the child's exit status: check both.
-        heap = subprocess.run([*prefix, *command], cwd=cwd, capture_output=True, text=True, timeout=30)
+        heap = heap_process.run([*prefix, *command], cwd=cwd, timeout=30)
         assert heap.returncode == 0 and '0 leaks for 0 total leaked bytes' in heap.stdout, (heap.stdout, heap.stderr)
+        # Require the instrumented command to reach the same observable result.
+        assert heap.stdout.startswith(result.stdout), (result.stdout, heap.stdout)
+        assert result.stderr in heap.stderr, (result.stderr, heap.stderr)
     return result
 with tempfile.TemporaryDirectory(prefix='luc-release-') as temporary:
     root = Path(temporary)

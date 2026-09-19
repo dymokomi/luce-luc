@@ -82,6 +82,13 @@ without writes. Lock v1 does **not** pin a Git commit or toolchain version; this
 check does not claim those protections, freshness, or publisher authorization.
 Tests generate deterministic **test-only** keys in a temporary directory and check
 tampering, truncation, extra bytes, missing files, argument errors and no writes.
+The macOS heap gate checks ordinary command exit status independently and requires
+the instrumented output plus a zero-leak report. It captures output in regular
+files and cleans up only its launched process group: macOS 15's leak tool can
+finish while leaving its child stopped with inherited output descriptors open.
+Actual tool timeouts remain failures. `python3 tests/test_heap_process.py` covers
+status preservation, stopped children and genuine timeouts. This test helper is
+adapted from the same author's dual-licensed `luce-auth` heap harness.
 
 `./build.sh` builds luc with the Base commit pinned in `bootstrap/BASE` (fetched into an
 isolated `build/luce-base`); `LUCE_BASE_COMPILER=/path/to/luce-base ./build.sh` uses an

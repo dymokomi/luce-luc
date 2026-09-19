@@ -56,6 +56,8 @@ jobs:
           echo "$RUNNER_TEMP/luce-bin" >> "$GITHUB_PATH"
       - name: Run the gate
         run: LUCE_BASE_COMPILER="$PWD/../luce-base/build/luce-base" ./test.sh
+      - name: Heap-tool process lifecycle regression
+        run: python3 tests/test_heap_process.py
       - name: Release verification modes and sanitizers
         run: python3 tests/release_modes.py --base ../luce-base/build/luce-base
       - name: Native release verification heap cleanup
