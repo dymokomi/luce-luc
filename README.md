@@ -74,6 +74,12 @@ It performs no network requests, extraction, installation or file writes.
 The supplied key must already be trusted: success does not prove origin ownership,
 publisher authorization, freshness or that the release matches a project request.
 Remote installation and registry-root/key-distribution policy are not implemented.
+Add `--locked` after the four paths to require an existing project and `luc.lock`:
+the signed origin, package, version, SHA-256 source digest and compiler must match
+the lock. Project discovery walks upward from the current directory; input paths
+still refer to the current directory. Missing/malformed locks and mismatches fail
+without writes. Lock v1 does **not** pin a Git commit or toolchain version; this
+check does not claim those protections, freshness, or publisher authorization.
 Tests generate deterministic **test-only** keys in a temporary directory and check
 tampering, truncation, extra bytes, missing files, argument errors and no writes.
 

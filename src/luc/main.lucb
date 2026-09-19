@@ -315,22 +315,82 @@ func list_tasks(project: Project*) -> !:
 
 # mark: Dependencies ==========================================================================
 
+func read_release_file(path: str, limit: usize) -> u8[]!:
+    let filename = try strings.copy(path)
+    defer strings.release(filename)
+    return try files.read_limit((c.str)filename, limit)
+
+## os.cwd returns an allocator-owned buffer, not a strings.copy allocation.
+## Capture it in a short-lived arena and return a normal owned string.
+func owned_cwd() -> str!:
+    var scratch = try memory.Arena.over(memory.heap, 8192)
+    defer scratch.destroy()
+    with scratch:
+        let directory = try os.cwd()
+        with memory.heap:
+            return try strings.copy(directory)
+
+func read_project_lock() -> u8[]!:
+    let start = try owned_cwd()
+    defer strings.release(start)
+    var directory = start
+    while true:
+        let manifest = try paths.join(directory, "luce.toml")
+        defer strings.release(manifest)
+        if files.exists((c.str)manifest):
+            let filename = try paths.join(directory, "luc.lock")
+            defer strings.release(filename)
+            return try files.read_limit((c.str)filename, 1048576)
+        let parent = paths.directory(directory)
+        if parent == directory or parent.length == 0:
+            error(usage_error, "not in a Luce project (no luce.toml found)")
+        directory = parent
+
+## Bind a verified release to the project's existing restricted-v1 lock entry.
+## The lock does not yet carry commit/toolchain pins or establish publisher trust.
+func require_locked_release(release: pkg.Release) -> !:
+    let contents = try read_project_lock()
+    defer free(contents) in memory.heap
+    var lock = try pkg.decode_lock((str)contents)
+    defer lock.close()
+    if lock.origin != release.origin:
+        error(usage_error, "release origin does not match luc.lock")
+    let version = try pkg.parse_version(release.version)
+    let digits = "0123456789abcdef"
+    for i in 0..<lock.count:
+        let entry = lock.packages[i]
+        if entry.name != release.package: continue
+        if entry.version.major != version.major or entry.version.minor != version.minor or entry.version.patch != version.patch or entry.compiler != release.compiler:
+            error(usage_error, "release version or compiler does not match luc.lock")
+        if entry.digest.length != 64:
+            error(usage_error, "release digest does not match luc.lock")
+        for index in 0..<32:
+            let byte = release.source_digest[index]
+            if entry.digest.bytes[index * 2] != digits.bytes[(usize)(byte >> 4)] or entry.digest.bytes[index * 2 + 1] != digits.bytes[(usize)(byte & 15)]:
+                error(usage_error, "release digest does not match luc.lock")
+        return
+    error(usage_error, "release package is absent from luc.lock")
+
 ## Verify exact local release bytes against an explicitly supplied trusted public key.
 ## This does not establish key ownership or authorize installation.
 func verify_release_command(own: str[], passthrough: str[]) -> i32!:
-    if own.length != 4 or passthrough.length != 0:
-        error(usage_error, "usage: luc verify-release <metadata> <signature> <trusted-key> <source>")
-    let wire = try files.read_limit((c.str)try strings.copy(own[0]), 1600)
+    let locked = own.length == 5 and own[4] == "--locked"
+    if (own.length != 4 and not locked) or passthrough.length != 0:
+        error(usage_error, "usage: luc verify-release <metadata> <signature> <trusted-key> <source> [--locked]")
+    let wire = try read_release_file(own[0], 1600)
     defer free(wire) in memory.heap
-    let signature = try files.read_limit((c.str)try strings.copy(own[1]), 3309)
+    let signature = try read_release_file(own[1], 3309)
     defer free(signature) in memory.heap
-    let key = try files.read_limit((c.str)try strings.copy(own[2]), 1952)
+    let key = try read_release_file(own[2], 1952)
     defer free(key) in memory.heap
-    let source = try files.read_limit((c.str)try strings.copy(own[3]), 67108864)
+    let source = try read_release_file(own[3], 67108864)
     defer free(source) in memory.heap
     let release = try pkg.decode_release(wire)
     if not try pkg.verify_release(release, key, signature, source):
         error(usage_error, "release signature or source digest verification failed")
+    if locked:
+        try require_locked_release(release)
+        try io.stdout().write("release matches luc.lock (commit and toolchain are not pinned by lock v1)\n")
     try io.stdout().write(f"verified {release.package}@{release.version} against supplied key (origin ownership not verified)\n")
     return 0
 
@@ -636,13 +696,20 @@ pub func main(arguments: c.str[]) -> i32!:
         if command == "--help" or command == "help":
             try usage(io.stdout())
             return 0
+        if command == "verify-release":
+            # Fixed argument storage avoids the legacy command builder's allocations.
+            if arguments.length < 6 or arguments.length > 7:
+                error(usage_error, "usage: luc verify-release <metadata> <signature> <trusted-key> <source> [--locked]")
+            var words: str[5]
+            for index in 2..<arguments.length:
+                words[index - 2] = (str)arguments[index]
+            var no_passthrough: str[]
+            return try verify_release_command(words[..<arguments.length - 2], no_passthrough)
         let (own, passthrough) = try partition(arguments, 2)
         if command == "new" or command == "init":
             return try scaffold_command(command, own)
         if command == "update" or command == "upgrade":
             return try update_command(own)
-        if command == "verify-release":
-            return try verify_release_command(own, passthrough)
         var project = try load_project()
         if command == "lock":
             return try lock_command(&project, own, passthrough)
@@ -683,7 +750,7 @@ func usage(out: io.Writer) -> !:
     try out.write("  add <path>            add a local package dependency to luce.toml\n")
     try out.write("  remove <name>         remove a dependency from luce.toml\n")
     try out.write("  lock --check          validate luc.lock syntax without fetching or changing files\n")
-    try out.write("  verify-release <metadata> <signature> <trusted-key> <source>\n")
+    try out.write("  verify-release <metadata> <signature> <trusted-key> <source> [--locked]\n")
     try out.write("                        verify local release bytes against a supplied ML-DSA-65 key\n")
     try out.write("  build [--release]     build the project into build/<name>\n")
     try out.write("  run [--release]       build and run the project\n")
