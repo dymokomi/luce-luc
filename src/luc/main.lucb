@@ -1,0 +1,299 @@
+#==============================================================================================
+#
+#   luc - The Luce project tool
+#
+#   DESCRIPTION:
+#       One command for a Luce project: build, run, test, check and format it through the Luce
+#       compiler, and run the named workflows in its luce.toml `[tasks]`. luc finds the project
+#       by walking up to the nearest luce.toml, picks the compiler from the package language
+#       (luce-base or luce, overridable with LUCE_BASE / LUCE), and forwards the compiler's own
+#       output and exit code. This is the MVP surface; scaffolding, dependencies, task
+#       dependency graphs and workspaces follow (see README).
+#
+#==============================================================================================
+
+import c
+import io
+import os
+import files
+import paths
+import process
+import strings
+import memory
+
+## The luc version, kept in step with VERSION.
+pub let luc_version: str = "0.1.0"
+
+## A command-line or manifest problem the user can fix.
+pub let usage_error: ErrorCode = ErrorCode.package(1)
+
+# mark: The project ===========================================================================
+
+## One `[tasks]` workflow: its name and the shell command it runs.
+struct Task:
+    var name: str
+    var command: str
+
+## A loaded luce.toml: where it is, the package identity, the chosen entry, and its tasks.
+struct Project:
+    var root: str
+    var name: str
+    var language: str
+    var entry: str
+    var tasks: Task[]
+    var task_count: usize
+
+    ## The compiler for this project's language, overridable through the environment.
+    func compiler() -> str!:
+        let variable = "LUCE" if self.language == "luce" else "LUCE_BASE"
+        if let chosen = os.env((c.str)variable):
+            return try strings.copy(chosen)
+        return try strings.copy("luce" if self.language == "luce" else "luce-base")
+
+    ## The entry source: the manifest's `entry`, else the conventional main for the language.
+    func entry_path() -> str!:
+        if self.entry.length > 0:
+            return try paths.join(self.root, self.entry)
+        if self.language == "luce":
+            return try first_existing(self.root, "src/main.luc", "main.luc")
+        return try first_existing(self.root, "src/main.lucb", "main.lucb")
+
+    func find_task(name: str) -> Task?:
+        var index: usize = 0
+        while index < self.task_count:
+            if self.tasks[index].name == name:
+                return self.tasks[index]
+            index += 1
+        return none
+
+## The first of two candidate sources under `root` that exists, else a usage error.
+func first_existing(root: str, primary: str, fallback: str) -> str!:
+    for relative in [primary, fallback]:
+        let candidate = try paths.join(root, relative)
+        let terminated = try strings.copy(candidate)
+        if files.exists((c.str)terminated):
+            return candidate
+    error(usage_error, "no entry source found (expected src/main.lucb or src/main.luc); set entry in luce.toml")
+
+# mark: Loading luce.toml ======================================================================
+
+## Find the nearest luce.toml from the current directory upward and load it. Absent one, the
+## project is an anonymous luce-base app rooted at the current directory.
+func load_project() -> Project!:
+    let start = try os.cwd()
+    var project = Project(root = start, name = "app", language = "luce-base")
+    project.tasks = try alloc Task[128]
+    var directory = start
+    while true:
+        let manifest = try paths.join(directory, "luce.toml")
+        let terminated = try strings.copy(manifest)
+        if files.exists((c.str)terminated):
+            project.root = directory
+            let text = try files.read((c.str)terminated)
+            try parse_manifest(&project, (str)text)
+            return project
+        let parent = paths.directory(directory)
+        if parent == directory or parent.length == 0:
+            return project
+        directory = parent
+
+## Parse the little of luce.toml luc needs: [package] name/language/entry and [tasks]
+## name = "command" pairs. Values are quoted strings; comments and blank lines are ignored.
+func parse_manifest(project: Project*, text: str) -> !:
+    var section = ""
+    for raw in try strings.split(text, '\n'):
+        let line = strings.trim(raw)
+        if line.length == 0 or strings.starts_with(line, "#"):
+            continue
+        if strings.starts_with(line, "["):
+            section = strings.trim(strip(line, "[", "]"))
+            continue
+        let (key_raw, value_raw) = strings.split_once(line, "=") else continue
+        let key = strings.trim(key_raw)
+        let value = unquote(strings.trim(value_raw))
+        if section == "package":
+            if key == "name":
+                project.name = try strings.copy(value)
+            elif key == "language":
+                project.language = try strings.copy(value)
+            elif key == "entry":
+                project.entry = try strings.copy(value)
+        elif section == "tasks" and project.task_count < project.tasks.length:
+            project.tasks[project.task_count] = Task(name = try strings.copy(key), command = try strings.copy(value))
+            project.task_count += 1
+
+func unquote(text: str) -> str:
+    if text.length >= 2 and strings.starts_with(text, "\"") and strings.ends_with(text, "\""):
+        return (str)text.bytes[1..<text.length - 1]
+    return text
+
+func strip(text: str, open: str, close: str) -> str:
+    var inner = text
+    if strings.starts_with(inner, open):
+        inner = (str)inner.bytes[open.length..]
+    if strings.ends_with(inner, close):
+        inner = (str)inner.bytes[..<inner.length - close.length]
+    return inner
+
+# mark: Running things =========================================================================
+
+## Run `program` with `arguments`, forwarding its output and returning its exit code. Dynamic
+## strings become NUL-terminated copies so they cross the process boundary as `c.str`.
+func spawn(program: str, arguments: str[]) -> i32!:
+    let program_text = try strings.copy(program)
+    let argv = try alloc c.str[arguments.length]
+    var index: usize = 0
+    while index < arguments.length:
+        argv[index] = (c.str)try strings.copy(arguments[index])
+        index += 1
+    let (status, out, err) = try process.run((c.str)program_text, argv)
+    defer process.release(out)
+    defer process.release(err)
+    if out.length > 0:
+        try io.stdout().write(out)
+    if err.length > 0:
+        try io.stderr().write(err)
+    return status
+
+## The project's build output path, build/<name> under its root.
+func output_path(project: Project*) -> str!:
+    return try paths.join(try paths.join(project.root, "build"), project.name)
+
+## Build the project's entry into build/<name> under the project root.
+func build(project: Project*, release: bool, extra: str[]) -> i32!:
+    let entry = try project.entry_path()
+    try ensure_build(project)
+    let output = try output_path(project)
+    var arguments: str[]
+    for word in ["build", entry, "--native", "-o", output]:
+        arguments = try append(arguments, word)
+    if release:
+        arguments = try append(arguments, "--release")
+    return try spawn(try project.compiler(), try concat(arguments, extra))
+
+func ensure_build(project: Project*) -> !:
+    let directory = try paths.join(project.root, "build")
+    let terminated = try strings.copy(directory)
+    if not files.exists((c.str)terminated):
+        try files.create_directory((c.str)terminated)
+
+## Build, then run the produced binary with `arguments`.
+func run_app(project: Project*, release: bool, arguments: str[]) -> i32!:
+    var no_extra: str[]
+    let status = try build(project, release, no_extra)
+    if status != 0:
+        return status
+    return try spawn(try output_path(project), arguments)
+
+## Run a `[tasks]` command through the system shell so `&&`, pipes and redirects work.
+func run_task(task: Task) -> i32!:
+    return try spawn("sh", try two("-c", task.command))
+
+## A two-word argument list as a slice (fixed-size literals do not coerce to `str[]`).
+func two(first: str, second: str) -> str[]!:
+    var result: str[]
+    result = try append(result, first)
+    result = try append(result, second)
+    return result
+
+func list_tasks(project: Project*) -> !:
+    if project.task_count == 0:
+        try io.stdout().write("no tasks are defined in luce.toml\n")
+        return
+    try io.stdout().write("tasks:\n")
+    var index: usize = 0
+    while index < project.task_count:
+        try io.stdout().write(f"  {project.tasks[index].name}\n")
+        index += 1
+
+# mark: The command line =======================================================================
+
+func append(items: str[], value: str) -> str[]!:
+    let grown = try alloc str[items.length + 1]
+    var index: usize = 0
+    while index < items.length:
+        grown[index] = items[index]
+        index += 1
+    grown[items.length] = value
+    return grown
+
+func concat(left: str[], right: str[]) -> str[]!:
+    let grown = try alloc str[left.length + right.length]
+    var index: usize = 0
+    while index < left.length:
+        grown[index] = left[index]
+        index += 1
+    while index < right.length:
+        grown[left.length + index] = right[index]
+        index += 1
+    return grown
+
+## Split the arguments after the command into its own words and the passthrough after `--`.
+func partition(arguments: c.str[], start: usize) -> (str[], str[])!:
+    var own: str[]
+    var passthrough: str[]
+    var index = start
+    var seen_dashes = false
+    while index < arguments.length:
+        let word = (str)arguments[index]
+        if word == "--" and not seen_dashes:
+            seen_dashes = true
+        elif seen_dashes:
+            passthrough = try append(passthrough, word)
+        else:
+            own = try append(own, word)
+        index += 1
+    return (own, passthrough)
+
+func has(words: str[], flag: str) -> bool:
+    for word in words:
+        if word == flag:
+            return true
+    return false
+
+pub func main(arguments: c.str[]) -> i32!:
+    with memory.heap:
+        if arguments.length < 2:
+            try usage(io.stdout())
+            return 0
+        let command = (str)arguments[1]
+        if command == "--version":
+            try io.stdout().write(f"luc {luc_version}\n")
+            return 0
+        if command == "--help" or command == "help":
+            try usage(io.stdout())
+            return 0
+        let (own, passthrough) = try partition(arguments, 2)
+        var project = try load_project()
+        if command == "build":
+            return try build(&project, has(own, "--release"), passthrough)
+        if command == "test":
+            let base = try two("test", try project.entry_path())
+            return try spawn(try project.compiler(), try concat(base, passthrough))
+        if command == "check":
+            return try spawn(try project.compiler(), try two("check", try project.entry_path()))
+        if command == "fmt":
+            var formatted = try two("fmt", try project.entry_path())
+            if has(own, "--check"):
+                formatted = try append(formatted, "--check")
+            return try spawn(try project.compiler(), formatted)
+        if command == "run":
+            if own.length == 0 or own[0] == "--release":
+                return try run_app(&project, has(own, "--release"), passthrough)
+            if let task = project.find_task(own[0]):
+                return try run_task(task)
+            try io.stderr().write(f"luc: no task named '{own[0]}'; run 'luc run' to list tasks\n")
+            return 1
+        try io.stderr().write(f"luc: unknown command '{command}'; run 'luc help'\n")
+        return 1
+
+func usage(out: io.Writer) -> !:
+    try out.write("usage: luc <command> [options] [-- args]\n\n")
+    try out.write("  build [--release]     build the project into build/<name>\n")
+    try out.write("  run [--release]       build and run the project\n")
+    try out.write("  run <task>            run a named [tasks] workflow from luce.toml\n")
+    try out.write("  test                  build and run the project's tests\n")
+    try out.write("  check                 type-check without producing a binary\n")
+    try out.write("  fmt [--check]         format the project's sources\n")
+    try out.write("  --version             print the luc version\n")
+    try out.write("  help                  show this message\n")
