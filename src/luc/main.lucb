@@ -23,6 +23,7 @@ import strings
 import memory
 import pkg
 import luc.remote as remote
+import luc.checkout as checkout
 
 ## The luc version, kept in step with VERSION.
 pub let luc_version: str = "0.7.0"
@@ -712,6 +713,9 @@ pub func main(arguments: c.str[]) -> i32!:
         if command == "remote-fetch":
             if arguments.length != 5: error(usage_error, "usage: luc remote-fetch <loopback-git-url> <commit-id> <new-pack-path>")
             return try remote.fetch((str)arguments[2], (str)arguments[3], (str)arguments[4])
+        if command == "checkout-pack":
+            if arguments.length != 5: error(usage_error, "usage: luc checkout-pack <pack-path> <commit-id> <new-directory>")
+            return try checkout.from_pack((str)arguments[2], (str)arguments[3], (str)arguments[4])
         let (own, passthrough) = try partition(arguments, 2)
         if command == "new" or command == "init":
             return try scaffold_command(command, own)
@@ -759,6 +763,7 @@ func usage(out: io.Writer) -> !:
     try out.write("  lock --check          validate luc.lock syntax without fetching or changing files\n")
     try out.write("  remote-refs <url>      list registry refs (loopback HTTP development transport)\n")
     try out.write("  remote-fetch <url> <commit> <new-pack-path>  fetch a validated full Git pack\n")
+    try out.write("  checkout-pack <pack> <commit> <new-directory>  materialize validated source\n")
     try out.write("  verify-release <metadata> <signature> <trusted-key> <source> [--locked]\n")
     try out.write("                        verify local release bytes against a supplied ML-DSA-65 key\n")
     try out.write("  build [--release]     build the project into build/<name>\n")

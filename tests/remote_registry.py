@@ -38,6 +38,14 @@ def check(port, headers, root, request):
                    input=output.read_bytes(), check=True, capture_output=True, timeout=30)
     assert token.encode() not in result.stdout + result.stderr
     print('PASS luc native remote fetch from registry, independently checked by stock Git', flush=True)
+    checkout = root / 'luc-checkout'
+    result = subprocess.run([str(luc), 'checkout-pack', str(output), latest.decode(), str(checkout)],
+                            cwd=root, env=env, capture_output=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    for name in ('main.lucb', 'extra.lucb', 'large.txt'):
+        assert (checkout / name).read_bytes() == (repo / name).read_bytes()
+    assert not (checkout / '.git').exists()
+    print('PASS native registry fetch-to-checkout bytes match stock Git working tree', flush=True)
     print('PASS luc remote-refs against actual native authenticated registry', flush=True)
     return latest
 

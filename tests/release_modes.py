@@ -31,6 +31,7 @@ for name, flags in modes:
     run([sys.executable, 'tests/release.py', binary, fixture])
     run([sys.executable, 'tests/remote.py', binary])
     run([sys.executable, 'tests/fetch.py', binary])
+    run([sys.executable, 'tests/checkout.py', binary, base])
 runtime = ROOT.parent / 'luce-base/runtime'
 generated = out / 'sanitize.c'
 binary = out / 'sanitize'
@@ -43,4 +44,5 @@ env['UBSAN_OPTIONS'] = 'halt_on_error=1:print_stacktrace=1'
 run([sys.executable, 'tests/release.py', binary, fixture])
 run([sys.executable, 'tests/remote.py', binary])
 run([sys.executable, 'tests/fetch.py', binary])
+run([sys.executable, 'tests/checkout.py', binary, base])
 print('PASS release verification: six compiler modes and ASan/UBSan', flush=True)

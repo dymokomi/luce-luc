@@ -14,6 +14,7 @@ luc add <path>            add a local package dependency to luce.toml
 luc lock --check          validate luc.lock syntax without fetching or changing files
 luc remote-refs <url>     list remote Git refs (loopback HTTP development transport)
 luc remote-fetch <url> <commit-id> <new-pack-path>  fetch a validated full Git pack
+luc checkout-pack <pack> <commit-id> <new-directory>  materialize source files
 luc remove <name>         remove a dependency from luce.toml
 luc build [--release]     build the project into build/<name>
 luc run [--release]       build and run the project
@@ -92,6 +93,24 @@ symlink). Errors clean up that temporary; the parent directory is not fsynced, s
 power-loss durability is not promised. A caller must choose a trusted destination
 directory. This command is the pack-transfer primitive for later checkout/cache
 integration, not the finished package-install workflow.
+
+`luc checkout-pack` validates the full pack and commit graph, plans the selected
+tree before filesystem writes, then materializes it beneath a private temporary
+sibling directory and publishes via atomic no-replace rename. Existing directories
+or symlinks are never replaced. Only entries created by this operation are removed
+on rollback. Files preserve binary bytes and Git's executable bit (subject to umask).
+The result is a source directory, **not** a `.git` working repository; there is no
+automatic execution or release-signature verification. Destination parents must
+be trusted; parent-directory fsync and power-loss durability are not promised.
+
+Current portable checkout profile: regular files/directories, ASCII names,
+4096 entries including root, depth 64, paths up to 4096 bytes, 64 MiB expanded file
+bytes, and bounded object searches. Traversal names, `.git` aliases, Windows device
+names and reserved characters are rejected. Unicode names, symlinks and submodules
+are explicitly unsupported pending their complete portability/security policy.
+Tests cover extracted bytes/modes, rejection and rollback, existing destinations,
+and building/running an extracted Luce Base project. The real-registry fixture
+compares native fetch-to-checkout files against a stock Git working tree.
 
 Check out sibling `luce-pkg` and `luce-crypto` at `bootstrap/PKG` and
 `bootstrap/CRYPTO` before building. The build verifies their revisions. These

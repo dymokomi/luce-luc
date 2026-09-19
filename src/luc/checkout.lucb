@@ -1,0 +1,144 @@
+## Bounded source-tree materialization into a new directory, never a Git worktree.
+import git
+import crypto_native
+import files
+import paths
+import strings
+import memory
+import c
+import io
+import os
+import luc.pack_check as pack_check
+
+let invalid: ErrorCode = ErrorCode.package(4)
+
+struct Entry:
+    var path: str
+    var kind: str
+    var payload: const u8[]
+    var depth: usize
+    var executable: bool
+
+func release(entries: Entry[], count: usize*):
+    for i in 0..<*count: strings.release(entries[i].path)
+
+func lookup(pack: git.Pack*, id: const u8[], budget: usize*) -> git.PackItem*!:
+    for i in 0..<pack.items.length:
+        if *budget == 0: error(invalid, "checkout lookup budget exceeded")
+        *budget -= 1
+        if crypto_native.equal(pack.items[i].id, id): return &pack.items[i]
+    error(invalid, "missing checkout object")
+
+func valid_name(name: str) -> bool:
+    if name.length == 0 or name.length > 255 or name == "." or name == "..": return false
+    var lower: u8[255]
+    for i in 0..<name.length:
+        let byte = name.bytes[i]
+        # Portable first profile; Unicode normalization and symlink policy follow.
+        if byte < 32 or byte > 126 or byte == '/' or byte == '\\' or byte == ':' or byte == '*' or byte == '?' or byte == '"' or byte == '<' or byte == '>' or byte == '|': return false
+        lower[i] = byte + 32 if byte >= 'A' and byte <= 'Z' else byte
+    let text = (str)lower[..<name.length]
+    if text == ".git" or text == "git~1" or name.bytes[name.length - 1] == '.' or name.bytes[name.length - 1] == ' ': return false
+    var end: usize = 0
+    while end < text.length and text.bytes[end] != '.': end += 1
+    let stem = (str)text.bytes[..<end]
+    if stem == "con" or stem == "prn" or stem == "aux" or stem == "nul": return false
+    if stem.length == 4 and (strings.starts_with(stem, "com") or strings.starts_with(stem, "lpt")) and stem.bytes[3] >= '1' and stem.bytes[3] <= '9': return false
+    return true
+
+func cleanup(stage: str, entries: Entry[], made: usize*):
+    var left = *made
+    while left > 0:
+        left -= 1
+        let path = paths.join(stage, entries[left].path) catch: continue
+        if entries[left].kind == "tree": discard(files.remove_directory((c.str)path) catch: recover ())
+        else: discard(files.remove_file((c.str)path) catch: recover ())
+        strings.release(path)
+    discard(files.remove_directory((c.str)stage) catch: recover ())
+
+pub func materialize(pack: git.Pack*, requested: const u8[], destination: str) -> !:
+    try pack_check.validate(pack, requested)
+    var budget: usize = 16777216
+    let commit = try git.decode_commit((try lookup(pack, requested, &budget)).payload)
+    var tree_id: u8[20]
+    try git.decode_id(commit.tree, tree_id)
+    let root = try lookup(pack, tree_id, &budget)
+    let entries = try alloc Entry[4096] in memory.heap
+    defer free(entries) in memory.heap
+    var count: usize = 1
+    entries[0] = Entry(path = try strings.copy(""), kind = "tree", payload = root.payload)
+    defer release(entries, &count)
+    var total: usize = 0
+    var at: usize = 0
+    while at < count:
+        let parent = &entries[at]
+        if parent.kind == "tree":
+            var offset: usize = 0
+            while offset < parent.payload.length:
+                let item = try git.decode_tree_entry(parent.payload[offset..])
+                offset += item.consumed
+                if not valid_name(item.name): error(invalid, "unsafe or unsupported checkout filename")
+                if item.mode == "120000" or item.mode == "160000": error(invalid, "checkout symlinks and submodules are not supported yet")
+                if count >= entries.length or parent.depth >= 64: error(invalid, "checkout entry or depth limit exceeded")
+                let path = try paths.join(parent.path, item.name)
+                if path.length > 4096:
+                    strings.release(path)
+                    error(invalid, "checkout path too long")
+                let object = lookup(pack, item.id, &budget) catch failure:
+                    strings.release(path)
+                    error(failure.code, failure.message)
+                entries[count] = Entry(path = path, kind = object.kind, payload = object.payload, depth = parent.depth + 1, executable = item.mode == "100755")
+                count += 1
+                if object.kind != "tree":
+                    if object.payload.length > 67108864 - total: error(invalid, "checkout expanded byte limit exceeded")
+                    total += object.payload.length
+        at += 1
+    # Preflight is complete. Stage beneath the destination parent, in a private
+    # exclusive directory, and publish with an atomic no-replace rename.
+    let filename = try strings.copy(destination)
+    defer strings.release(filename)
+    let parent = paths.directory(filename)
+    var random: u8[16]
+    try os.random_bytes(random)
+    var suffix: u8[32]
+    let digits = b"0123456789abcdef"
+    for i in 0..<16:
+        suffix[i * 2] = digits[random[i] >> 4]
+        suffix[i * 2 + 1] = digits[random[i] & 15]
+    var name_buffer: u8[64]
+    let name = try format(name_buffer, f".luc-checkout-{(str)suffix}")
+    let stage = try paths.join(parent if parent.length > 0 else ".", name)
+    defer strings.release(stage)
+    try files.create_directory((c.str)stage, 448)
+    var made: usize = 1
+    errdefer cleanup(stage, entries, &made)
+    for i in 1..<count:
+        let entry = &entries[i]
+        let path = try paths.join(stage, entry.path)
+        defer strings.release(path)
+        if entry.kind == "tree":
+            try files.create_directory((c.str)path, 493)
+            made += 1
+        else:
+            var file = try files.File.open((c.str)path, files.OpenMode.create_new, 493 if entry.executable else 420)
+            made += 1
+            defer discard(file.close() catch: recover ())
+            try io.write_all(&file, entry.payload)
+            try file.sync()
+    try files.rename((c.str)stage, (c.str)filename, replace = false)
+
+pub func from_pack(source: str, commit: str, destination: str) -> i32!:
+    for byte in destination.bytes:
+        if byte == 0: error(invalid, "invalid checkout destination")
+    if destination.length == 0: error(invalid, "empty checkout destination")
+    var id: u8[20]
+    try git.decode_id(commit, id)
+    let filename = try strings.copy(source)
+    defer strings.release(filename)
+    let bytes = try files.read_limit((c.str)filename, 67108864)
+    defer free(bytes) in memory.heap
+    var pack = try git.decode_pack(bytes)
+    defer pack.close()
+    try materialize(&pack, id, destination)
+    try io.stdout().write("checked out source tree (release signature not verified)\n")
+    return 0
