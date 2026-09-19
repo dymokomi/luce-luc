@@ -21,6 +21,7 @@ import platform
 import process
 import strings
 import memory
+import pkg
 
 ## The luc version, kept in step with VERSION.
 pub let luc_version: str = "0.7.0"
@@ -313,6 +314,20 @@ func list_tasks(project: Project*) -> !:
         index += 1
 
 # mark: Dependencies ==========================================================================
+
+## Parse the entire pinned lock profile without changing the project or fetching.
+## This is structural validation, not release-signature or cache verification.
+func lock_command(project: Project*, own: str[], passthrough: str[]) -> i32!:
+    if own.length != 1 or own[0] != "--check" or passthrough.length != 0:
+        error(usage_error, "usage: luc lock --check")
+    discard(try require_manifest(project))
+    let filename = try strings.copy(try paths.join(project.root, "luc.lock"))
+    let contents = try files.read_limit((c.str)filename, 1048576)
+    defer free(contents) in memory.heap
+    var lock = try pkg.decode_lock((str)contents)
+    defer lock.close()
+    try io.stdout().write(f"valid luc.lock syntax: {lock.count} packages (signatures not verified)\n")
+    return 0
 
 ## `luc add <path>` (or `luc add <name> <path>`) records a local package dependency in
 ## luce.toml. The dependency's own luce.toml gives its name, which Base requires the key to
@@ -608,6 +623,8 @@ pub func main(arguments: c.str[]) -> i32!:
         if command == "update" or command == "upgrade":
             return try update_command(own)
         var project = try load_project()
+        if command == "lock":
+            return try lock_command(&project, own, passthrough)
         if command == "add":
             return try add_command(&project, own)
         if command == "remove":
@@ -644,6 +661,7 @@ func usage(out: io.Writer) -> !:
     try out.write("  init [opts]           scaffold a project in the current directory\n")
     try out.write("  add <path>            add a local package dependency to luce.toml\n")
     try out.write("  remove <name>         remove a dependency from luce.toml\n")
+    try out.write("  lock --check          validate luc.lock syntax without fetching or changing files\n")
     try out.write("  build [--release]     build the project into build/<name>\n")
     try out.write("  run [--release]       build and run the project\n")
     try out.write("  run <task>            run a named [tasks] workflow from luce.toml\n")

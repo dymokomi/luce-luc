@@ -5,6 +5,12 @@
 set -eu
 cd "$(dirname "$0")"
 mkdir -p build
+for dependency in PKG CRYPTO; do
+    case "$dependency" in PKG) repo=luce-pkg ;; CRYPTO) repo=luce-crypto ;; esac
+    expected=$(cat "bootstrap/$dependency")
+    actual=$(git -C "../$repo" rev-parse HEAD 2>/dev/null || true)
+    [ "$actual" = "$expected" ] || { echo "FAIL: ../$repo must be checked out at $expected"; exit 1; }
+done
 if [ -n "${LUCE_BASE_COMPILER:-}" ]; then
     case "$LUCE_BASE_COMPILER" in /*) base=$LUCE_BASE_COMPILER ;; *) base=$PWD/$LUCE_BASE_COMPILER ;; esac
     [ -x "$base" ] || { echo "FAIL: LUCE_BASE_COMPILER is not executable: $base"; exit 1; }

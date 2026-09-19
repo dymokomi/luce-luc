@@ -27,6 +27,18 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: luce-luc
+      - name: Check out pinned package dependencies
+        run: |
+          for dependency in PKG CRYPTO; do
+            case "$dependency" in PKG) repo=luce-pkg ;; CRYPTO) repo=luce-crypto ;; esac
+            revision=$(cat "bootstrap/$dependency")
+            [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            git init "../$repo"
+            git -C "../$repo" remote add origin "https://github.com/dymokomi/$repo.git"
+            git -C "../$repo" fetch --depth 1 origin "$revision"
+            git -C "../$repo" checkout --detach FETCH_HEAD
+            test "$(git -C "../$repo" rev-parse HEAD)" = "$revision"
+          done
       - name: Build the pinned Base compiler
         run: |
           revision=$(cat bootstrap/BASE)

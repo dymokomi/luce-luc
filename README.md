@@ -11,6 +11,7 @@ command to build, run, test and format a project and to run the workflows declar
 luc new <dir> [opts]      scaffold a new project (--package|--app, --luce|--luce-base)
 luc init [opts]           scaffold a project in the current directory
 luc add <path>            add a local package dependency to luce.toml
+luc lock --check          validate luc.lock syntax without fetching or changing files
 luc remove <name>         remove a dependency from luce.toml
 luc build [--release]     build the project into build/<name>
 luc run [--release]       build and run the project
@@ -55,6 +56,14 @@ target task through `"$@"`: `luc run ci -- --filter parse`. The build cache is t
 `build/.cache`, cleared by `rm -rf build`.
 
 ## Build and test
+
+Check out sibling `luce-pkg` and `luce-crypto` at `bootstrap/PKG` and
+`bootstrap/CRYPTO` before building. The build verifies their revisions. These
+native dependencies supply shared lock parsing and, for later remote integration,
+package cryptography. `luc lock --check` discovers the project from nested
+directories, reads at most 1 MiB, and rejects malformed restricted-v1 lockfiles.
+It does not verify signatures, compare the manifest, resolve packages or install
+anything; its success output explicitly states that signatures are not verified.
 
 `./build.sh` builds luc with the Base commit pinned in `bootstrap/BASE` (fetched into an
 isolated `build/luce-base`); `LUCE_BASE_COMPILER=/path/to/luce-base ./build.sh` uses an

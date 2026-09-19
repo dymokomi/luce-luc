@@ -1,3 +1,6 @@
 [package]
 name = "luc"
 language = "luce-base"
+
+[dependencies]
+luce_pkg = "../luce-pkg"
