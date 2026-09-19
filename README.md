@@ -15,6 +15,7 @@ luc lock --check          validate luc.lock syntax without fetching or changing 
 luc remote-refs <url>     list remote Git refs (loopback HTTP development transport)
 luc remote-fetch <url> <commit-id> <new-pack-path>  fetch a validated full Git pack
 luc checkout-pack <pack> <commit-id> <new-directory>  materialize source files
+luc checkout-release <metadata> <signature> <key> <pack> <new-directory> [--locked]
 luc remove <name>         remove a dependency from luce.toml
 luc build [--release]     build the project into build/<name>
 luc run [--release]       build and run the project
@@ -111,6 +112,17 @@ are explicitly unsupported pending their complete portability/security policy.
 Tests cover extracted bytes/modes, rejection and rollback, existing destinations,
 and building/running an extracted Luce Base project. The real-registry fixture
 compares native fetch-to-checkout files against a stock Git working tree.
+
+`checkout-release` gates the same materializer on native ML-DSA-65 release
+verification and the signed SHA-256 source digest. It selects the commit from
+signed LRS1 metadata, rather than a separate untrusted argument. Verification and
+checkout use the same retained source bytes, with no path reopening between them.
+`--locked` additionally requires the current restricted-v1 lock entry to match
+origin/package/version/digest/compiler before any publication. All checkout
+limits and filename restrictions still apply. The key is explicitly supplied and
+must already be trusted; publisher ownership, key distribution/revocation,
+freshness and toolchain/commit lock pins remain unfinished. This is not automatic
+dependency resolution or installation and does not establish registry-wide trust.
 
 Check out sibling `luce-pkg` and `luce-crypto` at `bootstrap/PKG` and
 `bootstrap/CRYPTO` before building. The build verifies their revisions. These

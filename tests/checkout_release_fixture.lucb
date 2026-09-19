@@ -1,0 +1,52 @@
+## Deterministic TEST ONLY signer. No production identity or credentials.
+import pkg
+import git
+import crypto_native
+import files
+import paths
+import strings
+import c
+import memory
+
+func write(root: str, name: str, bytes: const u8[]) -> !:
+    let path = try paths.join(root, name)
+    defer strings.release(path)
+    try files.write((c.str)path, bytes)
+
+pub func main(arguments: str[]) -> i32!:
+    assert(arguments.length == 2)
+    with memory.heap:
+        let root = arguments[1]
+        let commit = b"tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor A <a@b> 1 +0000\ncommitter A <a@b> 1 +0000\n\nsigned fixture\n"
+        var id: u8[20]
+        discard(try git.hash_object("commit", commit, id))
+        var encoded: u8[40]
+        discard(try git.hex_id(id, encoded))
+        var objects: git.Object[2]
+        objects[0] = git.Object(kind = "tree", payload = b"")
+        objects[1] = git.Object(kind = "commit", payload = commit)
+        var source: u8[4096]
+        let n = try git.encode_pack(objects, source)
+        var digest: u8[32]
+        discard(try pkg.source_digest(source[..<n], digest))
+        var seed: u8[32]
+        var key: u8[1952]
+        var secret: u8[4032]
+        defer crypto_native.wipe(secret)
+        try crypto_native.mldsa_keygen(seed, key, secret)
+        var wire: u8[1600]
+        var signature: u8[3309]
+        var random: u8[32]
+        var release = pkg.Release(origin = "https://pkg.luciaos.com", package = "acme/demo", version = "1.2.3", commit = (str)encoded, source_digest = digest, compiler = "luce-base", toolchain = "0.20.0")
+        let size = try pkg.encode_release(release, wire)
+        try crypto_native.mldsa_sign(secret, wire[..<size], random, signature)
+        try write(root, "metadata", wire[..<size])
+        try write(root, "signature", signature)
+        try write(root, "key", key)
+        try write(root, "source", source[..<n])
+        release.commit = "1111111111111111111111111111111111111111"
+        let wrong_size = try pkg.encode_release(release, wire)
+        try crypto_native.mldsa_sign(secret, wire[..<wrong_size], random, signature)
+        try write(root, "wrong-metadata", wire[..<wrong_size])
+        try write(root, "wrong-signature", signature)
+    return 0

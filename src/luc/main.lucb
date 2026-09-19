@@ -24,6 +24,7 @@ import memory
 import pkg
 import luc.remote as remote
 import luc.checkout as checkout
+import git
 
 ## The luc version, kept in step with VERSION.
 pub let luc_version: str = "0.7.0"
@@ -396,6 +397,35 @@ func verify_release_command(own: str[], passthrough: str[]) -> i32!:
     try io.stdout().write(f"verified {release.package}@{release.version} against supplied key (origin ownership not verified)\n")
     return 0
 
+## Verify and materialize the same retained source bytes: never reopen a path
+## between signature verification and checkout. Trust in the key is caller-supplied.
+func checkout_release_command(own: str[]) -> i32!:
+    let locked = own.length == 6 and own[5] == "--locked"
+    if own.length != 5 and not locked:
+        error(usage_error, "usage: luc checkout-release <metadata> <signature> <trusted-key> <pack> <new-directory> [--locked]")
+    let wire = try read_release_file(own[0], 1600)
+    defer free(wire) in memory.heap
+    let signature = try read_release_file(own[1], 3309)
+    defer free(signature) in memory.heap
+    let key = try read_release_file(own[2], 1952)
+    defer free(key) in memory.heap
+    let source = try read_release_file(own[3], 67108864)
+    defer free(source) in memory.heap
+    let release = try pkg.decode_release(wire)
+    if not try pkg.verify_release(release, key, signature, source):
+        error(usage_error, "release signature or source digest verification failed")
+    if locked: try require_locked_release(release)
+    var commit: u8[20]
+    try git.decode_id(release.commit, commit)
+    var pack = try git.decode_pack(source)
+    defer pack.close()
+    for byte in own[4].bytes:
+        if byte == 0: error(usage_error, "invalid checkout destination")
+    if own[4].length == 0: error(usage_error, "empty checkout destination")
+    try checkout.materialize(&pack, commit, own[4])
+    try io.stdout().write("checked out release verified against supplied key (origin ownership and freshness not verified)\n")
+    return 0
+
 ## Parse the entire pinned lock profile without changing the project or fetching.
 ## This is structural validation, not release-signature or cache verification.
 func lock_command(project: Project*, own: str[], passthrough: str[]) -> i32!:
@@ -710,6 +740,12 @@ pub func main(arguments: c.str[]) -> i32!:
         if command == "remote-refs":
             if arguments.length != 3: error(usage_error, "usage: luc remote-refs <loopback-git-url>")
             return try remote.refs((str)arguments[2])
+        if command == "checkout-release":
+            if arguments.length < 7 or arguments.length > 8:
+                error(usage_error, "usage: luc checkout-release <metadata> <signature> <trusted-key> <pack> <new-directory> [--locked]")
+            var words: str[6]
+            for index in 2..<arguments.length: words[index - 2] = (str)arguments[index]
+            return try checkout_release_command(words[..<arguments.length - 2])
         if command == "remote-fetch":
             if arguments.length != 5: error(usage_error, "usage: luc remote-fetch <loopback-git-url> <commit-id> <new-pack-path>")
             return try remote.fetch((str)arguments[2], (str)arguments[3], (str)arguments[4])
@@ -764,6 +800,7 @@ func usage(out: io.Writer) -> !:
     try out.write("  remote-refs <url>      list registry refs (loopback HTTP development transport)\n")
     try out.write("  remote-fetch <url> <commit> <new-pack-path>  fetch a validated full Git pack\n")
     try out.write("  checkout-pack <pack> <commit> <new-directory>  materialize validated source\n")
+    try out.write("  checkout-release <metadata> <signature> <key> <pack> <new-directory> [--locked]\n")
     try out.write("  verify-release <metadata> <signature> <trusted-key> <source> [--locked]\n")
     try out.write("                        verify local release bytes against a supplied ML-DSA-65 key\n")
     try out.write("  build [--release]     build the project into build/<name>\n")

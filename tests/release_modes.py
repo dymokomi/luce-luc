@@ -23,6 +23,8 @@ def run(command):
 
 fixture = out / 'fixture'
 run([base, 'build', 'tests/release_fixture.lucb', '--native', '-o', fixture])
+signed_fixture = out / 'checkout-release-fixture'
+run([base, 'build', 'tests/checkout_release_fixture.lucb', '--native', '-o', signed_fixture])
 modes = [(f'native{i}', ['--native', '--opt', str(i)]) for i in range(4)]
 modes += [('c', ['--backend=c']), ('c-release', ['--backend=c', '--release'])]
 for name, flags in modes:
@@ -32,6 +34,7 @@ for name, flags in modes:
     run([sys.executable, 'tests/remote.py', binary])
     run([sys.executable, 'tests/fetch.py', binary])
     run([sys.executable, 'tests/checkout.py', binary, base])
+    run([sys.executable, 'tests/checkout_release.py', binary, signed_fixture])
 runtime = ROOT.parent / 'luce-base/runtime'
 generated = out / 'sanitize.c'
 binary = out / 'sanitize'
@@ -45,4 +48,5 @@ run([sys.executable, 'tests/release.py', binary, fixture])
 run([sys.executable, 'tests/remote.py', binary])
 run([sys.executable, 'tests/fetch.py', binary])
 run([sys.executable, 'tests/checkout.py', binary, base])
+run([sys.executable, 'tests/checkout_release.py', binary, signed_fixture])
 print('PASS release verification: six compiler modes and ASan/UBSan', flush=True)
