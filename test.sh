@@ -8,7 +8,7 @@ base=${LUCE_BASE_COMPILER:-../luce-base/build/luce-base}
 [ -n "$base" ] && [ -x "$base" ] || { echo "FAIL: no luce-base compiler (set LUCE_BASE_COMPILER)"; exit 1; }
 LUCE_BASE_COMPILER="$base" ./build.sh > /dev/null
 luc="$PWD/build/luc"
-[ "$("$luc" --version)" = "luc 0.4.0" ] || { echo "FAIL: version"; exit 1; }
+[ "$("$luc" --version)" = "luc 0.5.0" ] || { echo "FAIL: version"; exit 1; }
 export LUCE_BASE="$base"
 # scaffolding: a new app builds and runs; a new package checks
 scaff="build/scaffold"
@@ -46,5 +46,10 @@ export LUCE_BASE="$base"
 # a task DAG: deps run first (once, in order) and args pass through to the target
 [ "$( cd "$work" && "$luc" run all -- X Y )" = "$(printf 'one\ntwo\ngot X Y')" ] || { echo "FAIL: task DAG / passthrough: got [$( cd "$work" && "$luc" run all -- X Y )]"; exit 1; }
 [ -d "$work/build/.cache" ] || { echo "FAIL: default cache is not project-local build/.cache"; exit 1; }
+# clean cache keeps the binary; a full clean removes build/
+( cd "$work" && "$luc" clean cache ) > /dev/null || { echo "FAIL: clean cache"; exit 1; }
+[ ! -d "$work/build/.cache" ] && [ -f "$work/build/hello" ] || { echo "FAIL: clean cache should drop the cache but keep the binary"; exit 1; }
+( cd "$work" && "$luc" clean ) > /dev/null || { echo "FAIL: clean"; exit 1; }
+[ ! -d "$work/build" ] || { echo "FAIL: clean should remove build/"; exit 1; }
 rm -rf "$work"
-echo "ok luc: new/init, add/remove, task DAG + passthrough, version, check, run, shell tasks, and a project-local cache"
+echo "ok luc: new/init, add/remove, task DAG, clean (+cache), version, check, run, and a project-local cache"

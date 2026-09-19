@@ -22,7 +22,7 @@ import strings
 import memory
 
 ## The luc version, kept in step with VERSION.
-pub let luc_version: str = "0.4.0"
+pub let luc_version: str = "0.5.0"
 
 ## A command-line or manifest problem the user can fix.
 pub let usage_error: ErrorCode = ErrorCode.package(1)
@@ -338,6 +338,23 @@ func remove_command(project: Project*, own: str[]) -> i32!:
     try io.stdout().write(f"removed dependency {name}\n")
     return 0
 
+## `luc clean` removes the project's build/ directory (binary and cache); `luc clean cache`
+## removes only build/.cache, keeping the built binary.
+func clean_command(project: Project*, own: str[]) -> i32!:
+    discard(try require_manifest(project))
+    var target = try paths.join(project.root, "build")
+    var label = "build"
+    if own.length > 0 and own[0] == "cache":
+        target = try paths.join(target, ".cache")
+        label = "build/.cache"
+    let terminated = try strings.copy(target)
+    if not files.exists((c.str)terminated):
+        try io.stdout().write(f"nothing to clean ({label} is not present)\n")
+        return 0
+    try files.remove_tree((c.str)terminated)
+    try io.stdout().write(f"removed {target}\n")
+    return 0
+
 ## This project's luce.toml, or a usage error when there is no project here.
 func require_manifest(project: Project*) -> str!:
     let manifest = try paths.join(project.root, "luce.toml")
@@ -544,6 +561,8 @@ pub func main(arguments: c.str[]) -> i32!:
             return try add_command(&project, own)
         if command == "remove":
             return try remove_command(&project, own)
+        if command == "clean":
+            return try clean_command(&project, own)
         if command == "build":
             return try build(&project, has(own, "--release"), passthrough)
         if command == "test":
@@ -580,5 +599,6 @@ func usage(out: io.Writer) -> !:
     try out.write("  test                  build and run the project's tests\n")
     try out.write("  check                 type-check without producing a binary\n")
     try out.write("  fmt [--check]         format the project's sources\n")
+    try out.write("  clean [cache]         remove build/ (or, with cache, only the build cache)\n")
     try out.write("  --version             print the luc version\n")
     try out.write("  help                  show this message\n")
