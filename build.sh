@@ -21,5 +21,6 @@ else
         (cd build/luce-base && ./build.sh > /dev/null)
     fi
 fi
-"$base" build src/luc/main.lucb --native -o build/luc
-echo "built build/luc"
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) out=build/luc.exe ;; *) out=build/luc ;; esac
+"$base" build src/luc/main.lucb --native -o "$out"
+echo "built $out"

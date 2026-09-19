@@ -6,6 +6,7 @@ cd "$(dirname "$0")"
 base=${LUCE_BASE_COMPILER:-../luce-base/build/luce-base}
 [ -x "$base" ] || base=$(command -v luce-base 2>/dev/null || true)
 [ -n "$base" ] && [ -x "$base" ] || { echo "FAIL: no luce-base compiler (set LUCE_BASE_COMPILER)"; exit 1; }
+case "$base" in /*) ;; *) base=$PWD/$base ;; esac   # absolute, so LUCE_BASE survives the cd into a scaffolded project
 LUCE_BASE_COMPILER="$base" ./build.sh > /dev/null
 luc="$PWD/build/luc"
 [ "$("$luc" --version)" = "luc 0.7.0" ] || { echo "FAIL: version"; exit 1; }
