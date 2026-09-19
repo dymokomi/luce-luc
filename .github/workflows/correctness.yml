@@ -1,0 +1,46 @@
+name: Correctness
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  gate:
+    name: Gate (${{ matrix.host }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15, host: arm64-macos }
+          - { runner: ubuntu-24.04, host: x86_64-linux }
+          - { runner: ubuntu-24.04-arm, host: arm64-linux }
+    defaults:
+      run:
+        shell: bash
+        working-directory: luce-luc
+    env:
+      CC: clang
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: luce-luc
+      - name: Build the pinned Base compiler
+        run: |
+          revision=$(cat bootstrap/BASE)
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo "Base revision must be a full commit SHA"; exit 1; }
+          git init ../luce-base
+          git -C ../luce-base remote add origin https://github.com/dymokomi/luce-base.git
+          git -C ../luce-base fetch --depth 1 origin "$revision"
+          git -C ../luce-base checkout --detach FETCH_HEAD
+          test "$(git -C ../luce-base rev-parse HEAD)" = "$revision"
+          (cd ../luce-base && ./build.sh)
+      - name: Select Clang for generated C
+        run: |
+          mkdir -p "$RUNNER_TEMP/luce-bin"
+          ln -s "$(command -v clang)" "$RUNNER_TEMP/luce-bin/cc"
+          echo "$RUNNER_TEMP/luce-bin" >> "$GITHUB_PATH"
+      - name: Run the gate
+        run: LUCE_BASE_COMPILER="$PWD/../luce-base/build/luce-base" ./test.sh
