@@ -48,8 +48,8 @@ cmd = "luc test"
 depends = ["lint"]                     # deps run first (a DAG: each once, topological)
 ```
 
-`luc run <name>` runs a `[tasks]` entry through the system shell, so `&&`, pipes and redirects
-work; `depends` run first (each at most once; a cycle is an error). Args after `--` pass to the
+`luc run <name>` runs a `[tasks]` entry through the host shell (`sh -c` on POSIX, `cmd /c` on
+Windows), so `&&`, pipes and redirects work; `depends` run first (each at most once; a cycle is an error). Args after `--` pass to the
 target task through `"$@"`: `luc run ci -- --filter parse`. The build cache is the project's own
 `build/.cache`, cleared by `rm -rf build`.
 
@@ -61,7 +61,7 @@ existing compiler instead. `./test.sh` runs the gate.
 
 ## Not yet (next slices)
 
-task input/output caching, a built-in cross-platform shell, workspaces, an ephemeral tool
+task input/output caching, workspaces, an ephemeral tool
 runner (`luc x`) and shell completions.
 
 ## License

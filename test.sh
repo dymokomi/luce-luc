@@ -8,7 +8,7 @@ base=${LUCE_BASE_COMPILER:-../luce-base/build/luce-base}
 [ -n "$base" ] && [ -x "$base" ] || { echo "FAIL: no luce-base compiler (set LUCE_BASE_COMPILER)"; exit 1; }
 LUCE_BASE_COMPILER="$base" ./build.sh > /dev/null
 luc="$PWD/build/luc"
-[ "$("$luc" --version)" = "luc 0.5.0" ] || { echo "FAIL: version"; exit 1; }
+[ "$("$luc" --version)" = "luc 0.6.0" ] || { echo "FAIL: version"; exit 1; }
 export LUCE_BASE="$base"
 # scaffolding: a new app builds and runs; a new package checks
 scaff="build/scaffold"

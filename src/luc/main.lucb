@@ -17,12 +17,13 @@ import io
 import os
 import files
 import paths
+import platform
 import process
 import strings
 import memory
 
 ## The luc version, kept in step with VERSION.
-pub let luc_version: str = "0.5.0"
+pub let luc_version: str = "0.6.0"
 
 ## A command-line or manifest problem the user can fix.
 pub let usage_error: ErrorCode = ErrorCode.package(1)
@@ -265,9 +266,16 @@ func run_graph(runner: Runner*, name: str, passthrough: str[], target: bool) -> 
     runner.done_count += 1
     return status
 
-## Run a task's command through the system shell (so `&&`, pipes and redirects work),
-## forwarding `args` as positional parameters through "$@".
+## Run a task's command through the host's shell (so `&&`, pipes and redirects work),
+## forwarding `args`. POSIX uses `sh -c`, Windows uses `cmd /c`, so tasks run on either.
 func run_command(command: str, args: str[]) -> i32!:
+    if platform.windows:
+        # cmd has no `$@`; append the arguments to the command line, space separated.
+        var windows: str[]
+        windows = try append(windows, "/c")
+        windows = try append(windows, try join_with(command, args))
+        return try spawn("cmd", windows)
+    # sh -c "<command> \"$@\"" sh <args>: the args become $1.. so "$@" forwards them.
     var script = command
     if args.length > 0:
         var buffer: u8[2048]
@@ -276,6 +284,12 @@ func run_command(command: str, args: str[]) -> i32!:
     for word in ["-c", script, "sh"]:
         argv = try append(argv, word)
     return try spawn("sh", try concat(argv, args))
+
+## `command` followed by each argument, space separated, as one command line.
+func join_with(command: str, args: str[]) -> str!:
+    var parts: str[]
+    parts = try append(parts, command)
+    return try strings.join(try concat(parts, args), " ")
 
 ## A two-word argument list as a slice (fixed-size literals do not coerce to `str[]`).
 func two(first: str, second: str) -> str[]!:
