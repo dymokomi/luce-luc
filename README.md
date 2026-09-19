@@ -12,6 +12,7 @@ luc new <dir> [opts]      scaffold a new project (--package|--app, --luce|--luce
 luc init [opts]           scaffold a project in the current directory
 luc add <path>            add a local package dependency to luce.toml
 luc lock --check          validate luc.lock syntax without fetching or changing files
+luc remote-refs <url>     list remote Git refs (loopback HTTP development transport)
 luc remove <name>         remove a dependency from luce.toml
 luc build [--release]     build the project into build/<name>
 luc run [--release]       build and run the project
@@ -56,6 +57,23 @@ target task through `"$@"`: `luc run ci -- --filter parse`. The build cache is t
 `build/.cache`, cleared by `rm -rf build`.
 
 ## Build and test
+
+`luc remote-refs http://127.0.0.1:<port>/git/<owner>/<name>` performs native
+authenticated upload-pack discovery without a project manifest or file writes.
+Set `LUCE_REGISTRY_TOKEN` to a disposable 32-character hex session token from the
+native test registry; it is never printed or accepted as a command-line argument.
+The command validates the complete bounded advertisement before printing any refs,
+including HEAD and peeled tags. Invalid responses produce no partial ref output.
+Only explicit numeric loopback HTTP is enabled: public HTTPS trust and credential
+vaults remain unfinished. This is not login, clone, installation or signature
+verification, and environment-token delivery is not a production custody solution.
+
+Build dependencies also include pinned siblings `luce-git`, `luce-compress`,
+`luce-http-client` and `luce-tls`; `build.sh` and CI check their exact revisions.
+The remote oracle runs in every compiler mode and under sanitizers via
+`tests/release_modes.py`. `tests/remote_registry.py` accepts built luc, registry,
+account-fixture and native-transfer binaries to exercise the actual sibling registry
+with disposable accounts; this larger cross-repository test is run separately.
 
 Check out sibling `luce-pkg` and `luce-crypto` at `bootstrap/PKG` and
 `bootstrap/CRYPTO` before building. The build verifies their revisions. These

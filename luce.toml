@@ -5,3 +5,5 @@ language = "luce-base"
 [dependencies]
 luce_pkg = "../luce-pkg"
 luce_crypto = "../luce-crypto"
+luce_git = "../luce-git"
+luce_http_client = "../luce-http-client"

@@ -22,6 +22,7 @@ import process
 import strings
 import memory
 import pkg
+import luc.remote as remote
 
 ## The luc version, kept in step with VERSION.
 pub let luc_version: str = "0.7.0"
@@ -705,6 +706,9 @@ pub func main(arguments: c.str[]) -> i32!:
                 words[index - 2] = (str)arguments[index]
             var no_passthrough: str[]
             return try verify_release_command(words[..<arguments.length - 2], no_passthrough)
+        if command == "remote-refs":
+            if arguments.length != 3: error(usage_error, "usage: luc remote-refs <loopback-git-url>")
+            return try remote.refs((str)arguments[2])
         let (own, passthrough) = try partition(arguments, 2)
         if command == "new" or command == "init":
             return try scaffold_command(command, own)
@@ -750,6 +754,7 @@ func usage(out: io.Writer) -> !:
     try out.write("  add <path>            add a local package dependency to luce.toml\n")
     try out.write("  remove <name>         remove a dependency from luce.toml\n")
     try out.write("  lock --check          validate luc.lock syntax without fetching or changing files\n")
+    try out.write("  remote-refs <url>      list registry refs (loopback HTTP development transport)\n")
     try out.write("  verify-release <metadata> <signature> <trusted-key> <source> [--locked]\n")
     try out.write("                        verify local release bytes against a supplied ML-DSA-65 key\n")
     try out.write("  build [--release]     build the project into build/<name>\n")

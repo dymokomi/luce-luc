@@ -29,6 +29,7 @@ for name, flags in modes:
     binary = out / name
     run([base, 'build', 'src/luc/main.lucb', *flags, '-o', binary])
     run([sys.executable, 'tests/release.py', binary, fixture])
+    run([sys.executable, 'tests/remote.py', binary])
 runtime = ROOT.parent / 'luce-base/runtime'
 generated = out / 'sanitize.c'
 binary = out / 'sanitize'
@@ -39,4 +40,5 @@ run([os.environ.get('CC', 'cc'), '-std=gnu11', '-O1', '-g', '-w',
 env['ASAN_OPTIONS'] = 'halt_on_error=1:abort_on_error=1'
 env['UBSAN_OPTIONS'] = 'halt_on_error=1:print_stacktrace=1'
 run([sys.executable, 'tests/release.py', binary, fixture])
+run([sys.executable, 'tests/remote.py', binary])
 print('PASS release verification: six compiler modes and ASan/UBSan', flush=True)

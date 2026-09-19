@@ -1,0 +1,109 @@
+## Development transport until general verified HTTPS is available.
+import http_client
+import git
+import net
+import os
+import c
+import strings
+import memory
+import io
+
+let invalid: ErrorCode = ErrorCode.package(2)
+
+func component(value: str, owner: bool) -> bool:
+    if value.length == 0 or value.length > (32 if owner else 64): return false
+    for i in 0..<value.length:
+        let byte = value.bytes[i]
+        let alnum = (byte >= 'a' and byte <= 'z') or (byte >= '0' and byte <= '9')
+        if not alnum and byte != '_' and (owner or byte != '-'): return false
+        if not owner and i == 0 and not alnum: return false
+    return true
+
+## Validate the complete advertisement before printing any untrusted server text.
+func advertisement(wire: const u8[], emit: bool) -> !:
+    let service = try git.decode_packet(wire)
+    if service.kind != git.PacketKind.data or (str)service.payload != "# service=git-upload-pack\n":
+        error(invalid, "invalid Git service advertisement")
+    var at = service.consumed
+    let separator = try git.decode_packet(wire[at..])
+    if separator.kind != git.PacketKind.flush: error(invalid, "missing Git service flush")
+    at += separator.consumed
+    var count: usize = 0
+    var empty = false
+    while at < wire.length:
+        let packet = try git.decode_packet(wire[at..])
+        at += packet.consumed
+        if packet.kind == git.PacketKind.flush:
+            if at != wire.length or count == 0: error(invalid, "invalid Git discovery end")
+            return
+        if packet.kind != git.PacketKind.data or count >= 2049 or empty:
+            error(invalid, "invalid Git discovery packet")
+        var line = packet.payload
+        if line.length > 0 and line[line.length - 1] == '\n': line = line[..<line.length - 1]
+        var end: usize = 0
+        while end < line.length and line[end] != 0: end += 1
+        if count == 0:
+            if end == line.length: error(invalid, "missing Git discovery capabilities")
+            if line.length - end - 1 > 4096: error(invalid, "Git discovery capabilities too large")
+            for i in end + 1..<line.length:
+                if line[i] < 32 or line[i] > 126: error(invalid, "invalid Git capability text")
+        elif end != line.length: error(invalid, "unexpected Git capability field")
+        if end < 42 or line[40] != ' ': error(invalid, "invalid advertised identity")
+        let identity = (str)line[..<40]
+        var id: u8[20]
+        try git.decode_id(identity, id)
+        let name = (str)line[41..<end]
+        var zero = true
+        for byte in id:
+            if byte != 0: zero = false
+        if zero:
+            if count != 0 or name != "capabilities^{}": error(invalid, "invalid null advertised identity")
+            empty = true
+        else:
+            var ref = name
+            if strings.ends_with(ref, "^{}"): ref = (str)ref.bytes[..<ref.length - 3]
+            if name != "HEAD" and not git.valid_ref(ref): error(invalid, "invalid advertised ref")
+            if emit: try io.stdout().write(f"{identity}\t{name}\n")
+        count += 1
+    error(invalid, "missing Git discovery flush")
+
+pub func refs(url: str) -> i32!:
+    let prefix = "http://127.0.0.1:"
+    if not strings.starts_with(url, prefix):
+        error(invalid, "remote-refs currently requires http://127.0.0.1:<port>/git/<owner>/<name>; public HTTPS pending")
+    var at = prefix.length
+    var port: usize = 0
+    let begin = at
+    while at < url.length and url.bytes[at] != '/':
+        let byte = url.bytes[at]
+        if byte < '0' or byte > '9' or at - begin >= 5: error(invalid, "invalid registry port")
+        port = port * 10 + (usize)(byte - '0')
+        at += 1
+    if at == begin or port == 0 or port > 65535 or at == url.length: error(invalid, "invalid registry port")
+    let path = (str)url.bytes[at..]
+    if not strings.starts_with(path, "/git/"): error(invalid, "invalid registry repository URL")
+    var split: usize = 5
+    while split < path.length and path.bytes[split] != '/': split += 1
+    if split == path.length: error(invalid, "missing registry package name")
+    if not component((str)path.bytes[5..<split], true) or not component((str)path.bytes[split + 1..], false):
+        error(invalid, "invalid registry owner or package name")
+    let token = os.env((c.str)"LUCE_REGISTRY_TOKEN") else error(invalid, "LUCE_REGISTRY_TOKEN is required")
+    if token.length != 32: error(invalid, "invalid registry session token")
+    for byte in token.bytes:
+        if not ((byte >= '0' and byte <= '9') or (byte >= 'a' and byte <= 'f')):
+            error(invalid, "invalid registry session token")
+    var target_buffer: u8[256]
+    let target = try format(target_buffer, f"{path}/info/refs?service=git-upload-pack")
+    var credential: u8[80]
+    let bearer = try format(credential, f"Bearer {token}")
+    var fields: net.HttpField[1]
+    fields[0] = net.HttpField(name = "Authorization", value = bearer)
+    let output = try alloc u8[4194304] in memory.heap
+    defer free(output) in memory.heap
+    var host_buffer: u8[32]
+    let host = try format(host_buffer, f"127.0.0.1:{port}")
+    let result = try http_client.request(net.SocketAddress.loopback((u16)port), "GET", target, host, fields, 1, b"", output)
+    if result.status != 200: error(invalid, "registry discovery request failed")
+    try advertisement(output[..<result.count], false)
+    try advertisement(output[..<result.count], true)
+    return 0

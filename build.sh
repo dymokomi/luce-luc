@@ -5,8 +5,8 @@
 set -eu
 cd "$(dirname "$0")"
 mkdir -p build
-for dependency in PKG CRYPTO; do
-    case "$dependency" in PKG) repo=luce-pkg ;; CRYPTO) repo=luce-crypto ;; esac
+for dependency in PKG CRYPTO GIT HTTP_CLIENT TLS COMPRESS; do
+    case "$dependency" in PKG) repo=luce-pkg ;; CRYPTO) repo=luce-crypto ;; GIT) repo=luce-git ;; HTTP_CLIENT) repo=luce-http-client ;; TLS) repo=luce-tls ;; COMPRESS) repo=luce-compress ;; esac
     expected=$(cat "bootstrap/$dependency")
     actual=$(git -C "../$repo" rev-parse HEAD 2>/dev/null || true)
     [ "$actual" = "$expected" ] || { echo "FAIL: ../$repo must be checked out at $expected"; exit 1; }

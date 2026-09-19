@@ -29,8 +29,8 @@ jobs:
           path: luce-luc
       - name: Check out pinned package dependencies
         run: |
-          for dependency in PKG CRYPTO; do
-            case "$dependency" in PKG) repo=luce-pkg ;; CRYPTO) repo=luce-crypto ;; esac
+          for dependency in PKG CRYPTO GIT HTTP_CLIENT TLS COMPRESS; do
+            case "$dependency" in PKG) repo=luce-pkg ;; CRYPTO) repo=luce-crypto ;; GIT) repo=luce-git ;; HTTP_CLIENT) repo=luce-http-client ;; TLS) repo=luce-tls ;; COMPRESS) repo=luce-compress ;; esac
             revision=$(cat "bootstrap/$dependency")
             [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || exit 1
             git init "../$repo"
