@@ -19,6 +19,7 @@ luc test                  build and run the project's tests
 luc check                 type-check without producing a binary
 luc fmt [--check]         format the project's sources
 luc clean [cache]         remove build/ (or, with cache, only the build cache)
+luc update | upgrade      reinstall the latest luc, luce-base and luce
 luc --version | help
 ```
 

@@ -8,7 +8,10 @@ base=${LUCE_BASE_COMPILER:-../luce-base/build/luce-base}
 [ -n "$base" ] && [ -x "$base" ] || { echo "FAIL: no luce-base compiler (set LUCE_BASE_COMPILER)"; exit 1; }
 LUCE_BASE_COMPILER="$base" ./build.sh > /dev/null
 luc="$PWD/build/luc"
-[ "$("$luc" --version)" = "luc 0.6.0" ] || { echo "FAIL: version"; exit 1; }
+[ "$("$luc" --version)" = "luc 0.7.0" ] || { echo "FAIL: version"; exit 1; }
+# update/upgrade name the official installers (dry-run so nothing is installed)
+[ "$("$luc" update --dry-run | head -1)" = "curl -fsSL https://luce-base.luciaos.com/install.sh | sh" ] || { echo "FAIL: update --dry-run"; exit 1; }
+[ "$("$luc" upgrade --dry-run | tail -1)" = "curl -fsSL https://luce.luciaos.com/install.sh | sh" ] || { echo "FAIL: upgrade alias"; exit 1; }
 export LUCE_BASE="$base"
 # scaffolding: a new app builds and runs; a new package checks
 scaff="build/scaffold"
@@ -52,4 +55,4 @@ export LUCE_BASE="$base"
 ( cd "$work" && "$luc" clean ) > /dev/null || { echo "FAIL: clean"; exit 1; }
 [ ! -d "$work/build" ] || { echo "FAIL: clean should remove build/"; exit 1; }
 rm -rf "$work"
-echo "ok luc: new/init, add/remove, task DAG, clean (+cache), version, check, run, and a project-local cache"
+echo "ok luc: new/init, add/remove, task DAG, clean, update, cross-platform tasks, and a project-local cache"

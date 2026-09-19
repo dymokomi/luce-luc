@@ -23,7 +23,7 @@ import strings
 import memory
 
 ## The luc version, kept in step with VERSION.
-pub let luc_version: str = "0.6.0"
+pub let luc_version: str = "0.7.0"
 
 ## A command-line or manifest problem the user can fix.
 pub let usage_error: ErrorCode = ErrorCode.package(1)
@@ -441,6 +441,41 @@ func toml_line(key: str, value: str) -> str!:
     var buffer: u8[1024]
     return try strings.copy(try format(buffer[0..], f"{key} = \"{value}\""))
 
+# mark: Updating the toolchain ================================================================
+
+## `luc update` (alias `upgrade`) reinstalls the latest luc + luce-base + luce by re-running
+## the official installers from luciaos.com. luc ships inside the luce-base release, so
+## updating luce-base updates luc too. `--dry-run` prints the commands without running them.
+func update_command(own: str[]) -> i32!:
+    let dry = has(own, "--dry-run")
+    var failed = false
+    for site in ["luce-base", "luce"]:
+        let command = try installer_command(site)
+        if dry:
+            try io.stdout().write(f"{command}\n")
+        else:
+            try io.stdout().write(f"==> updating {site} from https://{site}.luciaos.com\n")
+            if try run_shell(command) != 0:
+                try io.stderr().write(f"luc: updating {site} did not complete\n")
+                failed = true
+    return 1 if failed else 0
+
+## The one-line installer pipeline for a site: curl|sh on POSIX, irm|iex on Windows.
+func installer_command(site: str) -> str!:
+    var buffer: u8[512]
+    if platform.windows:
+        return try strings.copy(try format(buffer[0..], f"irm https://{site}.luciaos.com/install.ps1 | iex"))
+    return try strings.copy(try format(buffer[0..], f"curl -fsSL https://{site}.luciaos.com/install.sh | sh"))
+
+## Run a shell pipeline through the host shell.
+func run_shell(command: str) -> i32!:
+    if platform.windows:
+        var windows: str[]
+        for word in ["-NoProfile", "-Command", command]:
+            windows = try append(windows, word)
+        return try spawn("powershell", windows)
+    return try spawn("sh", try two("-c", command))
+
 # mark: Scaffolding ===========================================================================
 
 ## `luc new <path>` creates a project in a new directory; `luc init` in the current one.
@@ -570,6 +605,8 @@ pub func main(arguments: c.str[]) -> i32!:
         let (own, passthrough) = try partition(arguments, 2)
         if command == "new" or command == "init":
             return try scaffold_command(command, own)
+        if command == "update" or command == "upgrade":
+            return try update_command(own)
         var project = try load_project()
         if command == "add":
             return try add_command(&project, own)
@@ -614,5 +651,6 @@ func usage(out: io.Writer) -> !:
     try out.write("  check                 type-check without producing a binary\n")
     try out.write("  fmt [--check]         format the project's sources\n")
     try out.write("  clean [cache]         remove build/ (or, with cache, only the build cache)\n")
+    try out.write("  update | upgrade      reinstall the latest luc, luce-base and luce\n")
     try out.write("  --version             print the luc version\n")
     try out.write("  help                  show this message\n")
