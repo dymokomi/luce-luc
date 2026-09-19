@@ -22,7 +22,7 @@ import strings
 import memory
 
 ## The luc version, kept in step with VERSION.
-pub let luc_version: str = "0.1.0"
+pub let luc_version: str = "0.2.0"
 
 ## A command-line or manifest problem the user can fix.
 pub let usage_error: ErrorCode = ErrorCode.package(1)
@@ -50,13 +50,20 @@ struct Project:
             return try strings.copy(chosen)
         return try strings.copy("luce" if self.language == "luce" else "luce-base")
 
-    ## The entry source: the manifest's `entry`, else the conventional main for the language.
+    ## The entry source: the manifest's `entry`, else the conventional app main, else the
+    ## package's own library module (src/<name>/<name>.<ext>) so `check` works on a package.
     func entry_path() -> str!:
         if self.entry.length > 0:
             return try paths.join(self.root, self.entry)
-        if self.language == "luce":
-            return try first_existing(self.root, "src/main.luc", "main.luc")
-        return try first_existing(self.root, "src/main.lucb", "main.lucb")
+        let suffix = ".luc" if self.language == "luce" else ".lucb"
+        let main_name = try join_name("main", suffix)
+        let module = try paths.join(try paths.join("src", self.name), try join_name(self.name, suffix))
+        for relative in [try paths.join("src", main_name), main_name, module]:
+            let candidate = try paths.join(self.root, relative)
+            let terminated = try strings.copy(candidate)
+            if files.exists((c.str)terminated):
+                return candidate
+        error(usage_error, "no entry source found (expected src/main or src/<name>/<name>); set entry in luce.toml")
 
     func find_task(name: str) -> Task?:
         var index: usize = 0
@@ -65,15 +72,6 @@ struct Project:
                 return self.tasks[index]
             index += 1
         return none
-
-## The first of two candidate sources under `root` that exists, else a usage error.
-func first_existing(root: str, primary: str, fallback: str) -> str!:
-    for relative in [primary, fallback]:
-        let candidate = try paths.join(root, relative)
-        let terminated = try strings.copy(candidate)
-        if files.exists((c.str)terminated):
-            return candidate
-    error(usage_error, "no entry source found (expected src/main.lucb or src/main.luc); set entry in luce.toml")
 
 # mark: Loading luce.toml ======================================================================
 
@@ -206,6 +204,74 @@ func list_tasks(project: Project*) -> !:
         try io.stdout().write(f"  {project.tasks[index].name}\n")
         index += 1
 
+# mark: Scaffolding ===========================================================================
+
+## `luc new <path>` creates a project in a new directory; `luc init` in the current one.
+## Flags: --package (a library) or --app (default); --luce or --luce-base (default).
+func scaffold_command(command: str, own: str[]) -> i32!:
+    let is_package = has(own, "--package") or has(own, "--lib")
+    let language = "luce" if has(own, "--luce") else "luce-base"
+    var target = try os.cwd()
+    if command == "new":
+        var chosen = ""
+        for word in own:
+            if not strings.starts_with(word, "--"):
+                chosen = word
+        if chosen.length == 0:
+            error(usage_error, "luc new needs a path: luc new <dir>")
+        target = chosen
+    let name = paths.base(target)
+    if files.exists((c.str)try strings.copy(try paths.join(target, "luce.toml"))):
+        error(usage_error, "a luce.toml already exists here; refusing to overwrite it")
+    try scaffold(target, name, language, is_package)
+    let kind = "package" if is_package else "application"
+    try io.stdout().write(f"created {language} {kind} '{name}' in {target}\n")
+    return 0
+
+## Write the project's directories and starter files.
+func scaffold(target: str, name: str, language: str, is_package: bool) -> !:
+    try ensure_dir(target)
+    let source = try paths.join(target, "src")
+    try ensure_dir(source)
+    let suffix = ".luc" if language == "luce" else ".lucb"
+    try write_file(try paths.join(target, "luce.toml"), try manifest_source(name, language, is_package))
+    try write_file(try paths.join(target, ".gitignore"), "build/\n")
+    if is_package:
+        let module_dir = try paths.join(source, name)
+        try ensure_dir(module_dir)
+        try write_file(try paths.join(module_dir, try join_name(name, suffix)), try library_source(name, language))
+    else:
+        try write_file(try paths.join(source, try join_name("main", suffix)), try program_source(name, language))
+
+func ensure_dir(path: str) -> !:
+    let terminated = try strings.copy(path)
+    if not files.exists((c.str)terminated):
+        try files.create_directory((c.str)terminated)
+
+func write_file(path: str, content: str) -> !:
+    let terminated = try strings.copy(path)
+    try files.write((c.str)terminated, content.bytes)
+
+func join_name(stem: str, suffix: str) -> str!:
+    var buffer: u8[128]
+    return try strings.copy(try format(buffer[0..], f"{stem}{suffix}"))
+
+func manifest_source(name: str, language: str, is_package: bool) -> str!:
+    var buffer: u8[1024]
+    if is_package:
+        return try strings.copy(try format(buffer[0..], f"[package]\nname = \"{name}\"\nlanguage = \"{language}\"\n\n[exports]\n{name} = \"{name}.{name}\"\n"))
+    return try strings.copy(try format(buffer[0..], f"[package]\nname = \"{name}\"\nlanguage = \"{language}\"\n"))
+
+func program_source(name: str, language: str) -> str!:
+    var buffer: u8[512]
+    if language == "luce":
+        return try strings.copy(try format(buffer[0..], f"pub func main(arguments: list[str]) -> int!:\n    print(\"hello from {name}\")\n    return 0\n"))
+    return try strings.copy(try format(buffer[0..], f"pub func main(arguments: str[]) -> i32:\n    print(\"hello from {name}\")\n    return 0\n"))
+
+func library_source(name: str, language: str) -> str!:
+    var buffer: u8[512]
+    return try strings.copy(try format(buffer[0..], f"## The {name} package.\npub func greeting() -> str:\n    return \"hello from {name}\"\n"))
+
 # mark: The command line =======================================================================
 
 func append(items: str[], value: str) -> str[]!:
@@ -264,6 +330,8 @@ pub func main(arguments: c.str[]) -> i32!:
             try usage(io.stdout())
             return 0
         let (own, passthrough) = try partition(arguments, 2)
+        if command == "new" or command == "init":
+            return try scaffold_command(command, own)
         var project = try load_project()
         if command == "build":
             return try build(&project, has(own, "--release"), passthrough)
@@ -289,6 +357,8 @@ pub func main(arguments: c.str[]) -> i32!:
 
 func usage(out: io.Writer) -> !:
     try out.write("usage: luc <command> [options] [-- args]\n\n")
+    try out.write("  new <dir> [opts]      scaffold a new project (--package|--app, --luce|--luce-base)\n")
+    try out.write("  init [opts]           scaffold a project in the current directory\n")
     try out.write("  build [--release]     build the project into build/<name>\n")
     try out.write("  run [--release]       build and run the project\n")
     try out.write("  run <task>            run a named [tasks] workflow from luce.toml\n")
