@@ -1,0 +1,44 @@
+## Full-pack graph checks before publishing downloaded source objects.
+import git
+import crypto_native
+
+let invalid: ErrorCode = ErrorCode.package(3)
+
+func require(pack: git.Pack*, id: const u8[], kind: str, budget: usize*) -> !:
+    for item in pack.items:
+        if *budget == 0: error(invalid, "download graph work limit exceeded")
+        *budget -= 1
+        if crypto_native.equal(item.id, id):
+            if item.kind != kind: error(invalid, "download graph object type mismatch")
+            return
+    error(invalid, "download graph object is missing")
+
+func require_hex(pack: git.Pack*, text: str, kind: str, budget: usize*) -> !:
+    var id: u8[20]
+    try git.decode_id(text, id)
+    try require(pack, id, kind, budget)
+
+pub func validate(pack: git.Pack*, requested: const u8[]) -> !:
+    var budget: usize = 16777216
+    try require(pack, requested, "commit", &budget)
+    for i in 0..<pack.items.length:
+        let item = &pack.items[i]
+        for j in 0..<i:
+            if budget == 0: error(invalid, "download graph work limit exceeded")
+            budget -= 1
+            if crypto_native.equal(item.id, pack.items[j].id): error(invalid, "duplicate download object")
+        if item.kind == "tree":
+            discard(try git.validate_tree(item.payload))
+            var at: usize = 0
+            while at < item.payload.length:
+                let entry = try git.decode_tree_entry(item.payload[at..])
+                if entry.mode != "160000":
+                    try require(pack, entry.id, "tree" if entry.mode == "40000" else "blob", &budget)
+                at += entry.consumed
+        elif item.kind == "commit":
+            let commit = try git.decode_commit(item.payload)
+            try require_hex(pack, commit.tree, "tree", &budget)
+            for j in 0..<commit.parent_count: try require_hex(pack, try commit.parent(j), "commit", &budget)
+        elif item.kind == "tag":
+            let tag = try git.decode_tag(item.payload)
+            try require_hex(pack, tag.object, tag.kind, &budget)

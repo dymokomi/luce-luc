@@ -7,6 +7,10 @@ import c
 import strings
 import memory
 import io
+import files
+import paths
+import crypto_native
+import luc.pack_check as pack_check
 
 let invalid: ErrorCode = ErrorCode.package(2)
 
@@ -20,7 +24,8 @@ func component(value: str, owner: bool) -> bool:
     return true
 
 ## Validate the complete advertisement before printing any untrusted server text.
-func advertisement(wire: const u8[], emit: bool) -> !:
+func advertisement(wire: const u8[], emit: bool, wanted: const u8[]) -> bool!:
+    var found = false
     let service = try git.decode_packet(wire)
     if service.kind != git.PacketKind.data or (str)service.payload != "# service=git-upload-pack\n":
         error(invalid, "invalid Git service advertisement")
@@ -35,7 +40,7 @@ func advertisement(wire: const u8[], emit: bool) -> !:
         at += packet.consumed
         if packet.kind == git.PacketKind.flush:
             if at != wire.length or count == 0: error(invalid, "invalid Git discovery end")
-            return
+            return found
         if packet.kind != git.PacketKind.data or count >= 2049 or empty:
             error(invalid, "invalid Git discovery packet")
         var line = packet.payload
@@ -52,6 +57,7 @@ func advertisement(wire: const u8[], emit: bool) -> !:
         let identity = (str)line[..<40]
         var id: u8[20]
         try git.decode_id(identity, id)
+        if wanted.length == 20 and crypto_native.equal(id, wanted): found = true
         let name = (str)line[41..<end]
         var zero = true
         for byte in id:
@@ -68,6 +74,17 @@ func advertisement(wire: const u8[], emit: bool) -> !:
     error(invalid, "missing Git discovery flush")
 
 pub func refs(url: str) -> i32!:
+    return try run(url, "", "")
+
+pub func fetch(url: str, commit: str, destination: str) -> i32!:
+    if commit.length != 40 or destination.length == 0: error(invalid, "invalid fetch commit or destination")
+    for byte in destination.bytes:
+        if byte == 0: error(invalid, "invalid destination path")
+    return try run(url, commit, destination)
+
+func run(url: str, commit: str, destination: str) -> i32!:
+    var requested: u8[20]
+    if commit.length > 0: try git.decode_id(commit, requested)
     let prefix = "http://127.0.0.1:"
     if not strings.starts_with(url, prefix):
         error(invalid, "remote-refs currently requires http://127.0.0.1:<port>/git/<owner>/<name>; public HTTPS pending")
@@ -96,7 +113,7 @@ pub func refs(url: str) -> i32!:
     let target = try format(target_buffer, f"{path}/info/refs?service=git-upload-pack")
     var credential: u8[80]
     let bearer = try format(credential, f"Bearer {token}")
-    var fields: net.HttpField[1]
+    var fields: net.HttpField[2]
     fields[0] = net.HttpField(name = "Authorization", value = bearer)
     let output = try alloc u8[4194304] in memory.heap
     defer free(output) in memory.heap
@@ -104,6 +121,43 @@ pub func refs(url: str) -> i32!:
     let host = try format(host_buffer, f"127.0.0.1:{port}")
     let result = try http_client.request(net.SocketAddress.loopback((u16)port), "GET", target, host, fields, 1, b"", output)
     if result.status != 200: error(invalid, "registry discovery request failed")
-    try advertisement(output[..<result.count], false)
-    try advertisement(output[..<result.count], true)
+    if commit.length == 0:
+        discard(try advertisement(output[..<result.count], false, b""))
+        discard(try advertisement(output[..<result.count], true, b""))
+        return 0
+    if not try advertisement(output[..<result.count], false, requested): error(invalid, "requested commit is not advertised")
+    var encoded: u8[40]
+    discard(try git.hex_id(requested, encoded))
+    var line_buffer: u8[64]
+    let line = try format(line_buffer, f"want {(str)encoded}\n")
+    var request: u8[128]
+    var size = try git.encode_packet(git.PacketKind.data, line.bytes, request)
+    size += try git.encode_packet(git.PacketKind.flush, b"", request[size..])
+    size += try git.encode_packet(git.PacketKind.data, b"done\n", request[size..])
+    var fetch_target: u8[256]
+    let endpoint = try format(fetch_target, f"{path}/git-upload-pack")
+    fields[1] = net.HttpField(name = "Content-Type", value = "application/x-git-upload-pack-request")
+    let incoming = try alloc u8[67108864] in memory.heap
+    defer free(incoming) in memory.heap
+    let response = try http_client.request(net.SocketAddress.loopback((u16)port), "POST", endpoint, host, fields, 2, request[..<size], incoming)
+    if response.status != 200: error(invalid, "registry fetch request failed")
+    let acknowledgement = try git.decode_packet(incoming[..<response.count])
+    if acknowledgement.kind != git.PacketKind.data or (str)acknowledgement.payload != "NAK\n":
+        error(invalid, "invalid initial fetch acknowledgement")
+    let wire = incoming[acknowledgement.consumed..<response.count]
+    var pack = try git.decode_pack(wire)
+    defer pack.close()
+    try pack_check.validate(&pack, requested)
+    # No destination entry is created until all protocol and graph checks pass.
+    let filename = try strings.copy(destination)
+    defer strings.release(filename)
+    let directory = paths.directory(filename)
+    let parent = try strings.copy(directory if directory.length > 0 else ".")
+    defer strings.release(parent)
+    var temporary = try files.TemporaryFile.create((c.str)parent)
+    defer temporary.destroy()
+    try io.write_all(&temporary, wire)
+    try temporary.sync()
+    try temporary.publish((c.str)filename, replace = false)
+    try io.stdout().write("downloaded validated Git pack (release signature not verified)\n")
     return 0

@@ -13,6 +13,7 @@ luc init [opts]           scaffold a project in the current directory
 luc add <path>            add a local package dependency to luce.toml
 luc lock --check          validate luc.lock syntax without fetching or changing files
 luc remote-refs <url>     list remote Git refs (loopback HTTP development transport)
+luc remote-fetch <url> <commit-id> <new-pack-path>  fetch a validated full Git pack
 luc remove <name>         remove a dependency from luce.toml
 luc build [--release]     build the project into build/<name>
 luc run [--release]       build and run the project
@@ -74,6 +75,23 @@ The remote oracle runs in every compiler mode and under sanitizers via
 `tests/release_modes.py`. `tests/remote_registry.py` accepts built luc, registry,
 account-fixture and native-transfer binaries to exercise the actual sibling registry
 with disposable accounts; this larger cross-repository test is run separately.
+
+`luc remote-fetch <url> <commit-id> <new-pack-path>` uses the same loopback/token
+policy, requires the requested ID to be advertised, and performs native Git
+upload-pack negotiation without haves. It accepts a complete self-contained pack,
+checks its checksum, requires the requested object to be a commit, rejects duplicate
+objects, and validates all tree/commit/tag references and expected types. Gitlinks
+are external repositories and are not downloaded. Limits include 64 MiB response,
+the Git decoder's 4096 objects/64 MiB expansion bounds, and 16,777,216 graph-search
+comparisons. No extraction, checkout, dependency installation or release signature
+verification is implied by Git's SHA-1 object checks.
+
+Only after validation does it write a private temporary sibling, sync the file,
+and atomically publish without replacing any existing destination (including a
+symlink). Errors clean up that temporary; the parent directory is not fsynced, so
+power-loss durability is not promised. A caller must choose a trusted destination
+directory. This command is the pack-transfer primitive for later checkout/cache
+integration, not the finished package-install workflow.
 
 Check out sibling `luce-pkg` and `luce-crypto` at `bootstrap/PKG` and
 `bootstrap/CRYPTO` before building. The build verifies their revisions. These

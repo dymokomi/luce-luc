@@ -29,6 +29,15 @@ def check(port, headers, root, request):
     assert latest + b'\trefs/heads/main\n' in result.stdout
     assert b'\trefs/tags/nested-tag^{}\n' in result.stdout
     assert token.encode() not in result.stdout + result.stderr
+    output = root / 'luc-source.pack'
+    result = subprocess.run([str(luc), 'remote-fetch', url, latest.decode(), str(output)],
+                            cwd=root, env=env, capture_output=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    repo = root / 'git-clone'
+    subprocess.run(['git', '-C', str(repo), 'index-pack', '--stdin', '--strict'],
+                   input=output.read_bytes(), check=True, capture_output=True, timeout=30)
+    assert token.encode() not in result.stdout + result.stderr
+    print('PASS luc native remote fetch from registry, independently checked by stock Git', flush=True)
     print('PASS luc remote-refs against actual native authenticated registry', flush=True)
     return latest
 
