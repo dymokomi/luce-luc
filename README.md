@@ -117,18 +117,19 @@ compares native fetch-to-checkout files against a stock Git working tree.
 verification and the signed SHA-256 source digest. It selects the commit from
 signed LRS1 metadata, rather than a separate untrusted argument. Verification and
 checkout use the same retained source bytes, with no path reopening between them.
-`--locked` additionally requires the current restricted-v1 lock entry to match
+`--locked` additionally requires the current restricted lock entry to match
 origin/package/version/digest/compiler before any publication. All checkout
 limits and filename restrictions still apply. The key is explicitly supplied and
 must already be trusted; publisher ownership, key distribution/revocation,
-freshness and toolchain/commit lock pins remain unfinished. This is not automatic
+freshness remain unfinished. V2 also compares the signed commit and toolchain to
+the lock; v1 retains its weaker compatibility contract. This is not automatic
 dependency resolution or installation and does not establish registry-wide trust.
 
 Check out sibling `luce-pkg` and `luce-crypto` at `bootstrap/PKG` and
 `bootstrap/CRYPTO` before building. The build verifies their revisions. These
 native dependencies supply shared lock parsing and, for later remote integration,
 package cryptography. `luc lock --check` discovers the project from nested
-directories, reads at most 1 MiB, and rejects malformed restricted-v1 lockfiles.
+directories, reads at most 1 MiB, and rejects malformed restricted v1/v2 lockfiles.
 It does not verify signatures, compare the manifest, resolve packages or install
 anything; its success output explicitly states that signatures are not verified.
 
@@ -147,6 +148,10 @@ the lock. Project discovery walks upward from the current directory; input paths
 still refer to the current directory. Missing/malformed locks and mismatches fail
 without writes. Lock v1 does **not** pin a Git commit or toolchain version; this
 check does not claim those protections, freshness, or publisher authorization.
+Lock v2 requires `commit` (40 lowercase hex digits) and `toolchain` (numeric
+semantic version) on every package. Both `verify-release --locked` and
+`checkout-release --locked` enforce these against signed metadata. A version string
+does not yet pin the compiler executable's content; binary toolchain pinning remains.
 Tests generate deterministic **test-only** keys in a temporary directory and check
 tampering, truncation, extra bytes, missing files, argument errors and no writes.
 The macOS heap gate checks ordinary command exit status independently and requires

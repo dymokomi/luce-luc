@@ -55,6 +55,33 @@ def check(binary, fixture):
                 f'digest = "{digest}"\ncompiler = "luce-base"\n')
         (root / 'luc.lock').write_text(lock)
         run(True, flags=['--locked'])
+        # Independently recover the commit from the native writer's full pack.
+        metadata = (root / 'metadata').read_bytes()
+        import zlib
+        source = (root / 'source').read_bytes()
+        at = 12
+        commit_id = None
+        for _ in range(int.from_bytes(source[8:12], 'big')):
+            header = source[at]
+            kind = (header >> 4) & 7
+            at += 1
+            while header & 128:
+                header = source[at]
+                at += 1
+            decoder = zlib.decompressobj()
+            payload = decoder.decompress(source[at:-20])
+            assert decoder.eof
+            at = len(source) - 20 - len(decoder.unused_data)
+            if kind == 1:
+                commit_id = hashlib.sha1(b'commit ' + str(len(payload)).encode() + b'\0' + payload).hexdigest()
+        assert commit_id and commit_id.encode() in metadata
+        v2 = lock.replace('schema_version = 1', 'schema_version = 2') + f'commit = "{commit_id}"\ntoolchain = "0.20.0"\n'
+        (root / 'luc.lock').write_text(v2)
+        run(True, flags=['--locked'])
+        for bad in (v2.replace(commit_id, '1' * 40), v2.replace('0.20.0', '0.21.0'),
+                    v2.replace(f'commit = "{commit_id}"\n', ''), v2.replace('toolchain = "0.20.0"\n', '')):
+            (root / 'luc.lock').write_text(bad)
+            run(flags=['--locked'])
         for bad in (lock.replace('1.2.3', '1.2.4'), lock.replace(digest, '0' * 64),
                     lock.replace('acme/demo', 'other/demo'), lock.replace('luce-base', 'luce')):
             (root / 'luc.lock').write_text(bad)

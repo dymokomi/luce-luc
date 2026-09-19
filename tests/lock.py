@@ -34,7 +34,7 @@ with tempfile.TemporaryDirectory(prefix='luc-lock-') as temporary:
     for args in ((), ('--unknown',), ('--check', 'extra'), ('--check', '--', 'extra')):
         check(False, *args)
     for text in ('# origin = "spoof"\n',
-                 'schema_version = 2\norigin = "a"\n',
+                 'schema_version = 3\norigin = "a"\n',
                  'schema_version = 1\norigin = "a"\norigin = "b"\n',
                  'schema_version = 1\norigin = "a"\n[[package]]\n',
                  '#' * (1048576 + 1)):
