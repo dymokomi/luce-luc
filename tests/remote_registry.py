@@ -30,14 +30,25 @@ def check(port, headers, root, request):
     assert b'\trefs/tags/nested-tag^{}\n' in result.stdout
     assert token.encode() not in result.stdout + result.stderr
     output = root / 'luc-source.pack'
-    result = subprocess.run([str(luc), 'remote-fetch', url, latest.decode(), str(output)],
+    vault = root / 'luc-credential.vault'
+    password = b'disposable integration vault password'
+    stored = subprocess.run([str(luc), 'auth-store', f'http://127.0.0.1:{port}',
+                             'testuser', str(vault), '--secrets-stdin'],
+                            input=password + b'\n' + token.encode() + b'\n',
+                            cwd=root, env=env, capture_output=True, timeout=60)
+    assert stored.returncode == 0, stored.stderr
+    assert token.encode() not in stored.stdout + stored.stderr
+    assert vault.stat().st_mode & 0o777 == 0o600
+    env.pop('LUCE_REGISTRY_TOKEN')
+    result = subprocess.run([str(luc), 'remote-fetch', url, latest.decode(), str(output),
+                             '--vault', str(vault), '--password-stdin'], input=password + b'\n',
                             cwd=root, env=env, capture_output=True, timeout=60)
     assert result.returncode == 0, result.stderr
     repo = root / 'git-clone'
     subprocess.run(['git', '-C', str(repo), 'index-pack', '--stdin', '--strict'],
                    input=output.read_bytes(), check=True, capture_output=True, timeout=30)
     assert token.encode() not in result.stdout + result.stderr
-    print('PASS luc native remote fetch from registry, independently checked by stock Git', flush=True)
+    print('PASS luc encrypted-vault native remote fetch, independently checked by stock Git', flush=True)
     checkout = root / 'luc-checkout'
     result = subprocess.run([str(luc), 'checkout-pack', str(output), latest.decode(), str(checkout)],
                             cwd=root, env=env, capture_output=True, timeout=60)

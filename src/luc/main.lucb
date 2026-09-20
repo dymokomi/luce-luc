@@ -23,6 +23,7 @@ import strings
 import memory
 import pkg
 import luc.remote as remote
+import luc.credentials as credentials
 import luc.checkout as checkout
 import git
 
@@ -741,8 +742,15 @@ pub func main(arguments: c.str[]) -> i32!:
             var no_passthrough: str[]
             return try verify_release_command(words[..<arguments.length - 2], no_passthrough)
         if command == "remote-refs":
+            if arguments.length == 6 and (str)arguments[3] == "--vault" and (str)arguments[5] == "--password-stdin":
+                if ((str)arguments[4]).length == 0: error(usage_error, "vault path is required")
+                return try remote.refs((str)arguments[2], (str)arguments[4])
             if arguments.length != 3: error(usage_error, "usage: luc remote-refs <loopback-git-url>")
             return try remote.refs((str)arguments[2])
+        if command == "auth-store":
+            if arguments.length != 6 or (str)arguments[5] != "--secrets-stdin":
+                error(usage_error, "usage: luc auth-store <loopback-origin> <account> <new-vault> --secrets-stdin")
+            return try credentials.store((str)arguments[2], (str)arguments[3], (str)arguments[4])
         if command == "checkout-release":
             if arguments.length < 7 or arguments.length > 8:
                 error(usage_error, "usage: luc checkout-release <metadata> <signature> <trusted-key> <pack> <new-directory> [--locked]")
@@ -750,6 +758,9 @@ pub func main(arguments: c.str[]) -> i32!:
             for index in 2..<arguments.length: words[index - 2] = (str)arguments[index]
             return try checkout_release_command(words[..<arguments.length - 2])
         if command == "remote-fetch":
+            if arguments.length == 8 and (str)arguments[5] == "--vault" and (str)arguments[7] == "--password-stdin":
+                if ((str)arguments[6]).length == 0: error(usage_error, "vault path is required")
+                return try remote.fetch((str)arguments[2], (str)arguments[3], (str)arguments[4], (str)arguments[6])
             if arguments.length != 5: error(usage_error, "usage: luc remote-fetch <loopback-git-url> <commit-id> <new-pack-path>")
             return try remote.fetch((str)arguments[2], (str)arguments[3], (str)arguments[4])
         if command == "checkout-pack":
@@ -801,6 +812,8 @@ func usage(out: io.Writer) -> !:
     try out.write("  remove <name>         remove a dependency from luce.toml\n")
     try out.write("  lock --check          validate luc.lock syntax without fetching or changing files\n")
     try out.write("  remote-refs <url>      list registry refs (loopback HTTP development transport)\n")
+    try out.write("  auth-store <origin> <account> <new-vault> --secrets-stdin  encrypt a session token\n")
+    try out.write("  remote-refs/remote-fetch also accept --vault <path> --password-stdin\n")
     try out.write("  remote-fetch <url> <commit> <new-pack-path>  fetch a validated full Git pack\n")
     try out.write("  checkout-pack <pack> <commit> <new-directory>  materialize validated source\n")
     try out.write("  checkout-release <metadata> <signature> <key> <pack> <new-directory> [--locked]\n")

@@ -11,6 +11,7 @@ import files
 import paths
 import crypto_native
 import luc.pack_check as pack_check
+import luc.credentials as credentials
 
 let invalid: ErrorCode = ErrorCode.package(2)
 
@@ -73,16 +74,16 @@ func advertisement(wire: const u8[], emit: bool, wanted: const u8[]) -> bool!:
         count += 1
     error(invalid, "missing Git discovery flush")
 
-pub func refs(url: str) -> i32!:
-    return try run(url, "", "")
+pub func refs(url: str, vault_path: str = "") -> i32!:
+    return try run(url, "", "", vault_path)
 
-pub func fetch(url: str, commit: str, destination: str) -> i32!:
+pub func fetch(url: str, commit: str, destination: str, vault_path: str = "") -> i32!:
     if commit.length != 40 or destination.length == 0: error(invalid, "invalid fetch commit or destination")
     for byte in destination.bytes:
         if byte == 0: error(invalid, "invalid destination path")
-    return try run(url, commit, destination)
+    return try run(url, commit, destination, vault_path)
 
-func run(url: str, commit: str, destination: str) -> i32!:
+func run(url: str, commit: str, destination: str, vault_path: str) -> i32!:
     var requested: u8[20]
     if commit.length > 0: try git.decode_id(commit, requested)
     let prefix = "http://127.0.0.1:"
@@ -104,7 +105,14 @@ func run(url: str, commit: str, destination: str) -> i32!:
     if split == path.length: error(invalid, "missing registry package name")
     if not component((str)path.bytes[5..<split], true) or not component((str)path.bytes[split + 1..], false):
         error(invalid, "invalid registry owner or package name")
-    let token = os.env((c.str)"LUCE_REGISTRY_TOKEN") else error(invalid, "LUCE_REGISTRY_TOKEN is required")
+    var secret = crypto_native.Secret()
+    defer secret.close()
+    var token: str
+    if vault_path.length > 0:
+        secret = try credentials.load(vault_path, (str)url.bytes[..<at])
+        token = (str)try secret.bytes()
+    else:
+        token = os.env((c.str)"LUCE_REGISTRY_TOKEN") else error(invalid, "LUCE_REGISTRY_TOKEN is required")
     if token.length != 32: error(invalid, "invalid registry session token")
     for byte in token.bytes:
         if not ((byte >= '0' and byte <= '9') or (byte >= 'a' and byte <= 'f')):
@@ -112,6 +120,7 @@ func run(url: str, commit: str, destination: str) -> i32!:
     var target_buffer: u8[256]
     let target = try format(target_buffer, f"{path}/info/refs?service=git-upload-pack")
     var credential: u8[80]
+    defer crypto_native.wipe(credential)
     let bearer = try format(credential, f"Bearer {token}")
     var fields: net.HttpField[2]
     fields[0] = net.HttpField(name = "Authorization", value = bearer)

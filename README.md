@@ -67,12 +67,38 @@ Set `LUCE_REGISTRY_TOKEN` to a disposable 32-character hex session token from th
 native test registry; it is never printed or accepted as a command-line argument.
 The command validates the complete bounded advertisement before printing any refs,
 including HEAD and peeled tags. Invalid responses produce no partial ref output.
-Only explicit numeric loopback HTTP is enabled: public HTTPS trust and credential
-vaults remain unfinished. This is not login, clone, installation or signature
+Only explicit numeric loopback HTTP is enabled: public HTTPS trust remains
+unfinished. This is not login, clone, installation or signature
 verification, and environment-token delivery is not a production custody solution.
 
+Encrypted session-token storage is available for loopback development:
+
+```text
+luc auth-store <http://127.0.0.1:port> <account> <new-vault> --secrets-stdin
+luc remote-refs <git-url> --vault <vault> --password-stdin
+luc remote-fetch <git-url> <commit> <new-pack-path> --vault <vault> --password-stdin
+```
+
+`auth-store` reads exactly a password line, a 32-lowercase-hex token line, then
+EOF from a private pipe. Remote commands read one password line and EOF. Terminal
+stdin is refused so these commands cannot echo a password accidentally; interactive
+hidden-entry prompts remain unfinished. Do not put secrets in shell command text
+or history. No password environment variable or secret command argument is used.
+The parent directory must already be private, owned, trusted and stable. The
+native auth vault uses Argon2id/XChaCha20-Poly1305, mode0600 no-clobber publication,
+and authenticated reads. Optional vault flags take precedence over the legacy
+token environment variable; failure never falls back to it.
+
+The encrypted LUC1 payload is `LUC1\norigin\naccount\ntoken\n`. Origin must be exact
+`http://127.0.0.1:<nonzero-port>` without leading port zeroes or a trailing slash;
+it is checked before any HTTP request. Account names follow native auth syntax.
+The stored account label is not proof of server identity or account ownership.
+Wrong password, malformed vault or origin mismatch stops the request without
+exposing the token. This imports an existing session; it does not register or log
+in, renew expired tokens, rotate credentials, or support public HTTPS yet.
+
 Build dependencies also include pinned siblings `luce-git`, `luce-compress`,
-`luce-http-client` and `luce-tls`; `build.sh` and CI check their exact revisions.
+`luce-http-client`, `luce-tls`, `luce-auth` and `luce-prism`; `build.sh` and CI check their exact revisions.
 The remote oracle runs in every compiler mode and under sanitizers via
 `tests/release_modes.py`. `tests/remote_registry.py` accepts built luc, registry,
 account-fixture and native-transfer binaries to exercise the actual sibling registry
