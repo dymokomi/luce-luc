@@ -18,17 +18,9 @@ original = git_http.check
 
 
 def check(port, headers, root, request):
-    latest = original(port, headers, root, request)
     token = headers['Authorization'].removeprefix('Bearer ')
     env = dict(os.environ, LUCE_REGISTRY_TOKEN=token)
     url = f'http://127.0.0.1:{port}/git/testuser/git-wire'
-    result = subprocess.run([str(luc), 'remote-refs', url], cwd=root, env=env,
-                            capture_output=True, timeout=40)
-    assert result.returncode == 0, result.stderr
-    assert latest + b'\tHEAD\n' in result.stdout
-    assert latest + b'\trefs/heads/main\n' in result.stdout
-    assert b'\trefs/tags/nested-tag^{}\n' in result.stdout
-    assert token.encode() not in result.stdout + result.stderr
     output = root / 'luc-source.pack'
     vault = root / 'luc-credential.vault'
     password = b'disposable integration vault password'
@@ -40,6 +32,21 @@ def check(port, headers, root, request):
     assert token.encode() not in stored.stdout + stored.stderr
     assert vault.stat().st_mode & 0o777 == 0o600
     env.pop('LUCE_REGISTRY_TOKEN')
+    def create_repository(name):
+        created = subprocess.run([str(luc), 'repo-create', f'http://127.0.0.1:{port}', name,
+                                  '--vault', str(vault), '--password-stdin'], input=password + b'\n',
+                                 cwd=root, env=env, capture_output=True, timeout=60)
+        assert created.returncode == 0, created.stderr
+        assert token.encode() not in created.stdout + created.stderr
+        print('PASS luc vault-authenticated native repository creation', flush=True)
+    latest = original(port, headers, root, request, create_repository=create_repository)
+    result = subprocess.run([str(luc), 'remote-refs', url, '--vault', str(vault), '--password-stdin'],
+                            input=password + b'\n', cwd=root, env=env, capture_output=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert latest + b'\tHEAD\n' in result.stdout
+    assert latest + b'\trefs/heads/main\n' in result.stdout
+    assert b'\trefs/tags/nested-tag^{}\n' in result.stdout
+    assert token.encode() not in result.stdout + result.stderr
     result = subprocess.run([str(luc), 'remote-fetch', url, latest.decode(), str(output),
                              '--vault', str(vault), '--password-stdin'], input=password + b'\n',
                             cwd=root, env=env, capture_output=True, timeout=60)

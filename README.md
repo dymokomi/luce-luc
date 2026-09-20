@@ -77,6 +77,7 @@ Encrypted session-token storage is available for loopback development:
 luc auth-store <http://127.0.0.1:port> <account> <new-vault> --secrets-stdin
 luc login <http://127.0.0.1:port> <account> <new-vault> --passwords-stdin
 luc register <http://127.0.0.1:port> <account> --secrets-stdin
+luc repo-create <http://127.0.0.1:port> <name> --vault <vault> --password-stdin
 luc remote-refs <git-url> --vault <vault> --password-stdin
 luc remote-fetch <git-url> <commit> <new-pack-path> --vault <vault> --password-stdin
 ```
@@ -110,6 +111,14 @@ automatically log in, retry, or undo registration: a dropped response may leave
 an account created and its invitation consumed. Check account state/login before
 retrying an ambiguous failure. Invitation issuance remains an administrator-side
 operation; no public invitation creation endpoint is introduced.
+
+`repo-create` decrypts the origin-bound vault and posts only the repository name
+to `/v1/repositories`; the server assigns ownership from the authenticated
+session. Names are 1–64 lowercase letters/digits/underscore/hyphen and start with
+a letter or digit. It writes no local files, does not initialize a Git working
+tree or configure a remote, and does not publish a signed package release.
+Conflicts and other non-success responses fail without automatic retry; an
+ambiguous network failure may mean the remote repository was created.
 
 The encrypted LUC1 payload is `LUC1\norigin\naccount\ntoken\n`. Origin must be exact
 `http://127.0.0.1:<nonzero-port>` without leading port zeroes or a trailing slash;

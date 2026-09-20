@@ -759,6 +759,10 @@ pub func main(arguments: c.str[]) -> i32!:
             if arguments.length != 5 or (str)arguments[4] != "--secrets-stdin":
                 error(usage_error, "usage: luc register <loopback-origin> <account> --secrets-stdin")
             return try credentials.register((str)arguments[2], (str)arguments[3])
+        if command == "repo-create":
+            if arguments.length != 7 or (str)arguments[4] != "--vault" or (str)arguments[6] != "--password-stdin":
+                error(usage_error, "usage: luc repo-create <loopback-origin> <name> --vault <path> --password-stdin")
+            return try credentials.create_repository((str)arguments[2], (str)arguments[3], (str)arguments[5])
         if command == "checkout-release":
             if arguments.length < 7 or arguments.length > 8:
                 error(usage_error, "usage: luc checkout-release <metadata> <signature> <trusted-key> <pack> <new-directory> [--locked]")
@@ -823,6 +827,7 @@ func usage(out: io.Writer) -> !:
     try out.write("  auth-store <origin> <account> <new-vault> --secrets-stdin  encrypt a session token\n")
     try out.write("  login <origin> <account> <new-vault> --passwords-stdin  log in and encrypt the session\n")
     try out.write("  register <origin> <account> --secrets-stdin  redeem an invitation\n")
+    try out.write("  repo-create <origin> <name> --vault <path> --password-stdin  create a remote repository\n")
     try out.write("  remote-refs/remote-fetch also accept --vault <path> --password-stdin\n")
     try out.write("  remote-fetch <url> <commit> <new-pack-path>  fetch a validated full Git pack\n")
     try out.write("  checkout-pack <pack> <commit> <new-directory>  materialize validated source\n")
