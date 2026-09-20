@@ -25,6 +25,7 @@ import pkg
 import luc.remote as remote
 import luc.release_upload as release_upload
 import luc.release_download as release_download
+import luc.pack_check as pack_check
 import luc.catalog as catalog
 import luc.graph_lock as graph_lock
 import luc.locked_release as locked_release
@@ -35,7 +36,7 @@ import git
 import crypto_native
 
 ## The luc version, kept in step with VERSION.
-pub let luc_version: str = "0.10.0"
+pub let luc_version: str = "0.11.0"
 
 ## A command-line or manifest problem the user can fix.
 pub let usage_error: ErrorCode = ErrorCode.package(1)
@@ -924,6 +925,67 @@ func has(words: str[], flag: str) -> bool:
             return true
     return false
 
+func require_new_publish_artifact(destination: str) -> !:
+    if destination.length == 0 or destination.length > 4096: error(usage_error, "invalid artifact destination")
+    for byte in destination.bytes:
+        if byte == 0: error(usage_error, "invalid artifact destination")
+    let basename = paths.base(destination)
+    if basename.length == 0 or basename == "." or basename == "..": error(usage_error, "invalid artifact filename")
+    let filename = try strings.copy(destination)
+    defer strings.release(filename)
+    var exists = true
+    discard(files.metadata((c.str)filename, follow_symlinks = false) catch failure:
+        if failure.code != files.missing: error(failure.code, failure.message)
+        exists = false
+        recover files.Metadata())
+    if exists: error(usage_error, "artifact destination already exists")
+
+## Publish one exact commit already advertised by the registry. Metadata is
+## derived from that remote graph's root luce.toml, never the working tree.
+func publish_command(origin: str, package: str, version: str, commit: str,
+                     toolchain: str, artifact: str, session_vault: str,
+                     key_vault: str) -> i32!:
+    try release_download.validate_request(origin, package, version)
+    discard(try pkg.parse_version(toolchain))
+    var requested: u8[20]
+    try git.decode_id(commit, requested)
+    try require_new_publish_artifact(artifact)
+    var split: usize = 0
+    while split < package.length and package.bytes[split] != '/': split += 1
+    if split == 0 or split == package.length: error(usage_error, "invalid package identity")
+    let account = (str)package.bytes[..<split]
+    var incoming: u8[2051]
+    defer crypto_native.wipe(incoming)
+    let (session_password, key_password) = try credentials.password_pair(incoming)
+    var session = try credentials.load_password(session_vault, session_password, origin, account)
+    defer session.close()
+    var seed = try credentials.signing_seed_password(key_vault, key_password, origin, account)
+    defer seed.close()
+    var url_buffer: u8[384]
+    let url = try format(url_buffer, f"{origin}/git/{package}")
+    let source_storage = try alloc u8[67108864] in memory.heap
+    defer free(source_storage) in memory.heap
+    let source_size = try remote.fetch_into(url, commit, try session.bytes(), source_storage)
+    let source = source_storage[..<source_size]
+    var pack = try git.decode_pack(source)
+    defer pack.close()
+    let manifest_bytes = try pack_check.root_manifest(&pack, requested)
+    var manifest = try pkg.decode_manifest((str)manifest_bytes)
+    defer manifest.close()
+    var dependencies: pkg.Dependency[128]
+    for i in 0..<manifest.dependency_count: dependencies[i] = try manifest.dependency_at(i)
+    var digest: u8[32]
+    discard(try pkg.source_digest(source, digest))
+    let release = pkg.Release(origin = origin, package = package, version = version,
+        commit = commit, source_digest = digest, compiler = manifest.language,
+        toolchain = toolchain)
+    var metadata: u8[24576]
+    let metadata_size = try pkg.encode_release_v2(release, manifest.name,
+        dependencies[..<manifest.dependency_count], manifest.dependency_count, metadata)
+    discard(try release_upload.sign_seed(metadata[..<metadata_size], source,
+        artifact, try seed.bytes()))
+    return try release_upload.upload_session(origin, artifact, try session.bytes())
+
 pub func main(arguments: c.str[]) -> i32!:
     with memory.heap:
         if arguments.length < 2:
@@ -986,6 +1048,11 @@ pub func main(arguments: c.str[]) -> i32!:
             if arguments.length != 7 or (str)arguments[4] != "--vault" or (str)arguments[6] != "--password-stdin":
                 error(usage_error, "usage: luc release-upload|release-check <origin> <artifact> --vault <session> --password-stdin")
             return try release_upload.upload((str)arguments[2], (str)arguments[3], (str)arguments[5], check_only = command == "release-check")
+        if command == "publish":
+            if arguments.length != 13 or (str)arguments[8] != "--vault" or (str)arguments[10] != "--key-vault" or (str)arguments[12] != "--passwords-stdin":
+                error(usage_error, "usage: luc publish <origin> <owner/package> <version> <commit> <toolchain> <new-artifact> --vault <session> --key-vault <key> --passwords-stdin")
+            return try publish_command((str)arguments[2], (str)arguments[3], (str)arguments[4],
+                (str)arguments[5], (str)arguments[6], (str)arguments[7], (str)arguments[9], (str)arguments[11])
         if command == "release-sign":
             if arguments.length != 8 or (str)arguments[5] != "--key-vault" or (str)arguments[7] != "--password-stdin":
                 error(usage_error, "usage: luc release-sign <metadata> <pack> <new-upload> --key-vault <key-vault> --password-stdin")
@@ -1092,6 +1159,7 @@ func usage(out: io.Writer) -> !:
     try out.write("  auth-store <origin> <account> <new-vault> --secrets-stdin  encrypt a session token\n")
     try out.write("  release-sign <metadata> <pack> <new-upload> --key-vault <key> --password-stdin  save signed LRP1 artifact\n")
     try out.write("  release-upload|release-check <origin> <artifact> --vault <session> --password-stdin  publish or reconcile exact release bytes\n")
+    try out.write("  publish <origin> <owner/package> <version> <commit> <toolchain> <new-artifact> --vault <session> --key-vault <key> --passwords-stdin\n")
     try out.write("  release-download <origin> <owner/package> <version> <new-directory> --trusted-key <key> --vault <session> --password-stdin [--locked]\n")
     try out.write("  key-create <origin> <account> <new-key-vault> --password-stdin  save an encrypted signing seed\n")
     try out.write("  key-enroll <origin> <account> --vault <session> --key-vault <key> --passwords-stdin  enroll signing key\n")

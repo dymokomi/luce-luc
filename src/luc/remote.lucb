@@ -89,6 +89,63 @@ pub func fetch(url: str, commit: str, destination: str, vault_path: str = "") ->
         if byte == 0: error(invalid, "invalid destination path")
     return try run(url, commit, destination, vault_path)
 
+## Fetch one advertised commit into caller-owned bounded storage using an
+## already-unlocked session. The exact returned prefix is a validated full pack.
+pub func fetch_into(url: str, commit: str, session: const u8[], incoming: u8[]) -> usize!:
+    # The HTTP transport's 64 MiB response limit includes Git framing.
+    if commit.length != 40 or incoming.length < 67108864: error(invalid, "invalid fetch input")
+    var requested: u8[20]
+    try git.decode_id(commit, requested)
+    let at = try registry.url_origin_length(url)
+    let origin = (str)url.bytes[..<at]
+    let path = (str)url.bytes[at..]
+    if not strings.starts_with(path, "/git/"): error(invalid, "invalid registry repository URL")
+    var split: usize = 5
+    while split < path.length and path.bytes[split] != '/': split += 1
+    if split == path.length: error(invalid, "missing registry package name")
+    let owner = (str)path.bytes[5..<split]
+    let repository = (str)path.bytes[split + 1..]
+    if not component(owner, true) or not component(repository, false):
+        error(invalid, "invalid registry owner or package name")
+    var scoped = try credentials.issue_credential(session, origin, repository, "git:read")
+    defer scoped.close()
+    let token = try scoped.bytes()
+    defer credentials.revoke_quiet(session, origin, token)
+    var authorization_buffer: u8[160]
+    defer crypto_native.wipe(authorization_buffer)
+    let authorization = try credentials.basic_authorization(owner, token, authorization_buffer)
+    var target_buffer: u8[256]
+    let target = try format(target_buffer, f"{path}/info/refs?service=git-upload-pack")
+    let discovery = try alloc u8[4194304] in memory.heap
+    defer free(discovery) in memory.heap
+    let advertised = try registry.request(origin, "GET", target, authorization, "", b"", discovery)
+    if advertised.status != 200: error(invalid, "registry discovery request failed")
+    if not try advertisement(discovery[..<advertised.count], false, requested):
+        error(invalid, "requested commit is not advertised")
+    var encoded: u8[40]
+    discard(try git.hex_id(requested, encoded))
+    var line_buffer: u8[64]
+    let line = try format(line_buffer, f"want {(str)encoded}\n")
+    var request: u8[128]
+    var size = try git.encode_packet(git.PacketKind.data, line.bytes, request)
+    size += try git.encode_packet(git.PacketKind.flush, b"", request[size..])
+    size += try git.encode_packet(git.PacketKind.data, b"done\n", request[size..])
+    var fetch_target: u8[256]
+    let endpoint = try format(fetch_target, f"{path}/git-upload-pack")
+    let response = try registry.request(origin, "POST", endpoint, authorization,
+        "application/x-git-upload-pack-request", request[..<size], incoming)
+    if response.status != 200: error(invalid, "registry fetch request failed")
+    let acknowledgement = try git.decode_packet(incoming[..<response.count])
+    if acknowledgement.kind != git.PacketKind.data or (str)acknowledgement.payload != "NAK\n":
+        error(invalid, "invalid initial fetch acknowledgement")
+    let wire = incoming[acknowledgement.consumed..<response.count]
+    var pack = try git.decode_pack(wire)
+    defer pack.close()
+    try pack_check.validate(&pack, requested)
+    let pack_size = wire.length
+    for i in 0..<pack_size: incoming[i] = wire[i]
+    return pack_size
+
 func run(url: str, commit: str, destination: str, vault_path: str) -> i32!:
     var requested: u8[20]
     if commit.length > 0: try git.decode_id(commit, requested)

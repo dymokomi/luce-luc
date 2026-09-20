@@ -15,11 +15,31 @@ import c
 let invalid: ErrorCode = ErrorCode.package(6)
 let max_artifact: usize = 67108864 + pkg.max_release_metadata + 3309 + 8
 
-## Explicit origin prevents an artifact from choosing the credential destination.
-## Check-only performs GETs exclusively; upload never retries a POST implicitly.
-pub func upload(origin: str, artifact_path: str, vault_path: str, check_only: bool = false) -> i32!:
-    let artifact = try read(artifact_path, max_artifact)
-    defer free(artifact) in memory.heap
+struct Artifact:
+    var metadata: const u8[]
+    var signature: const u8[]
+    var source: const u8[]
+    var release: pkg.Release
+    var account: str
+    var name: str
+
+func package_parts(package: str) -> (str, str)!:
+    var split: usize = 0
+    while split < package.length and package.bytes[split] != '/': split += 1
+    if split == 0 or split > 32 or split == package.length: error(invalid, "invalid package identity")
+    let account = (str)package.bytes[..<split]
+    let name = (str)package.bytes[split + 1..]
+    if name.length == 0 or name.length > 64: error(invalid, "invalid package identity")
+    for byte in account.bytes:
+        if not ((byte >= 'a' and byte <= 'z') or (byte >= '0' and byte <= '9') or byte == '_'):
+            error(invalid, "invalid package owner")
+    for i in 0..<name.length:
+        let byte = name.bytes[i]
+        let alnum = (byte >= 'a' and byte <= 'z') or (byte >= '0' and byte <= '9')
+        if not alnum and (i == 0 or (byte != '_' and byte != '-')): error(invalid, "invalid package name")
+    return (account, name)
+
+func decode_artifact(origin: str, artifact: const u8[]) -> Artifact!:
     if artifact.length < 3367 or (str)artifact[..<4] != "LRP1" or artifact[6] != 0 or artifact[7] != 0:
         error(invalid, "invalid release upload envelope")
     let size = (usize)artifact[4] + ((usize)artifact[5] << 8)
@@ -32,38 +52,45 @@ pub func upload(origin: str, artifact_path: str, vault_path: str, check_only: bo
     let release = try pkg.decode_release(metadata)
     if release.origin != origin: error(invalid, "release origin mismatch")
     discard(try pkg.parse_version(release.toolchain))
-    var split: usize = 0
-    while split < release.package.length and release.package.bytes[split] != '/': split += 1
-    if split == 0 or split == release.package.length: error(invalid, "invalid package identity")
-    let account = (str)release.package.bytes[..<split]
-    let name = (str)release.package.bytes[split + 1..]
-    if account.length > 32 or name.length == 0 or name.length > 64: error(invalid, "invalid package identity")
-    for byte in account.bytes:
-        if not ((byte >= 'a' and byte <= 'z') or (byte >= '0' and byte <= '9') or byte == '_'):
-            error(invalid, "invalid package owner")
-    for i in 0..<name.length:
-        let byte = name.bytes[i]
-        let alnum = (byte >= 'a' and byte <= 'z') or (byte >= '0' and byte <= '9')
-        if not alnum and (i == 0 or (byte != '_' and byte != '-')): error(invalid, "invalid package name")
-    # The encrypted vault holds only the interactive session. It is used to
-    # read the enrolled key and mint a bounded publication credential; package
-    # endpoints never receive the session token.
-    var session = try credentials.load(vault_path, origin, account)
+    let (account, name) = try package_parts(release.package)
+    return Artifact(metadata = metadata, signature = signature, source = source,
+        release = release, account = account, name = name)
+
+## Explicit origin prevents an artifact from choosing the credential destination.
+## Check-only performs GETs exclusively; upload never retries a POST implicitly.
+pub func upload(origin: str, artifact_path: str, vault_path: str, check_only: bool = false) -> i32!:
+    let artifact = try read(artifact_path, max_artifact)
+    defer free(artifact) in memory.heap
+    let decoded = try decode_artifact(origin, artifact)
+    var session = try credentials.load(vault_path, origin, decoded.account)
     defer session.close()
-    let session_bytes = try session.bytes()
+    return try upload_session_bytes(origin, artifact, decoded, try session.bytes(), check_only)
+
+## Publish/reconcile one saved artifact with an already-unlocked session.
+pub func upload_session(origin: str, artifact_path: str, session: const u8[], check_only: bool = false) -> i32!:
+    let artifact = try read(artifact_path, max_artifact)
+    defer free(artifact) in memory.heap
+    let decoded = try decode_artifact(origin, artifact)
+    return try upload_session_bytes(origin, artifact, decoded, session, check_only)
+
+func upload_session_bytes(origin: str, artifact: const u8[], decoded: Artifact,
+                          session_bytes: const u8[], check_only: bool) -> i32!:
+    # The interactive session reads the enrolled key and mints a bounded
+    # publication credential; package endpoints never receive the session.
     var session_bearer_buffer: u8[48]
     defer crypto.wipe(session_bearer_buffer)
     let session_bearer = try format(session_bearer_buffer, f"Bearer {(str)session_bytes}")
     var key: u8[1952]
     let identity = try registry.request(origin, "GET", "/v1/identity/key", session_bearer, "", b"", key)
     if identity.status != 200 or identity.count != key.length: error(invalid, "cannot read enrolled signing key")
-    if not try pkg.verify_release(release, key, signature, source): error(invalid, "artifact does not verify against enrolled key")
+    if not try pkg.verify_release(decoded.release, key, decoded.signature, decoded.source):
+        error(invalid, "artifact does not verify against enrolled key")
     var requested: u8[20]
-    try git.decode_id(release.commit, requested)
-    var pack = try git.decode_pack(source)
+    try git.decode_id(decoded.release.commit, requested)
+    var pack = try git.decode_pack(decoded.source)
     defer pack.close()
     try pack_check.validate(&pack, requested)
-    var token = try credentials.issue_credential(session_bytes, origin, name, "package:publish")
+    var token = try credentials.issue_credential(session_bytes, origin, decoded.name, "package:publish")
     defer token.close()
     let token_bytes = try token.bytes()
     defer credentials.revoke_quiet(session_bytes, origin, token_bytes)
@@ -71,7 +98,7 @@ pub func upload(origin: str, artifact_path: str, vault_path: str, check_only: bo
     defer crypto.wipe(bearer_buffer)
     let bearer = try format(bearer_buffer, f"Bearer {(str)token_bytes}")
     var endpoint_buffer: u8[256]
-    let endpoint = try format(endpoint_buffer, f"/v1/releases/{release.package}")
+    let endpoint = try format(endpoint_buffer, f"/v1/releases/{decoded.release.package}")
     if not check_only:
         var response: u8[128]
         let result = registry.request(origin, "POST", endpoint, bearer, "application/octet-stream", artifact, response) catch:
@@ -82,9 +109,9 @@ pub func upload(origin: str, artifact_path: str, vault_path: str, check_only: bo
     defer free(output) in memory.heap
     for part in ["metadata", "signature", "source"]:
         var path_buffer: u8[384]
-        let path = try format(path_buffer, f"{endpoint}/{release.version}/{part}")
+        let path = try format(path_buffer, f"{endpoint}/{decoded.release.version}/{part}")
         let result = try registry.request(origin, "GET", path, bearer, "", b"", output)
-        let expected = metadata if part == "metadata" else (signature if part == "signature" else source)
+        let expected = decoded.metadata if part == "metadata" else (decoded.signature if part == "signature" else decoded.source)
         if result.status != 200 or not crypto.equal(output[..<result.count], expected):
             error(invalid, "release readback not confirmed; retain artifact for reconciliation")
     try io.stdout().write("Confirmed exact signed release bytes in registry.\n")
@@ -96,6 +123,19 @@ func read(path: str, maximum: usize) -> u8[]!:
     return try files.read_limit((c.str)name, maximum)
 
 pub func sign(metadata_path: str, source_path: str, destination: str, vault_path: str) -> i32!:
+    let metadata = try read(metadata_path, pkg.max_release_metadata)
+    defer free(metadata) in memory.heap
+    let release = try pkg.decode_release(metadata)
+    let (account, _) = try package_parts(release.package)
+    let source = try read(source_path, 67108864)
+    defer free(source) in memory.heap
+    var seed = try credentials.signing_seed(vault_path, release.origin, account)
+    defer seed.close()
+    return try sign_seed(metadata, source, destination, try seed.bytes())
+
+## Sign exact in-memory LRS metadata/source with an already-unlocked seed and
+## durably publish one immutable LRP1 artifact.
+pub func sign_seed(metadata: const u8[], source: const u8[], destination: str, seed: const u8[]) -> i32!:
     if destination.length == 0 or destination.length > 4096: error(invalid, "invalid artifact destination")
     for byte in destination.bytes:
         if byte == 0: error(invalid, "invalid artifact destination")
@@ -109,22 +149,10 @@ pub func sign(metadata_path: str, source_path: str, destination: str, vault_path
         exists = false
         recover files.Metadata())
     if exists: error(invalid, "artifact destination already exists")
-    let metadata = try read(metadata_path, pkg.max_release_metadata)
-    defer free(metadata) in memory.heap
     let release = try pkg.decode_release(metadata)
     discard(try pkg.parse_version(release.toolchain))
-    var split: usize = 0
-    while split < release.package.length and release.package.bytes[split] != '/': split += 1
-    if split == 0 or split == release.package.length: error(invalid, "release requires owner/package identity")
-    let account = (str)release.package.bytes[..<split]
-    let name = (str)release.package.bytes[split + 1..]
-    if name.length == 0 or name.length > 64: error(invalid, "invalid release package name")
-    for i in 0..<name.length:
-        let byte = name.bytes[i]
-        let alnum = (byte >= 'a' and byte <= 'z') or (byte >= '0' and byte <= '9')
-        if not alnum and (i == 0 or (byte != '_' and byte != '-')): error(invalid, "invalid release package name")
-    let source = try read(source_path, 67108864)
-    defer free(source) in memory.heap
+    discard(try package_parts(release.package))
+    if source.length > 67108864: error(invalid, "release source too large")
     var digest: u8[32]
     discard(try pkg.source_digest(source, digest))
     if not crypto.equal(digest, release.source_digest): error(invalid, "release source digest mismatch")
@@ -133,12 +161,11 @@ pub func sign(metadata_path: str, source_path: str, destination: str, vault_path
     var pack = try git.decode_pack(source)
     defer pack.close()
     try pack_check.validate(&pack, requested)
-    var seed = try credentials.signing_seed(vault_path, release.origin, account)
-    defer seed.close()
+    if seed.length != 32: error(invalid, "invalid signing seed")
     var key: u8[1952]
     var secret: u8[4032]
     defer crypto.wipe(secret)
-    try crypto.mldsa_keygen(try seed.bytes(), key, secret)
+    try crypto.mldsa_keygen(seed, key, secret)
     var randomness = try crypto.random_secret(32)
     defer randomness.close()
     var signature: u8[3309]

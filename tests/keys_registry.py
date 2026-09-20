@@ -103,9 +103,9 @@ with tempfile.TemporaryDirectory(prefix='luc-key-registry-', dir='/tmp') as temp
                 status, token = request('POST', '/v1/sessions', json.dumps({'name': 'testadmin', 'password': 'fixture-password'}))
                 assert status == 200
                 headers = {'Authorization': 'Bearer ' + token.decode(), 'Content-Type': 'application/octet-stream'}
-                def scoped(scope):
+                def scoped(scope, repository='signed-account'):
                     status, value = request('POST', '/v1/credentials', json.dumps({
-                        'scope': scope, 'repository': 'signed-account', 'lifetime_seconds': 3600,
+                        'scope': scope, 'repository': repository, 'lifetime_seconds': 3600,
                     }).encode(), {'Authorization': 'Bearer ' + token.decode(), 'Content-Type': 'application/json'})
                     assert status == 201 and len(value) == 64
                     return {'Authorization': 'Bearer ' + value.decode()}
@@ -164,6 +164,89 @@ with tempfile.TemporaryDirectory(prefix='luc-key-registry-', dir='/tmp') as temp
                 assert (root / 'downloaded').is_dir() and not list((root / 'downloaded').iterdir())
                 assert artifact.read_bytes() == upload and key.read_bytes() == before
                 print('PASS luc vault-signed artifact accepted by native registry; exact retry, catalog selection and verified downloads', flush=True)
+
+                # The integrated publisher consumes the exact already-pushed
+                # remote commit, derives LRS2 from its manifest, preserves one
+                # immutable artifact and confirms exact registry readback.
+                command(['repo-create', origin, 'publish-e2e', '--vault', session,
+                         '--password-stdin'], b'vault-password\n')
+                git_headers = scoped('git:write', 'publish-e2e')
+                git_token = git_headers['Authorization'].removeprefix('Bearer ')
+                source_repo = root / 'publish-source'
+                source_repo.mkdir()
+                askpass = root / 'publish-askpass.sh'
+                askpass.write_text('#!/bin/sh\ncase "$1" in\n  *Username*) printf "%s\\n" "$LUCE_GIT_USERNAME" ;;\n  *Password*) printf "%s\\n" "$LUCE_GIT_TOKEN" ;;\n  *) exit 1 ;;\nesac\n')
+                askpass.chmod(0o700)
+                git_env = dict(os.environ, GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+                               GIT_TERMINAL_PROMPT='0', GIT_ASKPASS=str(askpass),
+                               LUCE_GIT_USERNAME='testadmin', LUCE_GIT_TOKEN=git_token,
+                               GIT_AUTHOR_NAME='Publisher Fixture', GIT_AUTHOR_EMAIL='publisher@example.test',
+                               GIT_COMMITTER_NAME='Publisher Fixture', GIT_COMMITTER_EMAIL='publisher@example.test')
+                def run_git(*args, input=None):
+                    result = subprocess.run(['git', '-C', str(source_repo), *args], input=input,
+                                            env=git_env, capture_output=True, timeout=90)
+                    assert result.returncode == 0, (args, result.stderr)
+                    return result.stdout
+                run_git('init', '--object-format=sha1', '-b', 'main', '-q')
+                (source_repo / 'luce.toml').write_text('''[package]
+name = "publish_e2e"
+language = "luce-base"
+
+[registry.dependencies]
+"testadmin/core" = "^1.0.0"
+"testadmin/render-kit" = "2.1.0"
+''')
+                (source_repo / 'main.lucb').write_text('pub let published = 1\n')
+                run_git('add', 'luce.toml', 'main.lucb')
+                run_git('commit', '-qm', 'publish exact remote source')
+                publish_commit = run_git('rev-parse', 'HEAD').strip().decode()
+                remote_url = origin + '/git/testadmin/publish-e2e'
+                run_git('remote', 'add', 'origin', remote_url)
+                run_git('push', 'origin', 'main')
+                assert git_token.encode() not in (source_repo / '.git/config').read_bytes()
+                # A dirty working tree must not influence signed source metadata.
+                with (source_repo / 'luce.toml').open('a') as manifest_file:
+                    manifest_file.write('\n# not in the published commit\n')
+                published_artifact = root / 'publish-e2e.lrp1'
+                publish_command = ['publish', origin, 'testadmin/publish-e2e', '2.0.0',
+                                   publish_commit, '0.20.0', published_artifact,
+                                   '--vault', session, '--key-vault', key, '--passwords-stdin']
+                combined_passwords = b'vault-password\nsigning-password\n'
+                result = command(publish_command, combined_passwords)
+                assert b'Confirmed exact signed release bytes' in result.stdout
+                published = published_artifact.read_bytes()
+                assert published_artifact.stat().st_mode & 0o777 == 0o600
+                assert published[:4] == b'LRP1' and published[6:8] == b'\0\0'
+                metadata_size = int.from_bytes(published[4:6], 'little')
+                published_metadata = published[8:8 + metadata_size]
+                assert published_metadata[:6] == b'LRS2\2\0'
+                values, metadata_at = [], 6
+                for _ in range(7):
+                    field_size = int.from_bytes(published_metadata[metadata_at:metadata_at + 2], 'little')
+                    metadata_at += 2
+                    values.append(published_metadata[metadata_at:metadata_at + field_size])
+                    metadata_at += field_size
+                assert values == [origin.encode(), b'testadmin/publish-e2e', b'2.0.0',
+                                  publish_commit.encode(), b'luce-base', b'0.20.0', b'publish_e2e']
+                assert int.from_bytes(published_metadata[metadata_at + 32:metadata_at + 34], 'little') == 2
+                publish_endpoint = '/v1/releases/testadmin/publish-e2e/2.0.0/'
+                publish_read_headers = scoped('package:read', 'publish-e2e')
+                for part, expected in (
+                    ('metadata', published_metadata),
+                    ('signature', published[8 + metadata_size:3317 + metadata_size]),
+                    ('source', published[3317 + metadata_size:]),
+                ):
+                    assert request('GET', publish_endpoint + part, headers=publish_read_headers) == (200, expected)
+                # Existing artifact fails before replacement or re-signing.
+                result = command(publish_command, combined_passwords, False)
+                assert b'artifact destination already exists' in result.stderr
+                assert published_artifact.read_bytes() == published
+                command(['release-check', origin, published_artifact, '--vault', session,
+                         '--password-stdin'], b'vault-password\n')
+                command(['release-upload', origin, published_artifact, '--vault', session,
+                         '--password-stdin'], b'vault-password\n')
+                assert published_artifact.read_bytes() == published and key.read_bytes() == before
+                print('PASS luc publish derives LRS2 from exact remote commit, preserves artifact and confirms immutable retry', flush=True)
         finally:
             stop(process)
 print('PASS native luc encrypted signing key -> registry ML-DSA enrollment, replay and restart', flush=True)

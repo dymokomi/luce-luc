@@ -4,14 +4,17 @@ import crypto_native
 
 let invalid: ErrorCode = ErrorCode.package(3)
 
-func require(pack: git.Pack*, id: const u8[], kind: str, budget: usize*) -> !:
-    for item in pack.items:
+func lookup(pack: git.Pack*, id: const u8[], kind: str, budget: usize*) -> git.PackItem*!:
+    for i in 0..<pack.items.length:
         if *budget == 0: error(invalid, "download graph work limit exceeded")
         *budget -= 1
-        if crypto_native.equal(item.id, id):
-            if item.kind != kind: error(invalid, "download graph object type mismatch")
-            return
+        if crypto_native.equal(pack.items[i].id, id):
+            if pack.items[i].kind != kind: error(invalid, "download graph object type mismatch")
+            return &pack.items[i]
     error(invalid, "download graph object is missing")
+
+func require(pack: git.Pack*, id: const u8[], kind: str, budget: usize*) -> !:
+    discard(try lookup(pack, id, kind, budget))
 
 func require_hex(pack: git.Pack*, text: str, kind: str, budget: usize*) -> !:
     var id: u8[20]
@@ -42,3 +45,25 @@ pub func validate(pack: git.Pack*, requested: const u8[]) -> !:
         elif item.kind == "tag":
             let tag = try git.decode_tag(item.payload)
             try require_hex(pack, tag.object, tag.kind, &budget)
+
+## Return the exact regular root luce.toml selected by `requested`. The view
+## borrows the decoded pack and is suitable for canonical LRS2 construction.
+pub func root_manifest(pack: git.Pack*, requested: const u8[]) -> const u8[]!:
+    try validate(pack, requested)
+    var budget: usize = 16777216
+    let commit_item = try lookup(pack, requested, "commit", &budget)
+    let commit = try git.decode_commit(commit_item.payload)
+    var tree_id: u8[20]
+    try git.decode_id(commit.tree, tree_id)
+    let tree = try lookup(pack, tree_id, "tree", &budget)
+    var at: usize = 0
+    while at < tree.payload.length:
+        let entry = try git.decode_tree_entry(tree.payload[at..])
+        if entry.name == "luce.toml":
+            if entry.mode != "100644": error(invalid, "release manifest must be a regular file")
+            let blob = try lookup(pack, entry.id, "blob", &budget)
+            if blob.payload.length == 0 or blob.payload.length > 1048576:
+                error(invalid, "release manifest size outside bounds")
+            return blob.payload
+        at += entry.consumed
+    error(invalid, "release commit has no root luce.toml")

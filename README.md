@@ -21,6 +21,7 @@ luc remote-refs <url>     list remote Git refs (verified production HTTPS or loo
 luc remote-fetch <url> <commit-id> <new-pack-path>  fetch a validated full Git pack
 luc checkout-pack <pack> <commit-id> <new-directory>  materialize source files
 luc checkout-release <metadata> <signature> <key> <pack> <new-directory> [--locked]
+luc publish <origin> <owner/package> <version> <commit> <toolchain> <new-artifact> --vault <session> --key-vault <key> --passwords-stdin
 luc remove <name>         remove a dependency from luce.toml
 luc build [--release]     build the project into build/<name>
 luc run [--release]       build and run the project
@@ -94,6 +95,7 @@ luc key-check <origin> <account> --vault <session-vault> --key-vault <key-vault>
 luc release-sign <metadata> <pack> <new-upload> --key-vault <key-vault> --password-stdin
 luc release-upload <origin> <artifact> --vault <session-vault> --password-stdin
 luc release-check <origin> <artifact> --vault <session-vault> --password-stdin
+luc publish <origin> <owner/package> <version> <commit> <toolchain> <new-artifact> --vault <session-vault> --key-vault <key-vault> --passwords-stdin
 luc release-download <origin> <owner/package> <version> <new-directory> --trusted-key <key> --vault <session-vault> --password-stdin [--locked]
 luc remote-refs <git-url> --vault <vault> --password-stdin
 luc remote-fetch <git-url> <commit> <new-pack-path> --vault <vault> --password-stdin
@@ -190,7 +192,8 @@ artifact for retries: re-signing produces a different signature, which conflicts
 with an already published immutable version. No network request, key enrollment,
 registry commit upload, release upload or automatic retry is performed here.
 It validates pack graph structure, not checkout path portability or project build
-correctness. Metadata generation and `luc publish` remain separate work.
+correctness. The lower-level command remains useful for offline custody and
+explicitly prepared metadata; `luc publish` provides the integrated path below.
 
 `release-upload` consumes that saved artifact and an explicit matching origin.
 It unlocks an origin/account-bound session vault from one password line plus EOF,
@@ -208,9 +211,22 @@ These commands use verified production HTTPS or canonical loopback HTTP. The enr
 from the authenticated registry, not an independent publisher trust source; this
 is publication reconciliation, not public package discovery or trust bootstrap.
 The repository and signed commit must already exist remotely. Release uploads
-are bounded to64MiB source plus envelope; readback loads source in memory. There
-is no automatic retry, metadata generation or dependency
-installation here. Publisher trust provisioning remains separate.
+are bounded to 64 MiB source plus envelope; readback loads source in memory. The
+lower-level upload does not generate metadata or install dependencies. Publisher
+trust provisioning remains separate.
+
+`publish` is the safe end-to-end convenience path. It reads the session-vault
+password followed by the signing-key-vault password and EOF from a private pipe.
+The named commit must already be advertised by the package's registry Git remote.
+luc mints a short-lived `git:read` credential, fetches and validates the complete
+commit graph, and derives package name, compiler and canonical registry dependency
+declarations from that commit's regular root `luce.toml`—never from a mutable
+working tree. It constructs LRS2 metadata for the explicit version and numeric
+toolchain version, saves a new mode-0600 signed LRP1 artifact, then publishes and
+reads back the exact bytes with a separate short-lived `package:publish`
+credential. The artifact destination is checked before any network work and is
+never replaced. If upload or readback is uncertain, the signed artifact remains;
+use `release-check` and, only if absent, `release-upload` with those exact bytes.
 
 `versions` unlocks the encrypted session vault, mints a bounded `package:read`
 credential for the exact repository, and fetches its LPV1 catalog. It validates the complete canonical,
