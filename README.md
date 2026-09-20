@@ -84,6 +84,7 @@ luc key-check <http://127.0.0.1:port> <account> --vault <session-vault> --key-va
 luc release-sign <metadata> <pack> <new-upload> --key-vault <key-vault> --password-stdin
 luc release-upload <origin> <artifact> --vault <session-vault> --password-stdin
 luc release-check <origin> <artifact> --vault <session-vault> --password-stdin
+luc release-download <origin> <owner/package> <version> <new-directory> --trusted-key <key> --vault <session-vault> --password-stdin [--locked]
 luc remote-refs <git-url> --vault <vault> --password-stdin
 luc remote-fetch <git-url> <commit> <new-pack-path> --vault <vault> --password-stdin
 ```
@@ -190,6 +191,20 @@ The repository and signed commit must already exist remotely. Release uploads
 are bounded to64MiB source plus envelope; readback loads source in memory. There
 is no automatic retry, version selection, metadata generation or dependency
 installation here. Public verified HTTPS remains pending.
+
+`release-download` fetches an exact release into a new source directory. Supply
+an independently trusted1952-byte ML-DSA-65 publisher key; the command never
+accepts a key fetched from the registry as trust. It checks the requested origin,
+package and version, verifies signed metadata before fetching source, verifies
+the source digest, then validates and materializes the signed Git commit through
+the same no-clobber checkout path as `checkout-release`. `--locked` also requires
+the existing project lock to match (v2 includes commit/toolchain pins). Signature,
+digest, identity or lock failure creates no checkout. Existing destinations are
+never replaced; checkout path restrictions still apply. No project manifest or
+lock is edited, no build runs, and this is not yet dependency installation/cache.
+Caller-supplied trust does not establish freshness or key ownership automatically.
+The current endpoint is owner-authenticated and loopback-only, not public catalog
+access; production HTTPS and publisher trust provisioning remain pending.
 
 The encrypted LUC1 payload is `LUC1\norigin\naccount\ntoken\n`. Origin must be exact
 `http://127.0.0.1:<nonzero-port>` without leading port zeroes or a trailing slash;

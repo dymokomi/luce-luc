@@ -1,0 +1,84 @@
+## Fetch exact release bytes; caller supplies publisher trust independently.
+import pkg
+import crypto_native as crypto
+import luc.credentials as credentials
+import http_client
+import net
+import files
+import strings
+import memory
+import c
+
+let invalid: ErrorCode = ErrorCode.package(7)
+
+pub struct Download:
+    pub var metadata: u8[]
+    pub var source: u8[]
+    pub var metadata_size: usize
+    pub var source_size: usize
+    pub mutating func close():
+        if self.metadata.length > 0: free(self.metadata) in memory.heap
+        if self.source.length > 0: free(self.source) in memory.heap
+        var empty: u8[]
+        self.metadata = empty
+        self.source = empty
+
+pub func fetch(origin: str, package: str, version: str, key_path: str, vault_path: str) -> Download!:
+    var split: usize = 0
+    while split < package.length and package.bytes[split] != '/': split += 1
+    if split == 0 or split > 32 or split == package.length: error(invalid, "invalid package identity")
+    let owner = (str)package.bytes[..<split]
+    let name = (str)package.bytes[split + 1..]
+    if name.length == 0 or name.length > 64: error(invalid, "invalid package name")
+    for byte in owner.bytes:
+        if not ((byte >= 'a' and byte <= 'z') or (byte >= '0' and byte <= '9') or byte == '_'):
+            error(invalid, "invalid package owner")
+    for i in 0..<name.length:
+        let byte = name.bytes[i]
+        let alnum = (byte >= 'a' and byte <= 'z') or (byte >= '0' and byte <= '9')
+        if not alnum and (i == 0 or (byte != '_' and byte != '-')): error(invalid, "invalid package name")
+    discard(try pkg.parse_version(version))
+    let filename = try strings.copy(key_path)
+    defer strings.release(filename)
+    let key = try files.read_limit((c.str)filename, 1952)
+    defer free(key) in memory.heap
+    if key.length != 1952: error(invalid, "trusted key must contain exactly1952 bytes")
+    # Credential loading validates loopback origin before any network request.
+    var token = try credentials.load(vault_path, origin)
+    defer token.close()
+    var port: usize = 0
+    for byte in origin.bytes[17..]: port = port * 10 + (usize)(byte - '0')
+    let host = (str)origin.bytes[7..]
+    var bearer_buffer: u8[80]
+    defer crypto.wipe(bearer_buffer)
+    let bearer = try format(bearer_buffer, f"Bearer {(str)try token.bytes()}")
+    var fields: net.HttpField[1]
+    fields[0] = net.HttpField(name = "Authorization", value = bearer)
+    var path_buffer: u8[384]
+    let path = try format(path_buffer, f"/v1/releases/{package}/{version}/metadata")
+    let metadata = try alloc u8[1600] in memory.heap
+    errdefer free(metadata) in memory.heap
+    let meta_result = try http_client.request(net.SocketAddress.loopback((u16)port), "GET", path, host, fields, 1, b"", metadata)
+    if meta_result.status != 200: error(invalid, "release metadata download failed")
+    let release = try pkg.decode_release(metadata[..<meta_result.count])
+    if release.origin != origin or release.package != package or release.version != version:
+        error(invalid, "downloaded release identity mismatch")
+    discard(try pkg.parse_version(release.toolchain))
+    var signature_path: u8[384]
+    let sig_path = try format(signature_path, f"/v1/releases/{package}/{version}/signature")
+    var signature: u8[3309]
+    let sig_result = try http_client.request(net.SocketAddress.loopback((u16)port), "GET", sig_path, host, fields, 1, b"", signature)
+    if sig_result.status != 200 or sig_result.count != signature.length: error(invalid, "release signature download failed")
+    # Verify metadata before accepting a potentially large source response.
+    if not try crypto.mldsa_verify(key, metadata[..<meta_result.count], signature):
+        error(invalid, "release signature does not match supplied trusted key")
+    let source = try alloc u8[67108864] in memory.heap
+    errdefer free(source) in memory.heap
+    var source_path: u8[384]
+    let src_path = try format(source_path, f"/v1/releases/{package}/{version}/source")
+    let src_result = try http_client.request(net.SocketAddress.loopback((u16)port), "GET", src_path, host, fields, 1, b"", source)
+    if src_result.status != 200: error(invalid, "release source download failed")
+    if not try pkg.verify_release(release, key, signature, source[..<src_result.count]):
+        error(invalid, "downloaded release source verification failed")
+    # Keep full allocation slices for matching frees; lengths are explicit below.
+    return Download(metadata = metadata, source = source, metadata_size = meta_result.count, source_size = src_result.count)

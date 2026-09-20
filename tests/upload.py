@@ -1,5 +1,6 @@
 """Native upload: exact retries, uncertain outcomes and read-only reconciliation."""
 import http.server
+import hashlib
 from pathlib import Path
 import subprocess
 import sys
@@ -103,8 +104,48 @@ try:
         state['stored'] = False
         run(upload, success=True)
         assert artifact.read_bytes() == artifact_bytes and vault.read_bytes() == before
+        destination = root / 'checkout'
+        download = ['release-download', origin, 'acme/demo', '1.2.3', destination,
+                    '--trusted-key', root / 'key', '--vault', vault, '--password-stdin']
+        state['calls'].clear()
+        for part in parts:
+            state['corrupt'] = part
+            run(download)
+            assert not destination.exists() and not list(root.glob('.luc-checkout-*'))
+        state['corrupt'] = ''
+        (root / 'key').write_bytes(b'\0' * 1952)
+        state['calls'].clear()
+        run(download)
+        assert not destination.exists()
+        assert not any(path.endswith('/source') for _, path in state['calls'])
+        (root / 'key').write_bytes(state['key'])
+        run(download + ['--locked'])
+        assert not destination.exists()
+        at, values = 6, []
+        for _ in range(6):
+            size = int.from_bytes(parts['metadata'][at:at + 2], 'little')
+            at += 2
+            values.append(parts['metadata'][at:at + size].decode())
+            at += size
+        (root / 'luce.toml').write_text('[package]\nname = "consumer"\nlanguage = "luce-base"\n')
+        lock = (f'schema_version = 2\norigin = "{origin}"\n[[package]]\n'
+                'name = "acme/demo"\nversion = "1.2.3"\ncompiler = "luce-base"\n'
+                f'digest = "{hashlib.sha256(parts["source"]).hexdigest()}"\n'
+                f'commit = "{values[3]}"\ntoolchain = "{values[5]}"\n')
+        (root / 'luc.lock').write_text(lock.replace(values[3], '1' * 40))
+        run(download + ['--locked'])
+        assert not destination.exists()
+        (root / 'luc.lock').write_text(lock)
+        run(download + ['--locked'], success=True)
+        assert destination.is_dir() and list(destination.iterdir()) == []
+        (destination / 'keep').write_bytes(b'preserve me')
+        run(download)
+        assert (destination / 'keep').read_bytes() == b'preserve me'
+        assert all(method == 'GET' for method, _ in state['calls'])
+        assert not list(root.glob('.luc-checkout-*'))
+        assert artifact.read_bytes() == artifact_bytes and vault.read_bytes() == before
 finally:
     server.shutdown()
     server.server_close()
     thread.join(timeout=5)
-print('PASS native release upload, exact retry, uncertain outcome and read-only reconciliation', flush=True)
+print('PASS native release upload/reconciliation and trusted-key download, lock binding, tamper/no-clobber failures', flush=True)

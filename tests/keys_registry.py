@@ -139,6 +139,14 @@ with tempfile.TemporaryDirectory(prefix='luc-key-registry-', dir='/tmp') as temp
                 size = int.from_bytes(upload[4:6], 'little')
                 for part, expected in (('metadata', metadata), ('signature', upload[8 + size:3317 + size]), ('source', source)):
                     assert request('GET', endpoint + '/1.2.3/' + part, headers=headers) == (200, expected)
+                # Test-only trust provisioning from the already reconciled account;
+                # the client itself never fetches/accepts a publisher key implicitly.
+                status, public_key = request('GET', '/v1/identity/key', headers=headers)
+                assert status == 200 and len(public_key) == 1952
+                (root / 'trusted-key').write_bytes(public_key)
+                command(['release-download', origin, 'testadmin/signed-account', '1.2.3', root / 'downloaded',
+                         '--trusted-key', root / 'trusted-key', '--vault', session, '--password-stdin'], b'vault-password\n')
+                assert (root / 'downloaded').is_dir() and not list((root / 'downloaded').iterdir())
                 assert artifact.read_bytes() == upload and key.read_bytes() == before
                 print('PASS luc vault-signed artifact accepted by native registry; exact retry and verified downloads', flush=True)
         finally:

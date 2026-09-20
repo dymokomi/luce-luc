@@ -24,6 +24,7 @@ import memory
 import pkg
 import luc.remote as remote
 import luc.release_upload as release_upload
+import luc.release_download as release_download
 import luc.credentials as credentials
 import luc.checkout as checkout
 import git
@@ -752,6 +753,25 @@ pub func main(arguments: c.str[]) -> i32!:
             if arguments.length != 6 or (str)arguments[5] != "--secrets-stdin":
                 error(usage_error, "usage: luc auth-store <loopback-origin> <account> <new-vault> --secrets-stdin")
             return try credentials.store((str)arguments[2], (str)arguments[3], (str)arguments[4])
+        if command == "release-download":
+            let locked = arguments.length == 12 and (str)arguments[11] == "--locked"
+            if (arguments.length != 11 and not locked) or (str)arguments[6] != "--trusted-key" or (str)arguments[8] != "--vault" or (str)arguments[10] != "--password-stdin":
+                error(usage_error, "usage: luc release-download <origin> <owner/package> <version> <new-directory> --trusted-key <key> --vault <session> --password-stdin [--locked]")
+            let destination = (str)arguments[5]
+            if destination.length == 0: error(usage_error, "empty checkout destination")
+            for byte in destination.bytes:
+                if byte == 0: error(usage_error, "invalid checkout destination")
+            var downloaded = try release_download.fetch((str)arguments[2], (str)arguments[3], (str)arguments[4], (str)arguments[7], (str)arguments[9])
+            defer downloaded.close()
+            let release = try pkg.decode_release(downloaded.metadata[..<downloaded.metadata_size])
+            if locked: discard(try require_locked_release(release))
+            var commit: u8[20]
+            try git.decode_id(release.commit, commit)
+            var pack = try git.decode_pack(downloaded.source[..<downloaded.source_size])
+            defer pack.close()
+            try checkout.materialize(&pack, commit, destination)
+            try io.stdout().write("Downloaded and checked out release verified against supplied trusted key.\n")
+            return 0
         if command == "release-upload" or command == "release-check":
             if arguments.length != 7 or (str)arguments[4] != "--vault" or (str)arguments[6] != "--password-stdin":
                 error(usage_error, "usage: luc release-upload|release-check <origin> <artifact> --vault <session> --password-stdin")
@@ -844,6 +864,7 @@ func usage(out: io.Writer) -> !:
     try out.write("  auth-store <origin> <account> <new-vault> --secrets-stdin  encrypt a session token\n")
     try out.write("  release-sign <metadata> <pack> <new-upload> --key-vault <key> --password-stdin  save signed LRP1 artifact\n")
     try out.write("  release-upload|release-check <origin> <artifact> --vault <session> --password-stdin  publish or reconcile exact release bytes\n")
+    try out.write("  release-download <origin> <owner/package> <version> <new-directory> --trusted-key <key> --vault <session> --password-stdin [--locked]\n")
     try out.write("  key-create <origin> <account> <new-key-vault> --password-stdin  save an encrypted signing seed\n")
     try out.write("  key-enroll <origin> <account> --vault <session> --key-vault <key> --passwords-stdin  enroll signing key\n")
     try out.write("  key-check <origin> <account> --vault <session> --key-vault <key> --passwords-stdin  compare enrolled key without mutation\n")
