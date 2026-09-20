@@ -11,7 +11,7 @@ pub func main(arguments: str[]) -> i32!:
     assert(arguments.length == 3)
     var secret = try vault.open(arguments[1], b"signer-test-password")
     defer secret.close()
-    let wire = try files.read_limit((c.str)arguments[2], 67113781)
+    let wire = try files.read_limit((c.str)arguments[2], 67108864 + pkg.max_release_metadata + 3309 + 8)
     defer free(wire) in memory.heap
     assert(wire.length > 3317 and (str)wire[..<4] == "LRP1" and wire[6] == 0 and wire[7] == 0)
     let size = (usize)wire[4] | ((usize)wire[5] << 8)

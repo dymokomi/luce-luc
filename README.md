@@ -155,11 +155,13 @@ Neither command overwrites a conflicting key. This command
 is first-key enrollment, not release publication. Both commands refuse terminal
 secret input, and remain restricted to disposable loopback development credentials.
 
-`release-sign` is offline: it reads canonical LRS1 metadata and a standalone Git
+`release-sign` is offline: it reads canonical LRS1 or LRS2 metadata and a standalone Git
 pack, verifies SHA-256 source binding and typed pack closure for the signed commit,
 then unlocks the matching origin/account LUK1 signing vault. It requires an
 `owner/package` identity using the registry naming rules and a numeric toolchain
-version. One vault-password line and EOF must come from nonterminal stdin. Current
+version. LRS2 source-manifest agreement is enforced again by the registry during
+publication; offline signing validates the signed declaration and pack closure.
+One vault-password line and EOF must come from nonterminal stdin. Current
 vault-origin policy remains loopback-only; this is not production key tooling.
 
 It creates a fresh randomized native ML-DSA-65 signature, self-verifies it, and
@@ -303,7 +305,7 @@ compares native fetch-to-checkout files against a stock Git working tree.
 
 `checkout-release` gates the same materializer on native ML-DSA-65 release
 verification and the signed SHA-256 source digest. It selects the commit from
-signed LRS1 metadata, rather than a separate untrusted argument. Verification and
+signed LRS1/LRS2 metadata, rather than a separate untrusted argument. Verification and
 checkout use the same retained source bytes, with no path reopening between them.
 `--locked` additionally requires the current restricted lock entry to match
 origin/package/version/digest/compiler before any publication. All checkout
@@ -317,14 +319,14 @@ Check out sibling `luce-pkg` and `luce-crypto` at `bootstrap/PKG` and
 `bootstrap/CRYPTO` before building. The build verifies their revisions. These
 native dependencies supply shared lock parsing and, for later remote integration,
 package cryptography. `luc lock --check` discovers the project from nested
-directories, reads at most 1 MiB, and rejects malformed restricted v1/v2 lockfiles.
+directories, reads at most 1 MiB, and rejects malformed restricted v1/v2/v3 lockfiles.
 It does not verify signatures, compare the manifest, resolve packages or install
 anything; its success output explicitly states that signatures are not verified.
 
 `luc verify-release <metadata> <signature> <trusted-key> <source>` verifies local
-LRS1 metadata with native ML-DSA-65 and binds the exact source bytes with SHA-256.
+LRS1 or LRS2 metadata with native ML-DSA-65 and binds the exact source bytes with SHA-256.
 The signature and public key are raw binary (3309 and 1952 bytes). Metadata is
-bounded to 1600 bytes and source input to 64 MiB for this initial buffered command.
+bounded to 24,576 bytes and source input to 64 MiB for this buffered command.
 Paths are relative to the working directory; no project manifest is required.
 It performs no network requests, extraction, installation or file writes.
 The supplied key must already be trusted: success does not prove origin ownership,
@@ -340,6 +342,11 @@ Lock v2 requires `commit` (40 lowercase hex digits) and `toolchain` (numeric
 semantic version) on every package. Both `verify-release --locked` and
 `checkout-release --locked` enforce these against signed metadata. A version string
 does not yet pin the compiler executable's content; binary toolchain pinning remains.
+Lock v3 additionally requires LRS2, matching compiler package identity and signed
+dependency declarations, plus the SHA-256 fingerprint of the exact public key
+that performed verification. Its decoder validates the complete exact dependency
+graph before the command can use an entry. The fingerprint records an independently
+trusted key; the lock does not make an untrusted downloaded key authoritative.
 Tests generate deterministic **test-only** keys in a temporary directory and check
 tampering, truncation, extra bytes, missing files, argument errors and no writes.
 The macOS heap gate checks ordinary command exit status independently and requires

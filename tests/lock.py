@@ -27,6 +27,8 @@ with tempfile.TemporaryDirectory(prefix='luc-lock-') as temporary:
     check(False, '--check')  # Missing lock must not create one.
     lock.write_text('schema_version = 1\norigin = "https://pkg.luciaos.com"\n')
     check(True, '--check')
+    lock.write_text('schema_version = 3\norigin = "https://pkg.luciaos.com"\n')
+    check(True, '--check')
     lock.write_text('schema_version = 1\norigin = "https://pkg.luciaos.com"\n'
                     '[[package]]\nname = "acme/demo"\nversion = "1.2.3"\n'
                     'digest = "' + 'ab' * 32 + '"\ncompiler = "luce-base"\n')
@@ -34,7 +36,6 @@ with tempfile.TemporaryDirectory(prefix='luc-lock-') as temporary:
     for args in ((), ('--unknown',), ('--check', 'extra'), ('--check', '--', 'extra')):
         check(False, *args)
     for text in ('# origin = "spoof"\n',
-                 'schema_version = 3\norigin = "a"\n',
                  'schema_version = 1\norigin = "a"\norigin = "b"\n',
                  'schema_version = 1\norigin = "a"\n[[package]]\n',
                  '#' * (1048576 + 1)):

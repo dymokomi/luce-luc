@@ -14,16 +14,17 @@ import http_client
 import net
 
 let invalid: ErrorCode = ErrorCode.package(6)
+let max_artifact: usize = 67108864 + pkg.max_release_metadata + 3309 + 8
 
 ## Explicit origin prevents an artifact from choosing the credential destination.
 ## Check-only performs GETs exclusively; upload never retries a POST implicitly.
 pub func upload(origin: str, artifact_path: str, vault_path: str, check_only: bool = false) -> i32!:
-    let artifact = try read(artifact_path, 67113781)
+    let artifact = try read(artifact_path, max_artifact)
     defer free(artifact) in memory.heap
     if artifact.length < 3367 or (str)artifact[..<4] != "LRP1" or artifact[6] != 0 or artifact[7] != 0:
         error(invalid, "invalid release upload envelope")
     let size = (usize)artifact[4] + ((usize)artifact[5] << 8)
-    if size < 50 or size > 1600 or artifact.length < 8 + size + 3309:
+    if size < 50 or size > pkg.max_release_metadata or artifact.length < 8 + size + 3309:
         error(invalid, "invalid release upload lengths")
     let metadata = artifact[8..<8 + size]
     let signature = artifact[8 + size..<3317 + size]
@@ -105,7 +106,7 @@ pub func sign(metadata_path: str, source_path: str, destination: str, vault_path
         exists = false
         recover files.Metadata())
     if exists: error(invalid, "artifact destination already exists")
-    let metadata = try read(metadata_path, 1600)
+    let metadata = try read(metadata_path, pkg.max_release_metadata)
     defer free(metadata) in memory.heap
     let release = try pkg.decode_release(metadata)
     discard(try pkg.parse_version(release.toolchain))

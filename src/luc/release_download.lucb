@@ -12,6 +12,7 @@ import paths
 import io
 
 let invalid: ErrorCode = ErrorCode.package(7)
+let max_artifact: usize = 67108864 + pkg.max_release_metadata + 3309 + 8
 
 pub struct Download:
     ## Nonempty only for a loaded cache artifact; component slices borrow it.
@@ -21,6 +22,8 @@ pub struct Download:
     pub var source: u8[]
     pub var metadata_size: usize
     pub var source_size: usize
+    ## SHA-256 of the exact public key used for release verification.
+    pub var publisher_key_digest: u8[32]
     pub mutating func close():
         if self.storage.length > 0:
             free(self.storage) in memory.heap
@@ -90,7 +93,7 @@ pub func fetch(origin: str, package: str, version: str, key_path: str, vault_pat
     fields[0] = net.HttpField(name = "Authorization", value = bearer)
     var path_buffer: u8[384]
     let path = try format(path_buffer, f"/v1/releases/{package}/{version}/metadata")
-    let metadata = try alloc u8[1600] in memory.heap
+    let metadata = try alloc u8[pkg.max_release_metadata] in memory.heap
     errdefer free(metadata) in memory.heap
     let meta_result = try http_client.request(net.SocketAddress.loopback((u16)port), "GET", path, host, fields, 1, b"", metadata)
     if meta_result.status != 200: error(invalid, "release metadata download failed")
@@ -114,8 +117,11 @@ pub func fetch(origin: str, package: str, version: str, key_path: str, vault_pat
     if not try pkg.verify_release(release, key, signature, source[..<src_result.count]):
         error(invalid, "downloaded release source verification failed")
     # Keep full allocation slices for matching frees; lengths are explicit below.
+    var key_digest: u8[32]
+    discard(try crypto.digest(key, key_digest, "sha256"))
     return Download(metadata = metadata, signature = signature, source = source,
-        metadata_size = meta_result.count, source_size = src_result.count)
+        metadata_size = meta_result.count, source_size = src_result.count,
+        publisher_key_digest = key_digest)
 
 ## Load and verify an exact cached LRP1 artifact without network access.
 pub func load_cache(path: str, origin: str, package: str, version: str, key_path: str) -> Download!:
@@ -131,7 +137,7 @@ pub func load_cache(path: str, origin: str, package: str, version: str, key_path
     var file = try directory.open_file((c.str)entry_name, follow_symlinks = false, nonblocking = true)
     defer file.destroy()
     let info = try file.metadata()
-    if info.kind != files.FileKind.regular or info.size < 3367 or info.size > 67113781:
+    if info.kind != files.FileKind.regular or info.size < 3367 or info.size > (i64)max_artifact:
         error(invalid, "cached release must be a bounded regular file")
     let wire = try alloc u8[(usize)info.size] in memory.heap
     errdefer free(wire) in memory.heap
@@ -146,7 +152,7 @@ pub func load_cache(path: str, origin: str, package: str, version: str, key_path
     if wire.length < 3367 or (str)wire[..<4] != "LRP1" or wire[6] != 0 or wire[7] != 0:
         error(invalid, "invalid cached release envelope")
     let size = (usize)wire[4] + ((usize)wire[5] << 8)
-    if size < 50 or size > 1600 or wire.length < 8 + size + 3309:
+    if size < 50 or size > pkg.max_release_metadata or wire.length < 8 + size + 3309:
         error(invalid, "invalid cached release lengths")
     let metadata = wire[8..<8 + size]
     let signature = wire[8 + size..<3317 + size]
@@ -158,13 +164,16 @@ pub func load_cache(path: str, origin: str, package: str, version: str, key_path
     defer free(key) in memory.heap
     if not try pkg.verify_release(release, key, signature, source):
         error(invalid, "cached release does not verify against supplied trusted key")
+    var key_digest: u8[32]
+    discard(try crypto.digest(key, key_digest, "sha256"))
     return Download(storage = wire, metadata = metadata, signature = signature, source = source,
-        metadata_size = metadata.length, source_size = source.length)
+        metadata_size = metadata.length, source_size = source.length,
+        publisher_key_digest = key_digest)
 
 ## Atomically publish exact verified bytes into an existing cache directory.
 ## An existing destination is refused; callers reconcile it independently.
 pub func save_cache(download: Download*, path: str) -> !:
-    if download.metadata_size < 50 or download.metadata_size > 1600 or download.signature.length != 3309 or download.source_size > 67108864:
+    if download.metadata_size < 50 or download.metadata_size > pkg.max_release_metadata or download.signature.length != 3309 or download.source_size > 67108864:
         error(invalid, "invalid release cache components")
     let filename = try strings.copy(path)
     defer strings.release(filename)
@@ -196,4 +205,5 @@ pub func same(left: Download*, right: Download*) -> bool:
     if left.metadata_size != right.metadata_size or left.source_size != right.source_size: return false
     if not crypto.equal(left.metadata[..<left.metadata_size], right.metadata[..<right.metadata_size]): return false
     if not crypto.equal(left.signature, right.signature): return false
+    if not crypto.equal(left.publisher_key_digest, right.publisher_key_digest): return false
     return crypto.equal(left.source[..<left.source_size], right.source[..<right.source_size])

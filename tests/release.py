@@ -40,6 +40,7 @@ with tempfile.TemporaryDirectory(prefix='luc-release-') as temporary:
             assert 'origin ownership not verified' in result.stdout
 
     check(True)  # No project manifest is required.
+    check(True, ['metadata-v2', 'signature-v2', 'key', 'source'])
     for arguments in ([], names[:-1], names + ['extra'], names + ['--', 'extra'], ['missing', *names[1:]]):
         check(False, arguments)
     for name in names:
@@ -103,5 +104,23 @@ with tempfile.TemporaryDirectory(prefix='luc-release-') as temporary:
     source = root / 'source'
     source.write_bytes(source.read_bytes() + b'tampered')
     locked(False)
+    source.write_bytes(source.read_bytes()[:-8])
+    key_digest = hashlib.sha256((root / 'key').read_bytes()).hexdigest()
+    v3 = ('schema_version = 3\norigin = "https://pkg.luciaos.com"\n'
+          '[[package]]\nname = "acme/demo"\nversion = "1.2.3"\n'
+          f'digest = "{digest}"\ncompiler = "luce-base"\n'
+          'commit = "0123456789012345678901234567890123456789"\n'
+          'toolchain = "0.20.0"\npackage_name = "demo"\nroot = "."\n'
+          f'publisher_key_sha256 = "{key_digest}"\n')
+    lock.write_text(v3)
+    before = snapshot()
+    result = invoke([*(str(root / name) for name in ['metadata-v2', 'signature-v2', 'key', 'source']), '--locked'], root)
+    assert result.returncode == 0 and 'graph-complete luc.lock v3' in result.stdout, (result.stdout, result.stderr)
+    assert before == snapshot()
+    for bad in (v3.replace(key_digest, '0' * 64), v3.replace('package_name = "demo"', 'package_name = "other"'),
+                v3.replace('toolchain = "0.20.0"', 'toolchain = "0.21.0"')):
+        lock.write_text(bad)
+        result = invoke([*(str(root / name) for name in ['metadata-v2', 'signature-v2', 'key', 'source']), '--locked'], root)
+        assert result.returncode != 0 and result.stdout == '', (result.stdout, result.stderr)
 print('PASS luc verify-release: signature, digest, tampering, bounds, missing files, no writes')
-print('PASS luc --locked: origin/package/version/digest/compiler binding, nested discovery, no writes')
+print('PASS luc --locked: v1 compatibility and v3 LRS2/key/graph binding, nested discovery, no writes')

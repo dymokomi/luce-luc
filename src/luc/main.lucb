@@ -354,9 +354,17 @@ func read_project_lock() -> u8[]!:
             error(usage_error, "not in a Luce project (no luce.toml found)")
         directory = parent
 
-## Bind a verified release to the project's existing restricted-v1 lock entry.
-## The lock does not yet carry commit/toolchain pins or establish publisher trust.
-func require_locked_release(release: pkg.Release) -> u8!:
+func digest_matches(bytes: const u8[], text: str) -> bool:
+    if bytes.length * 2 != text.length: return false
+    let digits = "0123456789abcdef"
+    for index in 0..<bytes.length:
+        let byte = bytes[index]
+        if text.bytes[index * 2] != digits.bytes[(usize)(byte >> 4)] or text.bytes[index * 2 + 1] != digits.bytes[(usize)(byte & 15)]:
+            return false
+    return true
+
+## Bind a verified release and the exact key that verified it to the project lock.
+func require_locked_release(release: pkg.Release, publisher_key_digest: const u8[]) -> u8!:
     let contents = try read_project_lock()
     defer free(contents) in memory.heap
     var lock = try pkg.decode_lock((str)contents)
@@ -364,20 +372,27 @@ func require_locked_release(release: pkg.Release) -> u8!:
     if lock.origin != release.origin:
         error(usage_error, "release origin does not match luc.lock")
     let version = try pkg.parse_version(release.version)
-    let digits = "0123456789abcdef"
     for i in 0..<lock.count:
         let entry = lock.packages[i]
         if entry.name != release.package: continue
         if entry.version.major != version.major or entry.version.minor != version.minor or entry.version.patch != version.patch or entry.compiler != release.compiler:
             error(usage_error, "release version or compiler does not match luc.lock")
-        if lock.schema_version == 2 and (entry.commit != release.commit or entry.toolchain != release.toolchain):
+        if lock.schema_version >= 2 and (entry.commit != release.commit or entry.toolchain != release.toolchain):
             error(usage_error, "release commit or toolchain does not match luc.lock")
-        if entry.digest.length != 64:
+        if not digest_matches(release.source_digest, entry.digest):
             error(usage_error, "release digest does not match luc.lock")
-        for index in 0..<32:
-            let byte = release.source_digest[index]
-            if entry.digest.bytes[index * 2] != digits.bytes[(usize)(byte >> 4)] or entry.digest.bytes[index * 2 + 1] != digits.bytes[(usize)(byte & 15)]:
-                error(usage_error, "release digest does not match luc.lock")
+        if lock.schema_version == 3:
+            if release.schema_version != 2 or entry.package_name != release.package_name or entry.root != ".":
+                error(usage_error, "release compiler identity does not match luc.lock v3")
+            if not digest_matches(publisher_key_digest, entry.publisher_key_sha256):
+                error(usage_error, "publisher key does not match luc.lock v3")
+            if entry.dependencies.length != release.dependency_count:
+                error(usage_error, "release dependency count does not match luc.lock v3")
+            for dependency_index in 0..<entry.dependencies.length:
+                let signed = try release.dependency_at(dependency_index)
+                let locked = entry.dependencies[dependency_index]
+                if locked.package != signed.package or locked.requirement != signed.requirement:
+                    error(usage_error, "release dependencies do not match luc.lock v3")
         return lock.schema_version
     error(usage_error, "release package is absent from luc.lock")
 
@@ -387,7 +402,7 @@ func verify_release_command(own: str[], passthrough: str[]) -> i32!:
     let locked = own.length == 5 and own[4] == "--locked"
     if (own.length != 4 and not locked) or passthrough.length != 0:
         error(usage_error, "usage: luc verify-release <metadata> <signature> <trusted-key> <source> [--locked]")
-    let wire = try read_release_file(own[0], 1600)
+    let wire = try read_release_file(own[0], pkg.max_release_metadata)
     defer free(wire) in memory.heap
     let signature = try read_release_file(own[1], 3309)
     defer free(signature) in memory.heap
@@ -399,8 +414,11 @@ func verify_release_command(own: str[], passthrough: str[]) -> i32!:
     if not try pkg.verify_release(release, key, signature, source):
         error(usage_error, "release signature or source digest verification failed")
     if locked:
-        let schema = try require_locked_release(release)
-        if schema == 2: try io.stdout().write("release matches luc.lock v2 including commit and toolchain pins\n")
+        var key_digest: u8[32]
+        discard(try crypto_native.digest(key, key_digest, "sha256"))
+        let schema = try require_locked_release(release, key_digest)
+        if schema == 3: try io.stdout().write("release matches graph-complete luc.lock v3 including publisher key\n")
+        elif schema == 2: try io.stdout().write("release matches luc.lock v2 including commit and toolchain pins\n")
         else: try io.stdout().write("release matches luc.lock (commit and toolchain are not pinned by lock v1)\n")
     try io.stdout().write(f"verified {release.package}@{release.version} against supplied key (origin ownership not verified)\n")
     return 0
@@ -411,7 +429,7 @@ func checkout_release_command(own: str[]) -> i32!:
     let locked = own.length == 6 and own[5] == "--locked"
     if own.length != 5 and not locked:
         error(usage_error, "usage: luc checkout-release <metadata> <signature> <trusted-key> <pack> <new-directory> [--locked]")
-    let wire = try read_release_file(own[0], 1600)
+    let wire = try read_release_file(own[0], pkg.max_release_metadata)
     defer free(wire) in memory.heap
     let signature = try read_release_file(own[1], 3309)
     defer free(signature) in memory.heap
@@ -422,7 +440,10 @@ func checkout_release_command(own: str[]) -> i32!:
     let release = try pkg.decode_release(wire)
     if not try pkg.verify_release(release, key, signature, source):
         error(usage_error, "release signature or source digest verification failed")
-    if locked: discard(try require_locked_release(release))
+    if locked:
+        var key_digest: u8[32]
+        discard(try crypto_native.digest(key, key_digest, "sha256"))
+        discard(try require_locked_release(release, key_digest))
     var commit: u8[20]
     try git.decode_id(release.commit, commit)
     var pack = try git.decode_pack(source)
@@ -524,7 +545,7 @@ func install_command(project: Project*, own: str[]) -> i32!:
                 if not release_download.same(&downloaded, &raced): error(usage_error, "concurrent cache publication differs from registry release")
     defer downloaded.close()
     let release = try pkg.decode_release(downloaded.metadata[..<downloaded.metadata_size])
-    if locked: discard(try require_locked_release(release))
+    if locked: discard(try require_locked_release(release, downloaded.publisher_key_digest))
     var commit: u8[20]
     try git.decode_id(release.commit, commit)
     var pack = try git.decode_pack(downloaded.source[..<downloaded.source_size])
@@ -878,7 +899,7 @@ pub func main(arguments: c.str[]) -> i32!:
             var downloaded = try release_download.fetch((str)arguments[2], (str)arguments[3], (str)arguments[4], (str)arguments[7], (str)arguments[9])
             defer downloaded.close()
             let release = try pkg.decode_release(downloaded.metadata[..<downloaded.metadata_size])
-            if locked: discard(try require_locked_release(release))
+            if locked: discard(try require_locked_release(release, downloaded.publisher_key_digest))
             var commit: u8[20]
             try git.decode_id(release.commit, commit)
             var pack = try git.decode_pack(downloaded.source[..<downloaded.source_size])
