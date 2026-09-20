@@ -70,15 +70,23 @@ with tempfile.TemporaryDirectory(prefix='luc-key-registry-', dir='/tmp') as temp
             passwords = b'vault-password\nsigning-password\n'
             command(enroll, passwords)
             assert key.read_bytes() == before
-            command(enroll, passwords, False)
+            command(enroll, passwords)
             assert key.read_bytes() == before
         finally:
             stop(process)
         process = start()
         try:
-            result = command(enroll, passwords, False)
-            assert b'key challenge unavailable' in result.stderr
+            check_key = list(enroll)
+            check_key[0] = 'key-check'
+            result = command(check_key, passwords)
+            assert b'Confirmed registry signing key' in result.stdout
             assert key.read_bytes() == before
+            other_key = root / 'other.vault'
+            command(['key-create', origin, 'testadmin', other_key, '--password-stdin'], b'signing-password\n')
+            different = list(enroll)
+            different[6] = other_key
+            result = command(different, passwords, False)
+            assert b'remote signing key differs' in result.stderr
             # Bound signing keys do not break the session/repository workflow.
             command(['repo-create', origin, 'signed-account', '--vault', session, '--password-stdin'], b'vault-password\n')
         finally:

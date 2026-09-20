@@ -11,7 +11,7 @@ import threading
 
 def check(binary):
     state = {'identity': b'alice', 'challenge': b'n' * 32, 'status': 201,
-             'body': b'enrolled', 'calls': [], 'proofs': []}
+             'body': b'enrolled', 'calls': [], 'proofs': [], 'bound': None, 'read_status': None}
     token = b'd' * 32
     class Handler(http.server.BaseHTTPRequestHandler):
         def reply(self, code, body):
@@ -21,9 +21,12 @@ def check(binary):
             self.wfile.write(body)
         def do_GET(self):
             state['calls'].append(self.path)
-            assert self.path == '/v1/identity'
             assert self.headers['Authorization'] == 'Bearer ' + token.decode()
-            self.reply(200, state['identity'])
+            if self.path == '/v1/identity':
+                self.reply(200, state['identity'])
+            else:
+                assert self.path == '/v1/identity/key'
+                self.reply(state['read_status'] or (404 if state['bound'] is None else 200), state['bound'] or b'')
         def do_POST(self):
             state['calls'].append(self.path)
             assert self.headers['Authorization'] == 'Bearer ' + token.decode()
@@ -36,6 +39,8 @@ def check(binary):
                 assert self.headers['Content-Type'] == 'application/octet-stream'
                 assert len(body) == 5261
                 state['proofs'].append(body)
+                if state['status'] == 0 or (state['status'] == 201 and state['body'] == b'enrolled'):
+                    state['bound'] = body[:1952]
                 if state['status'] == 0:
                     self.close_connection = True
                     return
@@ -112,12 +117,31 @@ def check(binary):
                 run(enroll, b'session-pass\nkey-pass\n')
                 assert not state['proofs']
             state['challenge'] = b'n' * 32
+            check_key = list(enroll)
+            check_key[0] = 'key-check'
+            before_calls = len(state['calls'])
+            run(check_key, b'session-pass\nkey-pass\n')
+            assert state['calls'][before_calls:] == ['/v1/identity', '/v1/identity/key']
             run(enroll, b'session-pass\nkey-pass\n', True)
+            before_calls = len(state['calls'])
+            run(check_key, b'session-pass\nkey-pass\n', True)
+            run(enroll, b'session-pass\nkey-pass\n', True)
+            assert state['calls'][before_calls:] == ['/v1/identity', '/v1/identity/key'] * 2
+            assert len(state['proofs']) == 1
+            for bound, status in ((b'x' * 1952, None), (b'x' * 1951, None), (b'x' * 1953, None), (None, 503), (None, 401)):
+                state.update(bound=bound, read_status=status)
+                run(enroll, b'session-pass\nkey-pass\n')
+                assert len(state['proofs']) == 1
+            state['read_status'] = None
             for status, body in ((400, b'bad'), (409, b'conflict'), (503, b'unavailable'), (201, b'wrong'), (0, b'')):
-                state.update(status=status, body=body)
+                state.update(status=status, body=body, bound=None)
                 result = run(enroll, b'session-pass\nkey-pass\n')
                 assert b'retain signing-key vault' in result.stderr
                 assert key.read_bytes() == original and session.read_bytes() == session_bytes
+            # Last request was committed but its response was dropped: explicit read-only recovery.
+            before_calls = len(state['calls'])
+            run(check_key, b'session-pass\nkey-pass\n', True)
+            assert state['calls'][before_calls:] == ['/v1/identity', '/v1/identity/key']
             assert len(state['proofs']) == 6
             assert len({proof[:1952] for proof in state['proofs']}) == 1
             assert len({proof[1952:] for proof in state['proofs']}) == 6

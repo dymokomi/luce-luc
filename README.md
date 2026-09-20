@@ -80,6 +80,7 @@ luc register <http://127.0.0.1:port> <account> --secrets-stdin
 luc repo-create <http://127.0.0.1:port> <name> --vault <vault> --password-stdin
 luc key-create <http://127.0.0.1:port> <account> <new-key-vault> --password-stdin
 luc key-enroll <http://127.0.0.1:port> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin
+luc key-check <http://127.0.0.1:port> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin
 luc remote-refs <git-url> --vault <vault> --password-stdin
 luc remote-fetch <git-url> <commit> <new-pack-path> --vault <vault> --password-stdin
 ```
@@ -131,13 +132,19 @@ The seed and expanded private-key buffers are wiped when their owners close.
 
 `key-enroll` reads the session-vault password line followed by the signing-key-vault
 password line and EOF. Both vaults must already exist and match the exact origin
-and account. It verifies the session principal, requests a fresh challenge, derives
-the public key and sends the native domain-bound ML-DSA-65 possession proof. The
+and account. It verifies the session principal and reads the enrolled key first.
+An exact match confirms the existing binding without mutation; a different key or
+unavailable readback fails closed. Only404 (unbound) proceeds to a fresh challenge
+and native domain-bound ML-DSA-65 possession proof. A201 enrollment response is
+followed by exact public-key readback before success is reported. The
 registry's `LUCE_REGISTRY_ORIGIN` must equal the requested origin. Neither vault is
 modified or deleted, including after a lost response or rejected enrollment. There
-is no automatic retry: errors can occur after remote publication. A conflict does
-not prove that this particular key was bound; key-read/reconciliation support is
-still pending. Preserve the vault and investigate uncertain outcomes. This command
+is no automatic write retry: errors can occur after remote publication. A conflict
+does not prove that this particular key was bound. Preserve the vault and use
+`key-check` after uncertain outcomes: it takes the same arguments/passwords but
+only verifies identity and compares the remote key to the vault-derived public
+key. An unbound account is an error in check-only mode, never an implicit enrollment.
+Neither command overwrites a conflicting key. This command
 is first-key enrollment, not release publication. Both commands refuse terminal
 secret input, and remain restricted to disposable loopback development credentials.
 
