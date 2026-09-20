@@ -430,6 +430,12 @@ Actual tool timeouts remain failures. `python3 tests/test_heap_process.py` cover
 status preservation, stopped children and genuine timeouts. This test helper is
 adapted from the same author's dual-licensed `luce-auth` heap harness.
 
+The hosted gate also pins and builds the high-level Luce compiler, then repeats
+the complete signed-package install harness with a Luce package and consumer. It
+covers online verification, offline and relocated-cache installation, lock
+enforcement, tamper rejection, concurrent cache publication, and real import,
+build and execution through each language frontend.
+
 `./build.sh` builds luc with the Base commit pinned in `bootstrap/BASE` (fetched into an
 isolated `build/luce-base`); `LUCE_BASE_COMPILER=/path/to/luce-base ./build.sh` uses an
 existing compiler instead. `./test.sh` runs the gate.

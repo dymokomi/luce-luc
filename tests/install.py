@@ -1,4 +1,4 @@
-"""Verified online/offline package install, cache relocation and Base build/run."""
+"""Verified online/offline package install, cache relocation and compiler build/run."""
 import hashlib
 import http.server
 import json
@@ -12,6 +12,9 @@ import threading
 
 binary, fixture, compiler = [Path(value).resolve() for value in sys.argv[1:]]
 standard = Path(__file__).resolve().parents[2] / 'luce-base/src/std'
+language = os.environ.get('LUC_TEST_LANGUAGE', 'luce-base')
+assert language in ('luce-base', 'luce')
+suffix = '.lucb' if language == 'luce-base' else '.luc'
 token = b'a' * 32
 scoped = b'b' * 64
 state = {'calls': []}
@@ -44,10 +47,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 def project(path):
     path.mkdir()
-    manifest = ('[package]\nname = "consumer"\nlanguage = "luce-base"\n'
-                'entry = "main.lucb"\n')
+    manifest = (f'[package]\nname = "consumer"\nlanguage = "{language}"\n'
+                f'entry = "main{suffix}"\n')
     (path / 'luce.toml').write_text(manifest)
-    (path / 'main.lucb').write_text('from demo_dep import answer\n\npub func main(arguments: str[]) -> i32:\n    discard(arguments)\n    assert(answer() == 42)\n    return 0\n')
+    if language == 'luce-base':
+        source = ('from demo_dep import answer\n\npub func main(arguments: str[]) -> i32:\n'
+                  '    discard(arguments)\n    assert(answer() == 42)\n    return 0\n')
+    else:
+        source = ('from demo_dep import answer\n\npub func main(arguments: list[str]) -> int!:\n'
+                  '    assert(answer() == 42)\n    return 0\n')
+    (path / f'main{suffix}').write_text(source)
     return manifest.encode()
 
 server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
@@ -59,7 +68,7 @@ try:
         origin = f'http://127.0.0.1:{server.server_port}'
         fixture_root = root / 'fixture'
         fixture_root.mkdir()
-        subprocess.run([fixture, fixture_root, origin, 'luce-base'], check=True, timeout=30)
+        subprocess.run([fixture, fixture_root, origin, language], check=True, timeout=30)
         for part in ('metadata', 'signature', 'source'): parts[part] = (fixture_root / part).read_bytes()
         trusted = fixture_root / 'key'
         vault = root / 'session.vault'
@@ -108,7 +117,7 @@ try:
         run(['build'], second, success=True)
         subprocess.run([second / 'build/consumer'], check=True, timeout=10)
         installed_second = next((second / '.luc/packages').glob('release-*'))
-        marker = installed_second / 'demo.lucb'
+        marker = installed_second / f'demo{suffix}'
         original_source = marker.read_bytes()
         marker.write_bytes(b'user modification')
         run(offline, second, extra_env=env)
@@ -125,7 +134,7 @@ try:
         third = root / 'locked project'
         base_manifest = project(third)
         lock = (f'schema_version = 2\norigin = "{origin}"\n[[package]]\nname = "acme/demo"\n'
-                'version = "1.2.3"\ncompiler = "luce-base"\n'
+                f'version = "1.2.3"\ncompiler = "{language}"\n'
                 f'digest = "{hashlib.sha256(parts["source"]).hexdigest()}"\n'
                 f'commit = "{fields[3]}"\ntoolchain = "{fields[5]}"\n')
         (third / 'luc.lock').write_text(lock.replace(fields[3], '1' * 40))
@@ -183,4 +192,4 @@ finally:
     server.shutdown()
     server.server_close()
     thread.join(timeout=5)
-print('PASS verified package install: online/offline, relocated cache, lock v2, build/run, tamper and concurrent publication', flush=True)
+print(f'PASS verified {language} package install: online/offline, relocated cache, lock v2, build/run, tamper and concurrent publication', flush=True)

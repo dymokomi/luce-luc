@@ -52,6 +52,16 @@ jobs:
           git -C ../luce-base checkout --detach FETCH_HEAD
           test "$(git -C ../luce-base rev-parse HEAD)" = "$revision"
           (cd ../luce-base && ./build.sh)
+      - name: Build the pinned Luce compiler
+        run: |
+          revision=$(cat bootstrap/LUCE)
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo "Luce revision must be a full commit SHA"; exit 1; }
+          git init ../luce
+          git -C ../luce remote add origin https://github.com/dymokomi/luce.git
+          git -C ../luce fetch --depth 1 origin "$revision"
+          git -C ../luce checkout --detach FETCH_HEAD
+          test "$(git -C ../luce rev-parse HEAD)" = "$revision"
+          (cd ../luce && LUCE_BASE_COMPILER="$PWD/../luce-base/build/luce-base" ./build.sh)
       - name: Select Clang for generated C
         run: |
           mkdir -p "$RUNNER_TEMP/luce-bin"
@@ -63,6 +73,12 @@ jobs:
         run: python3 tests/test_heap_process.py
       - name: Release verification modes and sanitizers
         run: python3 tests/release_modes.py --base ../luce-base/build/luce-base
+      - name: High-level Luce package install and relocation
+        env:
+          LUC_TEST_LANGUAGE: luce
+          LUCE: ${{ github.workspace }}/luce/build/luce
+          LUCE_BASE: ${{ github.workspace }}/luce-base/build/luce-base
+        run: python3 tests/install.py build/luc build/release-modes/checkout-release-fixture ../luce-base/build/luce-base
       - name: Native release verification heap cleanup
         if: runner.os == 'macOS'
         run: LUCE_TEST_LEAKS=1 python3 tests/release.py build/release-modes/native0 build/release-modes/fixture
