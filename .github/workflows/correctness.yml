@@ -9,7 +9,10 @@ jobs:
   gate:
     name: Gate (${{ matrix.host }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    # Three architectures each run six compiler modes plus a generated-C
+    # sanitizer matrix with native ML-DSA/Argon2 tests. Cold Linux runners can
+    # legitimately need more than 45 minutes to finish the complete gate.
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:

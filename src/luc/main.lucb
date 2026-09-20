@@ -62,12 +62,26 @@ struct Project:
     var tasks: Task[]
     var task_count: usize
 
+    mutating func close():
+        strings.release(self.root)
+        strings.release(self.name)
+        strings.release(self.language)
+        strings.release(self.entry)
+        for i in 0..<self.task_count:
+            strings.release(self.tasks[i].name)
+            strings.release(self.tasks[i].command)
+            strings.release(self.tasks[i].description)
+            for dependency in self.tasks[i].depends: strings.release(dependency)
+            if self.tasks[i].depends.length > 0: free(self.tasks[i].depends) in memory.heap
+        if self.tasks.length > 0: free(self.tasks) in memory.heap
+        self.task_count = 0
+
     ## The compiler for this project's language, overridable through the environment.
     func compiler() -> str!:
         let variable = "LUCE" if self.language == "luce" else "LUCE_BASE"
         if let chosen = os.env((c.str)variable):
-            return try strings.copy(chosen)
-        return try strings.copy("luce" if self.language == "luce" else "luce-base")
+            return chosen
+        return "luce" if self.language == "luce" else "luce-base"
 
     ## The entry source: the manifest's `entry`, else the conventional app main, else the
     ## package's own library module (src/<name>/<name>.<ext>) so `check` works on a package.
@@ -98,15 +112,22 @@ struct Project:
 ## project is an anonymous luce-base app rooted at the current directory.
 func load_project() -> Project!:
     let start = try os.cwd()
-    var project = Project(root = start, name = "app", language = "luce-base")
+    defer strings.release(start)
+    var project = Project(root = try strings.copy(start), name = try strings.copy("app"),
+        language = try strings.copy("luce-base"), entry = try strings.copy(""))
+    errdefer project.close()
     project.tasks = try alloc Task[128]
     var directory = start
     while true:
         let manifest = try paths.join(directory, "luce.toml")
+        defer strings.release(manifest)
         let terminated = try strings.copy(manifest)
+        defer strings.release(terminated)
         if files.exists((c.str)terminated):
-            project.root = directory
+            strings.release(project.root)
+            project.root = try strings.copy(directory)
             let text = try files.read((c.str)terminated)
+            defer free(text) in memory.heap
             try parse_manifest(&project, (str)text)
             return project
         let parent = paths.directory(directory)
@@ -118,7 +139,9 @@ func load_project() -> Project!:
 ## name = "command" pairs. Values are quoted strings; comments and blank lines are ignored.
 func parse_manifest(project: Project*, text: str) -> !:
     var section = ""
-    for raw in try strings.split(text, '\n'):
+    let lines = try strings.split(text, '\n')
+    defer free(lines) in memory.heap
+    for raw in lines:
         let line = strings.trim(raw)
         if line.length == 0 or strings.starts_with(line, "#"):
             continue
@@ -130,21 +153,30 @@ func parse_manifest(project: Project*, text: str) -> !:
         let value = unquote(strings.trim(value_raw))
         if section == "package":
             if key == "name":
-                project.name = try strings.copy(value)
+                try replace_text(&project.name, value)
             elif key == "language":
-                project.language = try strings.copy(value)
+                try replace_text(&project.language, value)
             elif key == "entry":
-                project.entry = try strings.copy(value)
+                try replace_text(&project.entry, value)
         elif section == "tasks":
-            project.tasks[try task_slot(project, key)].command = try strings.copy(value)
+            let slot = try task_slot(project, key)
+            try replace_text(&project.tasks[slot].command, value)
         elif strings.starts_with(section, "tasks."):
             let slot = try task_slot(project, (str)section.bytes[6..])
             if key == "cmd":
-                project.tasks[slot].command = try strings.copy(value)
+                try replace_text(&project.tasks[slot].command, value)
             elif key == "description":
-                project.tasks[slot].description = try strings.copy(value)
+                try replace_text(&project.tasks[slot].description, value)
             elif key == "depends":
-                project.tasks[slot].depends = try string_array(value)
+                let replacement = try string_array(value)
+                for dependency in project.tasks[slot].depends: strings.release(dependency)
+                if project.tasks[slot].depends.length > 0: free(project.tasks[slot].depends) in memory.heap
+                project.tasks[slot].depends = replacement
+
+func replace_text(target: str*, value: str) -> !:
+    let replacement = try strings.copy(value)
+    strings.release(*target)
+    *target = replacement
 
 func unquote(text: str) -> str:
     if text.length >= 2 and strings.starts_with(text, "\"") and strings.ends_with(text, "\""):
@@ -169,7 +201,13 @@ func task_slot(project: Project*, name: str) -> usize!:
         index += 1
     if project.task_count >= project.tasks.length:
         error(usage_error, "too many tasks in luce.toml")
-    project.tasks[project.task_count] = Task(name = try strings.copy(name), command = "", description = "")
+    let owned_name = try strings.copy(name)
+    errdefer strings.release(owned_name)
+    let command = try strings.copy("")
+    errdefer strings.release(command)
+    let description = try strings.copy("")
+    errdefer strings.release(description)
+    project.tasks[project.task_count] = Task(name = owned_name, command = command, description = description)
     project.task_count += 1
     return project.task_count - 1
 
@@ -177,7 +215,9 @@ func task_slot(project: Project*, name: str) -> usize!:
 func string_array(value: str) -> str[]!:
     let inner = strip(strings.trim(value), "[", "]")
     var result: str[]
-    for part in try strings.split(inner, ','):
+    let parts = try strings.split(inner, ',')
+    defer free(parts) in memory.heap
+    for part in parts:
         let item = unquote(strings.trim(part))
         if item.length > 0:
             result = try append(result, try strings.copy(item))
@@ -189,8 +229,10 @@ func string_array(value: str) -> str[]!:
 ## strings become NUL-terminated copies so they cross the process boundary as `c.str`.
 func spawn(program: str, arguments: str[]) -> i32!:
     let program_text = try strings.copy(program)
+    defer strings.release(program_text)
     let argv = try alloc c.str[arguments.length]
     var index: usize = 0
+    defer release_spawn_arguments(argv, index)
     while index < arguments.length:
         argv[index] = (c.str)try strings.copy(arguments[index])
         index += 1
@@ -202,6 +244,10 @@ func spawn(program: str, arguments: str[]) -> i32!:
     if err.length > 0:
         try io.stderr().write(err)
     return status
+
+func release_spawn_arguments(arguments: c.str[], count: usize):
+    for i in 0..<count: strings.release((str)arguments[i])
+    if arguments.length > 0: free(arguments) in memory.heap
 
 ## The project's build output path, build/<name> under its root.
 func output_path(project: Project*) -> str!:
@@ -429,6 +475,7 @@ func checkout_release_command(own: str[]) -> i32!:
 func lock_command(project: Project*, own: str[], passthrough: str[]) -> i32!:
     if passthrough.length != 0: error(usage_error, "lock does not accept passthrough arguments")
     let manifest = try require_manifest(project)
+    defer strings.release(manifest)
     if own.length == 1 and own[0] == "--check":
         let filename = try strings.copy(try paths.join(project.root, "luc.lock"))
         let contents = try files.read_limit((c.str)filename, 1048576)
@@ -477,6 +524,7 @@ func install_command(project: Project*, own: str[]) -> i32!:
     if ((online and own.length == 9) or (offline and own.length == 7)) and not locked:
         error(usage_error, "the only trailing install option is --locked")
     let manifest = try require_manifest(project)
+    defer strings.release(manifest)
     let origin = own[0]
     let package = own[1]
     let version = own[2]
@@ -534,9 +582,16 @@ func install_command(project: Project*, own: str[]) -> i32!:
     if not files.exists((c.str)dependency_manifest):
         error(usage_error, "installed release has no root luce.toml")
     let dependency = try package_name_at(dependency_manifest)
-    var probe = Project(root = destination, name = "", language = "luce-base")
+    defer strings.release(dependency)
+    var probe = Project(root = try strings.copy(destination), name = try strings.copy(""),
+        language = try strings.copy("luce-base"), entry = try strings.copy(""))
     probe.tasks = try alloc Task[1]
-    try parse_manifest(&probe, (str)try files.read((c.str)try strings.copy(dependency_manifest)))
+    defer probe.close()
+    let dependency_name = try strings.copy(dependency_manifest)
+    defer strings.release(dependency_name)
+    let dependency_text = try files.read((c.str)dependency_name)
+    defer free(dependency_text) in memory.heap
+    try parse_manifest(&probe, (str)dependency_text)
     if probe.language != release.compiler:
         error(usage_error, "installed manifest language does not match signed release compiler")
     var relative_buffer: u8[128]
@@ -552,7 +607,9 @@ func install_command(project: Project*, own: str[]) -> i32!:
 ## match; the value is the path, relative to this manifest, to that package's directory.
 func add_command(project: Project*, own: str[]) -> i32!:
     let manifest = try require_manifest(project)
+    defer strings.release(manifest)
     var positional: str[]
+    defer release_string_array(positional)
     for word in own:
         if not strings.starts_with(word, "--"):
             positional = try append(positional, word)
@@ -560,9 +617,13 @@ func add_command(project: Project*, own: str[]) -> i32!:
         error(usage_error, "luc add needs a path: luc add <path-to-package> [as <name>]")
     let dep_path = positional[positional.length - 1]
     let dep_manifest = try paths.join(dep_path, "luce.toml")
-    if not files.exists((c.str)try strings.copy(dep_manifest)):
+    defer strings.release(dep_manifest)
+    let dep_filename = try strings.copy(dep_manifest)
+    defer strings.release(dep_filename)
+    if not files.exists((c.str)dep_filename):
         error(usage_error, try format(message_buffer[0..], f"no luce.toml at {dep_path}"))
     let actual = try package_name_at(dep_manifest)
+    defer strings.release(actual)
     if positional.length >= 2 and positional[0] != actual:
         error(usage_error, try format(message_buffer[0..], f"the package at {dep_path} is named '{actual}', not '{positional[0]}'"))
     try upsert_dependency(manifest, actual, dep_path)
@@ -572,7 +633,9 @@ func add_command(project: Project*, own: str[]) -> i32!:
 ## `luc remove <name>` drops a dependency from luce.toml.
 func remove_command(project: Project*, own: str[]) -> i32!:
     let manifest = try require_manifest(project)
+    defer strings.release(manifest)
     var positional: str[]
+    defer release_string_array(positional)
     for word in own:
         if not strings.starts_with(word, "--"):
             positional = try append(positional, word)
@@ -588,7 +651,8 @@ func remove_command(project: Project*, own: str[]) -> i32!:
 ## `luc clean` removes the project's build/ directory (binary and cache); `luc clean cache`
 ## removes only build/.cache, keeping the built binary.
 func clean_command(project: Project*, own: str[]) -> i32!:
-    discard(try require_manifest(project))
+    let manifest = try require_manifest(project)
+    strings.release(manifest)
     var target = try paths.join(project.root, "build")
     var label = "build"
     if own.length > 0 and own[0] == "cache":
@@ -605,14 +669,23 @@ func clean_command(project: Project*, own: str[]) -> i32!:
 ## This project's luce.toml, or a usage error when there is no project here.
 func require_manifest(project: Project*) -> str!:
     let manifest = try paths.join(project.root, "luce.toml")
-    if not files.exists((c.str)try strings.copy(manifest)):
+    errdefer strings.release(manifest)
+    let filename = try strings.copy(manifest)
+    defer strings.release(filename)
+    if not files.exists((c.str)filename):
         error(usage_error, "not in a Luce project (no luce.toml found); run 'luc init' first")
     return manifest
 
 func package_name_at(manifest: str) -> str!:
-    var probe = Project(root = "", name = "", language = "luce-base")
+    var probe = Project(root = try strings.copy(""), name = try strings.copy(""),
+        language = try strings.copy("luce-base"), entry = try strings.copy(""))
     probe.tasks = try alloc Task[1]
-    try parse_manifest(&probe, (str)try files.read((c.str)try strings.copy(manifest)))
+    defer probe.close()
+    let filename = try strings.copy(manifest)
+    defer strings.release(filename)
+    let contents = try files.read((c.str)filename)
+    defer free(contents) in memory.heap
+    try parse_manifest(&probe, (str)contents)
     if probe.name.length == 0:
         error(usage_error, try format(message_buffer[0..], f"the package at {manifest} has no [package] name"))
     if probe.name.length > 128: error(usage_error, "dependency package name is too long")
@@ -621,17 +694,28 @@ func package_name_at(manifest: str) -> str!:
         let letter = byte >= 'a' and byte <= 'z'
         if not letter and byte != '_' and (i == 0 or byte < '0' or byte > '9'):
             error(usage_error, "dependency package name must be a lowercase identifier")
-    return probe.name
+    return try strings.copy(probe.name)
+
+func release_string_array(values: str[]):
+    if values.length > 0: free(values) in memory.heap
 
 ## Add or replace `name = "value"` under `[dependencies]`, creating the section if absent,
 ## and preserving the rest of the file line for line.
 func upsert_dependency(manifest: str, name: str, value: str) -> !:
     let entry = try toml_line(name, value)
-    let text = (str)try files.read((c.str)try strings.copy(manifest))
+    defer strings.release(entry)
+    let filename = try strings.copy(manifest)
+    defer strings.release(filename)
+    let contents = try files.read((c.str)filename)
+    defer free(contents) in memory.heap
+    let text = (str)contents
     var result: str[]
+    defer release_string_array(result)
     var section = ""
     var has_section = false
-    for raw in try strings.split(text, '\n'):
+    let lines = try strings.split(text, '\n')
+    defer free(lines) in memory.heap
+    for raw in lines:
         let trimmed = strings.trim(raw)
         if strings.starts_with(trimmed, "["):
             section = trimmed
@@ -647,15 +731,24 @@ func upsert_dependency(manifest: str, name: str, value: str) -> !:
         result = try append(result, "[dependencies]")
         result = try append(result, entry)
         result = try append(result, "")
-    try files.write_text(manifest, try strings.join(result, "\n"))
+    let joined = try strings.join(result, "\n")
+    defer strings.release(joined)
+    try files.write_text(manifest, joined)
 
 ## Remove `name = ...` under `[dependencies]`; answers whether a line was removed.
 func remove_dependency(manifest: str, name: str) -> bool!:
-    let text = (str)try files.read((c.str)try strings.copy(manifest))
+    let filename = try strings.copy(manifest)
+    defer strings.release(filename)
+    let contents = try files.read((c.str)filename)
+    defer free(contents) in memory.heap
+    let text = (str)contents
     var result: str[]
+    defer release_string_array(result)
     var section = ""
     var removed = false
-    for raw in try strings.split(text, '\n'):
+    let lines = try strings.split(text, '\n')
+    defer free(lines) in memory.heap
+    for raw in lines:
         let trimmed = strings.trim(raw)
         if strings.starts_with(trimmed, "["):
             section = trimmed
@@ -666,7 +759,9 @@ func remove_dependency(manifest: str, name: str) -> bool!:
             continue
         result = try append(result, raw)
     if removed:
-        try files.write_text(manifest, try strings.join(result, "\n"))
+        let joined = try strings.join(result, "\n")
+        defer strings.release(joined)
+        try files.write_text(manifest, joined)
     return removed
 
 ## The key of a `key = value` line, or empty for anything else.
@@ -936,6 +1031,7 @@ pub func main(arguments: c.str[]) -> i32!:
         if command == "update" or command == "upgrade":
             return try update_command(own)
         var project = try load_project()
+        defer project.close()
         if command == "lock":
             return try lock_command(&project, own, passthrough)
         if command == "install":
@@ -944,6 +1040,7 @@ pub func main(arguments: c.str[]) -> i32!:
         if command == "sync":
             if passthrough.length != 0: error(usage_error, "sync does not accept passthrough arguments")
             let manifest = try require_manifest(&project)
+            defer strings.release(manifest)
             if own.length == 5 and own[0] == "--trusted-key" and own[2] == "--vault" and own[4] == "--password-stdin":
                 return try graph_sync.run(project.root, manifest, own[1], own[3])
             if own.length == 3 and own[0] == "--trusted-key" and own[2] == "--offline":
