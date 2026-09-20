@@ -170,8 +170,12 @@ with tempfile.TemporaryDirectory(prefix='luc-key-registry-', dir='/tmp') as temp
                 # immutable artifact and confirms exact registry readback.
                 command(['repo-create', origin, 'publish-e2e', '--vault', session,
                          '--password-stdin'], b'vault-password\n')
-                git_headers = scoped('git:write', 'publish-e2e')
-                git_token = git_headers['Authorization'].removeprefix('Bearer ')
+                git_credential = command(
+                    ['git-token', origin, 'publish-e2e', 'write', '--vault', session,
+                     '--password-stdin'], b'vault-password\n').stdout
+                assert len(git_credential) == 65 and git_credential[-1:] == b'\n'
+                git_token = git_credential[:-1].decode()
+                assert all(byte in b'0123456789abcdef' for byte in git_credential[:-1])
                 source_repo = root / 'publish-source'
                 source_repo.mkdir()
                 askpass = root / 'publish-askpass.sh'

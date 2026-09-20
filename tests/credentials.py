@@ -27,8 +27,9 @@ def check(binary):
             assert self.headers['Authorization'] == 'Bearer ' + token.decode()
             value = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             if self.path == '/v1/credentials':
-                assert value == {'scope': 'git:read', 'repository': 'demo', 'lifetime_seconds': 300}
-                requests.append('issue')
+                assert value['repository'] == 'demo' and value['lifetime_seconds'] == 300
+                assert value['scope'] in ('git:read', 'git:write')
+                requests.append('issue-' + value['scope'])
                 self.respond(201, scoped)
             else:
                 assert self.path == '/v1/credentials/revoke' and value == {'token': scoped.decode()}
@@ -91,8 +92,17 @@ def check(binary):
             fetch = ['remote-refs', origin + '/git/alice/demo', '--vault', vault, '--password-stdin']
             run(fetch, password + b'\n', True)
             expected = 'Basic ' + base64.b64encode(b'alice:' + scoped).decode()
-            assert requests == ['issue', expected, 'revoke'], requests
+            assert requests == ['issue-git:read', expected, 'revoke'], requests
+            issued = run(['git-token', origin, 'demo', 'write', '--vault', vault,
+                          '--password-stdin'], password + b'\n', True)
+            assert issued.stdout == scoped + b'\n' and issued.stderr == b''
+            assert requests[-1] == 'issue-git:write'
             previous = len(requests)
+            for bad in (
+                ['git-token', origin, 'demo', 'admin', '--vault', vault, '--password-stdin'],
+                ['git-token', origin, '../demo', 'write', '--vault', vault, '--password-stdin'],
+            ):
+                run(bad, password + b'\n')
             empty = list(fetch)
             empty[3] = ''
             run(empty, password + b'\n')

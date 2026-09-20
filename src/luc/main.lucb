@@ -36,7 +36,7 @@ import git
 import crypto_native
 
 ## The luc version, kept in step with VERSION.
-pub let luc_version: str = "0.11.0"
+pub let luc_version: str = "0.12.0"
 
 ## A command-line or manifest problem the user can fix.
 pub let usage_error: ErrorCode = ErrorCode.package(1)
@@ -1077,6 +1077,11 @@ pub func main(arguments: c.str[]) -> i32!:
             if arguments.length != 7 or (str)arguments[4] != "--vault" or (str)arguments[6] != "--password-stdin":
                 error(usage_error, "usage: luc repo-create <origin> <name> --vault <path> --password-stdin")
             return try credentials.create_repository((str)arguments[2], (str)arguments[3], (str)arguments[5])
+        if command == "git-token":
+            if arguments.length != 8 or (str)arguments[5] != "--vault" or (str)arguments[7] != "--password-stdin":
+                error(usage_error, "usage: luc git-token <origin> <repository> <read|write> --vault <session-vault> --password-stdin")
+            return try credentials.issue_git_token((str)arguments[2], (str)arguments[3],
+                (str)arguments[4], (str)arguments[6])
         if command == "checkout-release":
             if arguments.length < 7 or arguments.length > 8:
                 error(usage_error, "usage: luc checkout-release <metadata> <signature> <trusted-key> <pack> <new-directory> [--locked]")
@@ -1167,6 +1172,7 @@ func usage(out: io.Writer) -> !:
     try out.write("  login <origin> <account> <new-vault> --passwords-stdin  log in and encrypt the session\n")
     try out.write("  register <origin> <account> --secrets-stdin  redeem an invitation\n")
     try out.write("  repo-create <origin> <name> --vault <path> --password-stdin  create a remote repository\n")
+    try out.write("  git-token <origin> <repository> <read|write> --vault <path> --password-stdin  mint a five-minute stock-Git password\n")
     try out.write("  remote-refs/remote-fetch also accept --vault <path> --password-stdin\n")
     try out.write("  remote-fetch <url> <commit> <new-pack-path>  fetch a validated full Git pack\n")
     try out.write("  checkout-pack <pack> <commit> <new-directory>  materialize validated source\n")

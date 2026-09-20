@@ -19,6 +19,7 @@ luc versions <origin> <owner/package> --vault <session> --password-stdin
 luc resolve <origin> <owner/package> <version|^version> --vault <session> --password-stdin
 luc remote-refs <url>     list remote Git refs (verified production HTTPS or loopback HTTP)
 luc remote-fetch <url> <commit-id> <new-pack-path>  fetch a validated full Git pack
+luc git-token <origin> <repository> <read|write> --vault <session> --password-stdin
 luc checkout-pack <pack> <commit-id> <new-directory>  materialize source files
 luc checkout-release <metadata> <signature> <key> <pack> <new-directory> [--locked]
 luc publish <origin> <owner/package> <version> <commit> <toolchain> <new-artifact> --vault <session> --key-vault <key> --passwords-stdin
@@ -89,6 +90,7 @@ luc auth-store <origin> <account> <new-vault> --secrets-stdin
 luc login <origin> <account> <new-vault> --passwords-stdin
 luc register <origin> <account> --secrets-stdin
 luc repo-create <origin> <name> --vault <vault> --password-stdin
+luc git-token <origin> <repository> <read|write> --vault <session-vault> --password-stdin
 luc key-create <origin> <account> <new-key-vault> --password-stdin
 luc key-enroll <origin> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin
 luc key-check <origin> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin
@@ -142,6 +144,14 @@ a letter or digit. It writes no local files, does not initialize a Git working
 tree or configure a remote, and does not publish a signed package release.
 Conflicts and other non-success responses fail without automatic retry; an
 ambiguous network failure may mean the remote repository was created.
+
+`git-token` decrypts the same origin-bound session vault and prints exactly one
+five-minute repository credential plus a newline. Select `write` for push or
+`read` for clone/fetch, use the account name as Git's username, and paste the
+printed value as Git's password. The credential is bound to the named repository
+and scope; it is not stored in a remote URL, Git configuration or command
+argument. Treat stdout as secret, do not place it in shell history or logs, and
+let the token expire after the stock-Git operation.
 
 `key-create` is offline: it reads one password line and EOF, generates an OS-random
 32-byte ML-DSA-65 seed, and publishes a new encrypted signing-key vault without
