@@ -10,16 +10,17 @@ jobs:
     name: Gate (${{ matrix.host }})
     runs-on: ${{ matrix.runner }}
     # Three architectures each run six compiler modes plus a generated-C
-    # sanitizer matrix with native ML-DSA/Argon2 tests. Cold Linux runners can
-    # legitimately need more than 45 minutes to finish the complete gate.
-    timeout-minutes: 75
+    # sanitizer matrix with native ML-DSA/Argon2 tests. Hosted macOS ARM64 is
+    # materially slower than either Linux runner for this matrix; keep the
+    # complete assertions and give each architecture its measured allowance.
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { runner: macos-15, host: arm64-macos }
-          - { runner: ubuntu-24.04, host: x86_64-linux }
-          - { runner: ubuntu-24.04-arm, host: arm64-linux }
+          - { runner: macos-15, host: arm64-macos, timeout: 120 }
+          - { runner: ubuntu-24.04, host: x86_64-linux, timeout: 75 }
+          - { runner: ubuntu-24.04-arm, host: arm64-linux, timeout: 75 }
     defaults:
       run:
         shell: bash
