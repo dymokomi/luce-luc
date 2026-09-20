@@ -751,6 +751,10 @@ pub func main(arguments: c.str[]) -> i32!:
             if arguments.length != 6 or (str)arguments[5] != "--secrets-stdin":
                 error(usage_error, "usage: luc auth-store <loopback-origin> <account> <new-vault> --secrets-stdin")
             return try credentials.store((str)arguments[2], (str)arguments[3], (str)arguments[4])
+        if command == "login":
+            if arguments.length != 6 or (str)arguments[5] != "--passwords-stdin":
+                error(usage_error, "usage: luc login <loopback-origin> <account> <new-vault> --passwords-stdin")
+            return try credentials.login((str)arguments[2], (str)arguments[3], (str)arguments[4])
         if command == "checkout-release":
             if arguments.length < 7 or arguments.length > 8:
                 error(usage_error, "usage: luc checkout-release <metadata> <signature> <trusted-key> <pack> <new-directory> [--locked]")
@@ -813,6 +817,7 @@ func usage(out: io.Writer) -> !:
     try out.write("  lock --check          validate luc.lock syntax without fetching or changing files\n")
     try out.write("  remote-refs <url>      list registry refs (loopback HTTP development transport)\n")
     try out.write("  auth-store <origin> <account> <new-vault> --secrets-stdin  encrypt a session token\n")
+    try out.write("  login <origin> <account> <new-vault> --passwords-stdin  log in and encrypt the session\n")
     try out.write("  remote-refs/remote-fetch also accept --vault <path> --password-stdin\n")
     try out.write("  remote-fetch <url> <commit> <new-pack-path>  fetch a validated full Git pack\n")
     try out.write("  checkout-pack <pack> <commit> <new-directory>  materialize validated source\n")

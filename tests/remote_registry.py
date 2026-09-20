@@ -32,9 +32,9 @@ def check(port, headers, root, request):
     output = root / 'luc-source.pack'
     vault = root / 'luc-credential.vault'
     password = b'disposable integration vault password'
-    stored = subprocess.run([str(luc), 'auth-store', f'http://127.0.0.1:{port}',
-                             'testuser', str(vault), '--secrets-stdin'],
-                            input=password + b'\n' + token.encode() + b'\n',
+    stored = subprocess.run([str(luc), 'login', f'http://127.0.0.1:{port}',
+                             'testuser', str(vault), '--passwords-stdin'],
+                            input=b'fixture-pass\n' + password + b'\n',
                             cwd=root, env=env, capture_output=True, timeout=60)
     assert stored.returncode == 0, stored.stderr
     assert token.encode() not in stored.stdout + stored.stderr

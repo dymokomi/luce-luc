@@ -75,6 +75,7 @@ Encrypted session-token storage is available for loopback development:
 
 ```text
 luc auth-store <http://127.0.0.1:port> <account> <new-vault> --secrets-stdin
+luc login <http://127.0.0.1:port> <account> <new-vault> --passwords-stdin
 luc remote-refs <git-url> --vault <vault> --password-stdin
 luc remote-fetch <git-url> <commit> <new-pack-path> --vault <vault> --password-stdin
 ```
@@ -89,13 +90,26 @@ native auth vault uses Argon2id/XChaCha20-Poly1305, mode0600 no-clobber publicat
 and authenticated reads. Optional vault flags take precedence over the legacy
 token environment variable; failure never falls back to it.
 
+`login` instead reads the registry-password line, then a separate vault-password
+line and EOF. It posts bounded JSON to `/v1/sessions`, checks `/v1/identity` matches
+the requested account, and publishes a new encrypted vault. It refuses an existing
+destination before contacting the server and still uses atomic no-replace when
+publishing. On failure after receiving a valid token but before publication, it
+attempts revocation with a five-second timeout; network failure can leave a session
+alive until server expiry. A failure after publication does not revoke the stored
+token, since a directory-sync error may leave a usable file with uncertain durability.
+The registry password and vault password may differ; neither is printed. No raw
+server response body is included in error messages. Loopback HTTP is still for
+disposable development accounts, not real credentials.
+
 The encrypted LUC1 payload is `LUC1\norigin\naccount\ntoken\n`. Origin must be exact
 `http://127.0.0.1:<nonzero-port>` without leading port zeroes or a trailing slash;
 it is checked before any HTTP request. Account names follow native auth syntax.
 The stored account label is not proof of server identity or account ownership.
 Wrong password, malformed vault or origin mismatch stops the request without
-exposing the token. This imports an existing session; it does not register or log
-in, renew expired tokens, rotate credentials, or support public HTTPS yet.
+exposing the token. `auth-store` only imports an existing session; `login` obtains
+one and checks its principal. Neither registers users, renews expired tokens,
+rotates credentials, or supports public HTTPS yet.
 
 Build dependencies also include pinned siblings `luce-git`, `luce-compress`,
 `luce-http-client`, `luce-tls`, `luce-auth` and `luce-prism`; `build.sh` and CI check their exact revisions.
