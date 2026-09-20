@@ -10,8 +10,81 @@ import strings
 import memory
 import io
 import c
+import http_client
+import net
 
 let invalid: ErrorCode = ErrorCode.package(6)
+
+## Explicit origin prevents an artifact from choosing the credential destination.
+## Check-only performs GETs exclusively; upload never retries a POST implicitly.
+pub func upload(origin: str, artifact_path: str, vault_path: str, check_only: bool = false) -> i32!:
+    let artifact = try read(artifact_path, 67113781)
+    defer free(artifact) in memory.heap
+    if artifact.length < 3367 or (str)artifact[..<4] != "LRP1" or artifact[6] != 0 or artifact[7] != 0:
+        error(invalid, "invalid release upload envelope")
+    let size = (usize)artifact[4] + ((usize)artifact[5] << 8)
+    if size < 50 or size > 1600 or artifact.length < 8 + size + 3309:
+        error(invalid, "invalid release upload lengths")
+    let metadata = artifact[8..<8 + size]
+    let signature = artifact[8 + size..<3317 + size]
+    let source = artifact[3317 + size..]
+    if source.length > 67108864: error(invalid, "release source too large")
+    let release = try pkg.decode_release(metadata)
+    if release.origin != origin: error(invalid, "release origin mismatch")
+    discard(try pkg.parse_version(release.toolchain))
+    var split: usize = 0
+    while split < release.package.length and release.package.bytes[split] != '/': split += 1
+    if split == 0 or split == release.package.length: error(invalid, "invalid package identity")
+    let account = (str)release.package.bytes[..<split]
+    let name = (str)release.package.bytes[split + 1..]
+    if account.length > 32 or name.length == 0 or name.length > 64: error(invalid, "invalid package identity")
+    for byte in account.bytes:
+        if not ((byte >= 'a' and byte <= 'z') or (byte >= '0' and byte <= '9') or byte == '_'):
+            error(invalid, "invalid package owner")
+    for i in 0..<name.length:
+        let byte = name.bytes[i]
+        let alnum = (byte >= 'a' and byte <= 'z') or (byte >= '0' and byte <= '9')
+        if not alnum and (i == 0 or (byte != '_' and byte != '-')): error(invalid, "invalid package name")
+    # load validates canonical loopback origin before reading the password.
+    var token = try credentials.load(vault_path, origin, account)
+    defer token.close()
+    var port: usize = 0
+    for byte in origin.bytes[17..]: port = port * 10 + (usize)(byte - '0')
+    let host = (str)origin.bytes[7..]
+    var bearer_buffer: u8[80]
+    defer crypto.wipe(bearer_buffer)
+    let bearer = try format(bearer_buffer, f"Bearer {(str)try token.bytes()}")
+    var fields: net.HttpField[2]
+    fields[0] = net.HttpField(name = "Authorization", value = bearer)
+    fields[1] = net.HttpField(name = "Content-Type", value = "application/octet-stream")
+    var key: u8[1952]
+    let identity = try http_client.request(net.SocketAddress.loopback((u16)port), "GET", "/v1/identity/key", host, fields, 1, b"", key)
+    if identity.status != 200 or identity.count != key.length: error(invalid, "cannot read enrolled signing key")
+    if not try pkg.verify_release(release, key, signature, source): error(invalid, "artifact does not verify against enrolled key")
+    var requested: u8[20]
+    try git.decode_id(release.commit, requested)
+    var pack = try git.decode_pack(source)
+    defer pack.close()
+    try pack_check.validate(&pack, requested)
+    var endpoint_buffer: u8[256]
+    let endpoint = try format(endpoint_buffer, f"/v1/releases/{release.package}")
+    if not check_only:
+        var response: u8[128]
+        let result = http_client.request(net.SocketAddress.loopback((u16)port), "POST", endpoint, host, fields, 2, artifact, response) catch:
+            error(invalid, "upload outcome uncertain; retain artifact and use release-check before retrying")
+        if not ((result.status == 201 and (str)response[..<result.count] == "published") or (result.status == 200 and (str)response[..<result.count] == "unchanged")):
+            error(invalid, "upload not confirmed; retain artifact and use release-check")
+    let output = try alloc u8[67108864] in memory.heap
+    defer free(output) in memory.heap
+    for part in ["metadata", "signature", "source"]:
+        var path_buffer: u8[384]
+        let path = try format(path_buffer, f"{endpoint}/{release.version}/{part}")
+        let result = try http_client.request(net.SocketAddress.loopback((u16)port), "GET", path, host, fields, 1, b"", output)
+        let expected = metadata if part == "metadata" else (signature if part == "signature" else source)
+        if result.status != 200 or not crypto.equal(output[..<result.count], expected):
+            error(invalid, "release readback not confirmed; retain artifact for reconciliation")
+    try io.stdout().write("Confirmed exact signed release bytes in registry.\n")
+    return 0
 
 func read(path: str, maximum: usize) -> u8[]!:
     let name = try strings.copy(path)

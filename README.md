@@ -82,6 +82,8 @@ luc key-create <http://127.0.0.1:port> <account> <new-key-vault> --password-stdi
 luc key-enroll <http://127.0.0.1:port> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin
 luc key-check <http://127.0.0.1:port> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin
 luc release-sign <metadata> <pack> <new-upload> --key-vault <key-vault> --password-stdin
+luc release-upload <origin> <artifact> --vault <session-vault> --password-stdin
+luc release-check <origin> <artifact> --vault <session-vault> --password-stdin
 luc remote-refs <git-url> --vault <vault> --password-stdin
 luc remote-fetch <git-url> <commit> <new-pack-path> --vault <vault> --password-stdin
 ```
@@ -170,6 +172,24 @@ with an already published immutable version. No network request, key enrollment,
 registry commit upload, release upload or automatic retry is performed here.
 It validates pack graph structure, not checkout path portability or project build
 correctness. Metadata generation and `luc publish` remain separate work.
+
+`release-upload` consumes that saved artifact and an explicit matching origin.
+It unlocks an origin/account-bound session vault from one password line plus EOF,
+reads the authenticated account's enrolled key, and verifies the signature, source
+digest and Git pack closure before sending one POST. Success requires a201
+`published` or200 `unchanged` reply followed by exact metadata/signature/source
+readback. A failed request or readback can still mean publication happened. Retain
+the artifact and use `release-check`, which performs GETs only, before deciding
+whether to retry the exact artifact. Neither command changes local vaults or
+artifacts. Conflicts are never overwritten and redirects are not followed.
+
+These commands remain loopback-development-only. The enrolled key is obtained
+from the authenticated registry, not an independent publisher trust source; this
+is publication reconciliation, not public package discovery or trust bootstrap.
+The repository and signed commit must already exist remotely. Release uploads
+are bounded to64MiB source plus envelope; readback loads source in memory. There
+is no automatic retry, version selection, metadata generation or dependency
+installation here. Public verified HTTPS remains pending.
 
 The encrypted LUC1 payload is `LUC1\norigin\naccount\ntoken\n`. Origin must be exact
 `http://127.0.0.1:<nonzero-port>` without leading port zeroes or a trailing slash;

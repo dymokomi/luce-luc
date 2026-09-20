@@ -14,7 +14,7 @@ func write(root: str, name: str, bytes: const u8[]) -> !:
     try files.write((c.str)path, bytes)
 
 pub func main(arguments: str[]) -> i32!:
-    assert(arguments.length == 2)
+    assert(arguments.length == 2 or arguments.length == 3)
     with memory.heap:
         let root = arguments[1]
         let commit = b"tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor A <a@b> 1 +0000\ncommitter A <a@b> 1 +0000\n\nsigned fixture\n"
@@ -38,6 +38,7 @@ pub func main(arguments: str[]) -> i32!:
         var signature: u8[3309]
         var random: u8[32]
         var release = pkg.Release(origin = "https://pkg.luciaos.com", package = "acme/demo", version = "1.2.3", commit = (str)encoded, source_digest = digest, compiler = "luce-base", toolchain = "0.20.0")
+        if arguments.length == 3: release.origin = arguments[2]
         let size = try pkg.encode_release(release, wire)
         try crypto_native.mldsa_sign(secret, wire[..<size], random, signature)
         try write(root, "metadata", wire[..<size])

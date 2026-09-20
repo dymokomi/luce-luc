@@ -127,7 +127,14 @@ with tempfile.TemporaryDirectory(prefix='luc-key-registry-', dir='/tmp') as temp
                 command(sign, b'signing-password\n')
                 upload = artifact.read_bytes()
                 endpoint = '/v1/releases/testadmin/signed-account'
-                assert request('POST', endpoint, upload, headers) == (201, b'published')
+                publish = ['release-upload', origin, artifact, '--vault', session, '--password-stdin']
+                reconcile = list(publish)
+                reconcile[0] = 'release-check'
+                command(reconcile, b'vault-password\n', False)
+                command(publish, b'wrong-password\n', False)
+                command(publish, b'vault-password\n')
+                command(reconcile, b'vault-password\n')
+                command(publish, b'vault-password\n')
                 assert request('POST', endpoint, upload, headers) == (200, b'unchanged')
                 size = int.from_bytes(upload[4:6], 'little')
                 for part, expected in (('metadata', metadata), ('signature', upload[8 + size:3317 + size]), ('source', source)):

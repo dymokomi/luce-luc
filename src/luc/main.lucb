@@ -752,6 +752,10 @@ pub func main(arguments: c.str[]) -> i32!:
             if arguments.length != 6 or (str)arguments[5] != "--secrets-stdin":
                 error(usage_error, "usage: luc auth-store <loopback-origin> <account> <new-vault> --secrets-stdin")
             return try credentials.store((str)arguments[2], (str)arguments[3], (str)arguments[4])
+        if command == "release-upload" or command == "release-check":
+            if arguments.length != 7 or (str)arguments[4] != "--vault" or (str)arguments[6] != "--password-stdin":
+                error(usage_error, "usage: luc release-upload|release-check <origin> <artifact> --vault <session> --password-stdin")
+            return try release_upload.upload((str)arguments[2], (str)arguments[3], (str)arguments[5], check_only = command == "release-check")
         if command == "release-sign":
             if arguments.length != 8 or (str)arguments[5] != "--key-vault" or (str)arguments[7] != "--password-stdin":
                 error(usage_error, "usage: luc release-sign <metadata> <pack> <new-upload> --key-vault <key-vault> --password-stdin")
@@ -839,6 +843,7 @@ func usage(out: io.Writer) -> !:
     try out.write("  remote-refs <url>      list registry refs (loopback HTTP development transport)\n")
     try out.write("  auth-store <origin> <account> <new-vault> --secrets-stdin  encrypt a session token\n")
     try out.write("  release-sign <metadata> <pack> <new-upload> --key-vault <key> --password-stdin  save signed LRP1 artifact\n")
+    try out.write("  release-upload|release-check <origin> <artifact> --vault <session> --password-stdin  publish or reconcile exact release bytes\n")
     try out.write("  key-create <origin> <account> <new-key-vault> --password-stdin  save an encrypted signing seed\n")
     try out.write("  key-enroll <origin> <account> --vault <session> --key-vault <key> --passwords-stdin  enroll signing key\n")
     try out.write("  key-check <origin> <account> --vault <session> --key-vault <key> --passwords-stdin  compare enrolled key without mutation\n")
