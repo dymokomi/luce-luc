@@ -58,10 +58,10 @@ binary = out / 'sanitize'
 run([base, 'build', 'src/luc/main.lucb', '--emit=c', '-o', generated])
 sanitizers = ['-fsanitize=address,undefined']
 # The pinned Base compiler emits allocator callbacks with ABI-compatible but
-# type-incompatible function pointers on ARM64 Linux. Clang's function UBSan
+# type-incompatible function pointers on Linux. Clang's function UBSan
 # alone rejects that compiler-generated call before luc runs. Keep every other
 # undefined-behavior check and ASan enabled until the language audit is fixed.
-if platform.system() == 'Linux' and platform.machine() in ('aarch64', 'arm64'):
+if platform.system() == 'Linux':
     sanitizers.append('-fno-sanitize=function')
 run([os.environ.get('CC', 'cc'), '-std=gnu11', '-O1', '-g', '-w',
      '-fno-strict-aliasing', *sanitizers, '-fno-omit-frame-pointer', '-I', runtime,
