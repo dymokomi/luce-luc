@@ -12,6 +12,7 @@ luc new <dir> [opts]      scaffold a new project (--package|--app, --luce|--luce
 luc init [opts]           scaffold a project in the current directory
 luc add <path>            add a local package dependency to luce.toml
 luc lock --check          validate luc.lock syntax without fetching or changing files
+luc install <origin> <owner/package> <version> --trusted-key <key> (--vault <session> --password-stdin | --offline) [--locked]
 luc remote-refs <url>     list remote Git refs (loopback HTTP development transport)
 luc remote-fetch <url> <commit-id> <new-pack-path>  fetch a validated full Git pack
 luc checkout-pack <pack> <commit-id> <new-directory>  materialize source files
@@ -205,6 +206,31 @@ lock is edited, no build runs, and this is not yet dependency installation/cache
 Caller-supplied trust does not establish freshness or key ownership automatically.
 The current endpoint is owner-authenticated and loopback-only, not public catalog
 access; production HTTPS and publisher trust provisioning remain pending.
+
+`install` turns the verified release into a compiler-native local dependency.
+Online mode downloads and verifies the exact release, then atomically saves its
+LRP1 bytes in the cache. Offline mode performs no credential read and no network
+request: it reopens and reverifies those same bytes against the explicit trusted
+key. `--locked` requires the existing lock entry, including v2 commit/toolchain
+pins, before checkout. Both modes validate the signed Git graph, atomically create
+`.luc/packages/release-<request-hash>`, check its root `luce.toml` package name and
+language, and atomically add that relative path under the consumer's
+`[dependencies]`. Both compilers therefore use their existing local dependency
+contract; no language repository change or generated import shim is involved.
+
+The default artifact cache is `.luc/cache`; set `LUC_PACKAGE_CACHE` to an existing
+or creatable cache directory whose parent already exists. Installed sources stay
+project-local even with a relocated shared cache, so moving the project preserves
+its manifest paths. New projects ignore `.luc/` in Git. Cache entries are0600,
+file- and directory-synchronized, immutable/no-replace, and reconciled byte for
+byte if concurrent installers publish the same entry. Final cache symlinks,
+malformed/tampered artifacts, mismatched trust/identity/lock, unsafe checkout
+paths, missing manifests, language mismatches and existing install destinations
+fail without changing `luce.toml`; a verified cache artifact may remain after a
+later install failure. Installed source is ordinary local project state and is
+not continuously revalidated after installation. Version discovery, dependency
+graph resolution, lock generation/update and transitive installation remain next
+steps. Public HTTPS and publisher trust provisioning remain pending.
 
 The encrypted LUC1 payload is `LUC1\norigin\naccount\ntoken\n`. Origin must be exact
 `http://127.0.0.1:<nonzero-port>` without leading port zeroes or a trailing slash;

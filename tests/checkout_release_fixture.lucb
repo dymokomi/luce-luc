@@ -13,20 +13,61 @@ func write(root: str, name: str, bytes: const u8[]) -> !:
     defer strings.release(path)
     try files.write((c.str)path, bytes)
 
+func tree_entry(output: u8[], at: usize*, name: str, id: const u8[]):
+    let mode = b"100644 "
+    for byte in mode:
+        output[*at] = byte
+        *at += 1
+    for byte in name.bytes:
+        output[*at] = byte
+        *at += 1
+    output[*at] = 0
+    *at += 1
+    for byte in id:
+        output[*at] = byte
+        *at += 1
+
 pub func main(arguments: str[]) -> i32!:
-    assert(arguments.length == 2 or arguments.length == 3)
+    assert(arguments.length >= 2 and arguments.length <= 4)
     with memory.heap:
         let root = arguments[1]
-        let commit = b"tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor A <a@b> 1 +0000\ncommitter A <a@b> 1 +0000\n\nsigned fixture\n"
+        let package_fixture = arguments.length == 4
+        let compiler = arguments[3] if package_fixture else "luce-base"
+        assert(compiler == "luce-base" or compiler == "luce")
+        var manifest_buffer: u8[256]
+        let manifest = try strings.copy(try format(manifest_buffer, f"[package]\nname = \"demo_dep\"\nlanguage = \"{compiler}\"\nsource = \".\"\n\n[exports]\ndemo_dep = \"demo\"\n"))
+        defer strings.release(manifest)
+        let source_text = "pub func answer() -> int:\n    return 42\n" if compiler == "luce" else "pub func answer() -> i32:\n    return 42\n"
+        var manifest_id: u8[20]
+        var source_id: u8[20]
+        discard(try git.hash_object("blob", manifest.bytes, manifest_id))
+        discard(try git.hash_object("blob", source_text.bytes, source_id))
+        var tree: u8[256]
+        var tree_size: usize = 0
+        if package_fixture:
+            tree_entry(tree, &tree_size, "demo.luc" if compiler == "luce" else "demo.lucb", source_id)
+            tree_entry(tree, &tree_size, "luce.toml", manifest_id)
+        var tree_id: u8[20]
+        discard(try git.hash_object("tree", tree[..<tree_size], tree_id))
+        var tree_hex: u8[40]
+        discard(try git.hex_id(tree_id, tree_hex))
+        var commit_buffer: u8[256]
+        let commit = try format(commit_buffer, f"tree {(str)tree_hex}\nauthor A <a@b> 1 +0000\ncommitter A <a@b> 1 +0000\n\nsigned fixture\n")
         var id: u8[20]
-        discard(try git.hash_object("commit", commit, id))
+        discard(try git.hash_object("commit", commit.bytes, id))
         var encoded: u8[40]
         discard(try git.hex_id(id, encoded))
-        var objects: git.Object[2]
-        objects[0] = git.Object(kind = "tree", payload = b"")
-        objects[1] = git.Object(kind = "commit", payload = commit)
+        var objects: git.Object[4]
+        var object_count: usize = 0
+        if package_fixture:
+            objects[0] = git.Object(kind = "blob", payload = manifest.bytes)
+            objects[1] = git.Object(kind = "blob", payload = source_text.bytes)
+            object_count = 2
+        objects[object_count] = git.Object(kind = "tree", payload = tree[..<tree_size])
+        objects[object_count + 1] = git.Object(kind = "commit", payload = commit.bytes)
+        object_count += 2
         var source: u8[4096]
-        let n = try git.encode_pack(objects, source)
+        let n = try git.encode_pack(objects[..<object_count], source)
         var digest: u8[32]
         discard(try pkg.source_digest(source[..<n], digest))
         var seed: u8[32]
@@ -37,8 +78,8 @@ pub func main(arguments: str[]) -> i32!:
         var wire: u8[1600]
         var signature: u8[3309]
         var random: u8[32]
-        var release = pkg.Release(origin = "https://pkg.luciaos.com", package = "acme/demo", version = "1.2.3", commit = (str)encoded, source_digest = digest, compiler = "luce-base", toolchain = "0.20.0")
-        if arguments.length == 3: release.origin = arguments[2]
+        var release = pkg.Release(origin = "https://pkg.luciaos.com", package = "acme/demo", version = "1.2.3", commit = (str)encoded, source_digest = digest, compiler = compiler, toolchain = "0.20.0")
+        if arguments.length >= 3: release.origin = arguments[2]
         let size = try pkg.encode_release(release, wire)
         try crypto_native.mldsa_sign(secret, wire[..<size], random, signature)
         try write(root, "metadata", wire[..<size])
