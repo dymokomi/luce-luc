@@ -78,6 +78,8 @@ luc auth-store <http://127.0.0.1:port> <account> <new-vault> --secrets-stdin
 luc login <http://127.0.0.1:port> <account> <new-vault> --passwords-stdin
 luc register <http://127.0.0.1:port> <account> --secrets-stdin
 luc repo-create <http://127.0.0.1:port> <name> --vault <vault> --password-stdin
+luc key-create <http://127.0.0.1:port> <account> <new-key-vault> --password-stdin
+luc key-enroll <http://127.0.0.1:port> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin
 luc remote-refs <git-url> --vault <vault> --password-stdin
 luc remote-fetch <git-url> <commit> <new-pack-path> --vault <vault> --password-stdin
 ```
@@ -120,6 +122,25 @@ tree or configure a remote, and does not publish a signed package release.
 Conflicts and other non-success responses fail without automatic retry; an
 ambiguous network failure may mean the remote repository was created.
 
+`key-create` is offline: it reads one password line and EOF, generates an OS-random
+32-byte ML-DSA-65 seed, and publishes a new encrypted signing-key vault without
+replacement. Its LAV1-encrypted payload is `LUK1\norigin\naccount\n` followed by the
+32 binary seed bytes. It uses the same private-directory/file policy as session
+vaults. Keep a secure backup before enrollment; there is no rotation/recovery yet.
+The seed and expanded private-key buffers are wiped when their owners close.
+
+`key-enroll` reads the session-vault password line followed by the signing-key-vault
+password line and EOF. Both vaults must already exist and match the exact origin
+and account. It verifies the session principal, requests a fresh challenge, derives
+the public key and sends the native domain-bound ML-DSA-65 possession proof. The
+registry's `LUCE_REGISTRY_ORIGIN` must equal the requested origin. Neither vault is
+modified or deleted, including after a lost response or rejected enrollment. There
+is no automatic retry: errors can occur after remote publication. A conflict does
+not prove that this particular key was bound; key-read/reconciliation support is
+still pending. Preserve the vault and investigate uncertain outcomes. This command
+is first-key enrollment, not release publication. Both commands refuse terminal
+secret input, and remain restricted to disposable loopback development credentials.
+
 The encrypted LUC1 payload is `LUC1\norigin\naccount\ntoken\n`. Origin must be exact
 `http://127.0.0.1:<nonzero-port>` without leading port zeroes or a trailing slash;
 it is checked before any HTTP request. Account names follow native auth syntax.
@@ -135,6 +156,8 @@ The remote oracle runs in every compiler mode and under sanitizers via
 `tests/release_modes.py`. `tests/remote_registry.py` accepts built luc, registry,
 account-fixture and native-transfer binaries to exercise the actual sibling registry
 with disposable accounts; this larger cross-repository test is run separately.
+`tests/keys_registry.py LUC REGISTRY ACCOUNT_FIXTURE` separately verifies native
+key enrollment, replay rejection and persistent binding after registry restart.
 
 `luc remote-fetch <url> <commit-id> <new-pack-path>` uses the same loopback/token
 policy, requires the requested ID to be advertised, and performs native Git

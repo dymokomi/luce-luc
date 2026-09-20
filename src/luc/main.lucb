@@ -751,6 +751,14 @@ pub func main(arguments: c.str[]) -> i32!:
             if arguments.length != 6 or (str)arguments[5] != "--secrets-stdin":
                 error(usage_error, "usage: luc auth-store <loopback-origin> <account> <new-vault> --secrets-stdin")
             return try credentials.store((str)arguments[2], (str)arguments[3], (str)arguments[4])
+        if command == "key-create":
+            if arguments.length != 6 or (str)arguments[5] != "--password-stdin":
+                error(usage_error, "usage: luc key-create <loopback-origin> <account> <new-key-vault> --password-stdin")
+            return try credentials.key_create((str)arguments[2], (str)arguments[3], (str)arguments[4])
+        if command == "key-enroll":
+            if arguments.length != 9 or (str)arguments[4] != "--vault" or (str)arguments[6] != "--key-vault" or (str)arguments[8] != "--passwords-stdin":
+                error(usage_error, "usage: luc key-enroll <loopback-origin> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin")
+            return try credentials.key_enroll((str)arguments[2], (str)arguments[3], (str)arguments[5], (str)arguments[7])
         if command == "login":
             if arguments.length != 6 or (str)arguments[5] != "--passwords-stdin":
                 error(usage_error, "usage: luc login <loopback-origin> <account> <new-vault> --passwords-stdin")
@@ -825,6 +833,8 @@ func usage(out: io.Writer) -> !:
     try out.write("  lock --check          validate luc.lock syntax without fetching or changing files\n")
     try out.write("  remote-refs <url>      list registry refs (loopback HTTP development transport)\n")
     try out.write("  auth-store <origin> <account> <new-vault> --secrets-stdin  encrypt a session token\n")
+    try out.write("  key-create <origin> <account> <new-key-vault> --password-stdin  save an encrypted signing seed\n")
+    try out.write("  key-enroll <origin> <account> --vault <session> --key-vault <key> --passwords-stdin  enroll signing key\n")
     try out.write("  login <origin> <account> <new-vault> --passwords-stdin  log in and encrypt the session\n")
     try out.write("  register <origin> <account> --secrets-stdin  redeem an invitation\n")
     try out.write("  repo-create <origin> <name> --vault <path> --password-stdin  create a remote repository\n")
