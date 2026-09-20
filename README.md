@@ -81,6 +81,7 @@ luc repo-create <http://127.0.0.1:port> <name> --vault <vault> --password-stdin
 luc key-create <http://127.0.0.1:port> <account> <new-key-vault> --password-stdin
 luc key-enroll <http://127.0.0.1:port> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin
 luc key-check <http://127.0.0.1:port> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin
+luc release-sign <metadata> <pack> <new-upload> --key-vault <key-vault> --password-stdin
 luc remote-refs <git-url> --vault <vault> --password-stdin
 luc remote-fetch <git-url> <commit> <new-pack-path> --vault <vault> --password-stdin
 ```
@@ -148,6 +149,28 @@ Neither command overwrites a conflicting key. This command
 is first-key enrollment, not release publication. Both commands refuse terminal
 secret input, and remain restricted to disposable loopback development credentials.
 
+`release-sign` is offline: it reads canonical LRS1 metadata and a standalone Git
+pack, verifies SHA-256 source binding and typed pack closure for the signed commit,
+then unlocks the matching origin/account LUK1 signing vault. It requires an
+`owner/package` identity using the registry naming rules and a numeric toolchain
+version. One vault-password line and EOF must come from nonterminal stdin. Current
+vault-origin policy remains loopback-only; this is not production key tooling.
+
+It creates a fresh randomized native ML-DSA-65 signature, self-verifies it, and
+saves an LRP1 upload:8-byte header (`LRP1`, u16le metadata length, two reserved zero
+bytes), metadata,3309-byte signature, exact pack bytes. Publication uses a0600
+temporary file, file sync, atomic no-replace and parent-directory sync. Keep the
+destination parent/ancestors trusted and stable. An existing entry, including a
+symlink, is never replaced. A directory-sync failure can leave a published file;
+inspect the destination rather than assuming an error means no file exists.
+The artifact contains source and public proof, not the seed or expanded secret
+key. Seed/private-key/randomness owners are wiped on close. Preserve the exact
+artifact for retries: re-signing produces a different signature, which conflicts
+with an already published immutable version. No network request, key enrollment,
+registry commit upload, release upload or automatic retry is performed here.
+It validates pack graph structure, not checkout path portability or project build
+correctness. Metadata generation and `luc publish` remain separate work.
+
 The encrypted LUC1 payload is `LUC1\norigin\naccount\ntoken\n`. Origin must be exact
 `http://127.0.0.1:<nonzero-port>` without leading port zeroes or a trailing slash;
 it is checked before any HTTP request. Account names follow native auth syntax.
@@ -165,6 +188,9 @@ account-fixture and native-transfer binaries to exercise the actual sibling regi
 with disposable accounts; this larger cross-repository test is run separately.
 `tests/keys_registry.py LUC REGISTRY ACCOUNT_FIXTURE` separately verifies native
 key enrollment, replay rejection and persistent binding after registry restart.
+An optional fourth `CHECKOUT_RELEASE_FIXTURE` argument adds CLI artifact signing
+with the enrolled random key, native registry acceptance, exact retries and
+downloaded-byte verification. The test harness performs HTTP upload for now.
 
 `luc remote-fetch <url> <commit-id> <new-pack-path>` uses the same loopback/token
 policy, requires the requested ID to be advertised, and performs native Git

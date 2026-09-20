@@ -3,6 +3,7 @@
 Usage: keys_registry.py LUC REGISTRY ACCOUNT_FIXTURE
 """
 import http.client
+import json
 import os
 from pathlib import Path
 import socket
@@ -11,7 +12,8 @@ import sys
 import tempfile
 import time
 
-luc, registry, fixture = [Path(arg).resolve() for arg in sys.argv[1:]]
+luc, registry, fixture = [Path(arg).resolve() for arg in sys.argv[1:4]]
+signing_fixture = Path(sys.argv[4]).resolve() if len(sys.argv) == 5 else None
 with tempfile.TemporaryDirectory(prefix='luc-key-registry-', dir='/tmp') as temporary:
     root = Path(temporary)
     database = root / 'registry.db'
@@ -89,6 +91,49 @@ with tempfile.TemporaryDirectory(prefix='luc-key-registry-', dir='/tmp') as temp
             assert b'remote signing key differs' in result.stderr
             # Bound signing keys do not break the session/repository workflow.
             command(['repo-create', origin, 'signed-account', '--vault', session, '--password-stdin'], b'vault-password\n')
+            if signing_fixture is not None:
+                def request(method, path, body=b'', headers=None):
+                    connection = http.client.HTTPConnection('127.0.0.1', port, timeout=30)
+                    try:
+                        connection.request(method, path, body, headers or {})
+                        response = connection.getresponse()
+                        return response.status, response.read()
+                    finally:
+                        connection.close()
+                status, token = request('POST', '/v1/sessions', json.dumps({'name': 'testadmin', 'password': 'fixture-password'}))
+                assert status == 200
+                headers = {'Authorization': 'Bearer ' + token.decode(), 'Content-Type': 'application/octet-stream'}
+                subprocess.run([str(signing_fixture), str(root)], check=True, timeout=30)
+                metadata = (root / 'metadata').read_bytes()
+                fields, at = [], 6
+                for _ in range(6):
+                    size = int.from_bytes(metadata[at:at + 2], 'little')
+                    at += 2
+                    fields.append(metadata[at:at + size])
+                    at += size
+                fields[0], fields[1] = origin.encode(), b'testadmin/signed-account'
+                metadata = metadata[:6] + b''.join(len(v).to_bytes(2, 'little') + v for v in fields) + metadata[at:]
+                (root / 'metadata').write_bytes(metadata)
+                objects = root / 'objects.git'
+                subprocess.run(['git', 'init', '--bare', str(objects)], check=True, capture_output=True, timeout=30)
+                source = (root / 'source').read_bytes()
+                subprocess.run(['git', '-C', str(objects), 'unpack-objects'], input=source,
+                               check=True, capture_output=True, timeout=30)
+                commit = subprocess.check_output(['git', '-C', str(objects), 'cat-file', 'commit', fields[3].decode()], timeout=30)
+                wire = b'commit ' + str(len(commit)).encode() + b'\0' + commit
+                assert request('PUT', '/v1/repositories/testadmin/signed-account/objects/' + fields[3].decode(), wire, headers)[0] == 200
+                artifact = root / 'signed-upload'
+                sign = ['release-sign', root / 'metadata', root / 'source', artifact, '--key-vault', key, '--password-stdin']
+                command(sign, b'signing-password\n')
+                upload = artifact.read_bytes()
+                endpoint = '/v1/releases/testadmin/signed-account'
+                assert request('POST', endpoint, upload, headers) == (201, b'published')
+                assert request('POST', endpoint, upload, headers) == (200, b'unchanged')
+                size = int.from_bytes(upload[4:6], 'little')
+                for part, expected in (('metadata', metadata), ('signature', upload[8 + size:3317 + size]), ('source', source)):
+                    assert request('GET', endpoint + '/1.2.3/' + part, headers=headers) == (200, expected)
+                assert artifact.read_bytes() == upload and key.read_bytes() == before
+                print('PASS luc vault-signed artifact accepted by native registry; exact retry and verified downloads', flush=True)
         finally:
             stop(process)
 print('PASS native luc encrypted signing key -> registry ML-DSA enrollment, replay and restart', flush=True)

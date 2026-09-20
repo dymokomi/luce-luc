@@ -1,0 +1,95 @@
+## Offline signed LRP1 artifact creation. No implicit network or overwrite.
+import pkg
+import git
+import crypto_native as crypto
+import luc.credentials as credentials
+import luc.pack_check as pack_check
+import files
+import paths
+import strings
+import memory
+import io
+import c
+
+let invalid: ErrorCode = ErrorCode.package(6)
+
+func read(path: str, maximum: usize) -> u8[]!:
+    let name = try strings.copy(path)
+    defer strings.release(name)
+    return try files.read_limit((c.str)name, maximum)
+
+pub func sign(metadata_path: str, source_path: str, destination: str, vault_path: str) -> i32!:
+    if destination.length == 0 or destination.length > 4096: error(invalid, "invalid artifact destination")
+    for byte in destination.bytes:
+        if byte == 0: error(invalid, "invalid artifact destination")
+    let basename = paths.base(destination)
+    if basename.length == 0 or basename == "." or basename == "..": error(invalid, "invalid artifact filename")
+    let filename = try strings.copy(destination)
+    defer strings.release(filename)
+    var exists = true
+    discard(files.metadata((c.str)filename, follow_symlinks = false) catch failure:
+        if failure.code != files.missing: error(failure.code, failure.message)
+        exists = false
+        recover files.Metadata())
+    if exists: error(invalid, "artifact destination already exists")
+    let metadata = try read(metadata_path, 1600)
+    defer free(metadata) in memory.heap
+    let release = try pkg.decode_release(metadata)
+    discard(try pkg.parse_version(release.toolchain))
+    var split: usize = 0
+    while split < release.package.length and release.package.bytes[split] != '/': split += 1
+    if split == 0 or split == release.package.length: error(invalid, "release requires owner/package identity")
+    let account = (str)release.package.bytes[..<split]
+    let name = (str)release.package.bytes[split + 1..]
+    if name.length == 0 or name.length > 64: error(invalid, "invalid release package name")
+    for i in 0..<name.length:
+        let byte = name.bytes[i]
+        let alnum = (byte >= 'a' and byte <= 'z') or (byte >= '0' and byte <= '9')
+        if not alnum and (i == 0 or (byte != '_' and byte != '-')): error(invalid, "invalid release package name")
+    let source = try read(source_path, 67108864)
+    defer free(source) in memory.heap
+    var digest: u8[32]
+    discard(try pkg.source_digest(source, digest))
+    if not crypto.equal(digest, release.source_digest): error(invalid, "release source digest mismatch")
+    var requested: u8[20]
+    try git.decode_id(release.commit, requested)
+    var pack = try git.decode_pack(source)
+    defer pack.close()
+    try pack_check.validate(&pack, requested)
+    var seed = try credentials.signing_seed(vault_path, release.origin, account)
+    defer seed.close()
+    var key: u8[1952]
+    var secret: u8[4032]
+    defer crypto.wipe(secret)
+    try crypto.mldsa_keygen(try seed.bytes(), key, secret)
+    var randomness = try crypto.random_secret(32)
+    defer randomness.close()
+    var signature: u8[3309]
+    try crypto.mldsa_sign(secret, metadata, try randomness.bytes(), signature)
+    if not try pkg.verify_release(release, key, signature, source): error(invalid, "release signature self-check failed")
+    let directory = paths.directory(filename)
+    let parent_path = try strings.copy(directory if directory.length > 0 else ".")
+    defer strings.release(parent_path)
+    var parent = try files.Directory.open((c.str)parent_path, follow_symlinks = false)
+    defer parent.destroy()
+    var parent_file = try files.File.open((c.str)parent_path)
+    defer parent_file.destroy()
+    var temporary = try files.TemporaryFile.create((c.str)parent_path, permissions = 384)
+    defer temporary.destroy()
+    var header: u8[8]
+    header[0] = 'L'
+    header[1] = 'R'
+    header[2] = 'P'
+    header[3] = '1'
+    header[4] = (u8)(metadata.length & 255)
+    header[5] = (u8)(metadata.length >> 8)
+    try io.write_all(&temporary, header)
+    try io.write_all(&temporary, metadata)
+    try io.write_all(&temporary, signature)
+    try io.write_all(&temporary, source)
+    try temporary.sync()
+    try temporary.publish((c.str)filename, replace = false)
+    try parent_file.sync()
+    try parent_file.close()
+    try io.stdout().write("Saved signed release upload artifact; retain these exact bytes for publication retries.\n")
+    return 0

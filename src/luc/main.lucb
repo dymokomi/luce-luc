@@ -23,6 +23,7 @@ import strings
 import memory
 import pkg
 import luc.remote as remote
+import luc.release_upload as release_upload
 import luc.credentials as credentials
 import luc.checkout as checkout
 import git
@@ -751,6 +752,10 @@ pub func main(arguments: c.str[]) -> i32!:
             if arguments.length != 6 or (str)arguments[5] != "--secrets-stdin":
                 error(usage_error, "usage: luc auth-store <loopback-origin> <account> <new-vault> --secrets-stdin")
             return try credentials.store((str)arguments[2], (str)arguments[3], (str)arguments[4])
+        if command == "release-sign":
+            if arguments.length != 8 or (str)arguments[5] != "--key-vault" or (str)arguments[7] != "--password-stdin":
+                error(usage_error, "usage: luc release-sign <metadata> <pack> <new-upload> --key-vault <key-vault> --password-stdin")
+            return try release_upload.sign((str)arguments[2], (str)arguments[3], (str)arguments[4], (str)arguments[6])
         if command == "key-create":
             if arguments.length != 6 or (str)arguments[5] != "--password-stdin":
                 error(usage_error, "usage: luc key-create <loopback-origin> <account> <new-key-vault> --password-stdin")
@@ -833,6 +838,7 @@ func usage(out: io.Writer) -> !:
     try out.write("  lock --check          validate luc.lock syntax without fetching or changing files\n")
     try out.write("  remote-refs <url>      list registry refs (loopback HTTP development transport)\n")
     try out.write("  auth-store <origin> <account> <new-vault> --secrets-stdin  encrypt a session token\n")
+    try out.write("  release-sign <metadata> <pack> <new-upload> --key-vault <key> --password-stdin  save signed LRP1 artifact\n")
     try out.write("  key-create <origin> <account> <new-key-vault> --password-stdin  save an encrypted signing seed\n")
     try out.write("  key-enroll <origin> <account> --vault <session> --key-vault <key> --passwords-stdin  enroll signing key\n")
     try out.write("  key-check <origin> <account> --vault <session> --key-vault <key> --passwords-stdin  compare enrolled key without mutation\n")
