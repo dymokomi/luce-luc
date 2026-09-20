@@ -136,6 +136,12 @@ with tempfile.TemporaryDirectory(prefix='luc-key-registry-', dir='/tmp') as temp
                 command(reconcile, b'vault-password\n')
                 command(publish, b'vault-password\n')
                 assert request('POST', endpoint, upload, headers) == (200, b'unchanged')
+                listed = command(['versions', origin, 'testadmin/signed-account', '--vault', session,
+                                  '--password-stdin'], b'vault-password\n')
+                assert listed.stdout == b'1.2.3\n'
+                selected = command(['resolve', origin, 'testadmin/signed-account', '^1.0.0', '--vault', session,
+                                    '--password-stdin'], b'vault-password\n')
+                assert selected.stdout == b'1.2.3\n'
                 size = int.from_bytes(upload[4:6], 'little')
                 for part, expected in (('metadata', metadata), ('signature', upload[8 + size:3317 + size]), ('source', source)):
                     assert request('GET', endpoint + '/1.2.3/' + part, headers=headers) == (200, expected)
@@ -148,7 +154,7 @@ with tempfile.TemporaryDirectory(prefix='luc-key-registry-', dir='/tmp') as temp
                          '--trusted-key', root / 'trusted-key', '--vault', session, '--password-stdin'], b'vault-password\n')
                 assert (root / 'downloaded').is_dir() and not list((root / 'downloaded').iterdir())
                 assert artifact.read_bytes() == upload and key.read_bytes() == before
-                print('PASS luc vault-signed artifact accepted by native registry; exact retry and verified downloads', flush=True)
+                print('PASS luc vault-signed artifact accepted by native registry; exact retry, catalog selection and verified downloads', flush=True)
         finally:
             stop(process)
 print('PASS native luc encrypted signing key -> registry ML-DSA enrollment, replay and restart', flush=True)

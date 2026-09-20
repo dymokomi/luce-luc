@@ -1,0 +1,62 @@
+## Authenticated package-version discovery. Catalog selection is advisory;
+## callers must verify the selected signed release and source independently.
+import pkg
+import crypto_native as crypto
+import luc.credentials as credentials
+import luc.release_download as release_download
+import http_client
+import net
+import strings
+import memory
+import io
+
+let invalid: ErrorCode = ErrorCode.package(8)
+
+pub struct Catalog:
+    var storage: u8[]
+    pub var versions: pkg.Versions
+
+    pub mutating func close():
+        if self.storage.length > 0: free(self.storage) in memory.heap
+        var empty: u8[]
+        self.storage = empty
+
+## Fetch and eagerly validate one bounded LPV1 catalog. The returned version
+## views borrow Catalog.storage and remain valid until close.
+pub func fetch(origin: str, package: str, vault_path: str) -> Catalog!:
+    # Reuse the exact release identity and loopback transport profile; 0.0.0 is
+    # only a validation sentinel and never appears in the request path.
+    try release_download.validate_request(origin, package, "0.0.0")
+    var token = try credentials.load(vault_path, origin)
+    defer token.close()
+    var port: usize = 0
+    for byte in origin.bytes[17..]: port = port * 10 + (usize)(byte - '0')
+    let host = (str)origin.bytes[7..]
+    var bearer_buffer: u8[80]
+    defer crypto.wipe(bearer_buffer)
+    let bearer = try format(bearer_buffer, f"Bearer {(str)try token.bytes()}")
+    var fields: net.HttpField[1]
+    fields[0] = net.HttpField(name = "Authorization", value = bearer)
+    var path_buffer: u8[384]
+    let path = try format(path_buffer, f"/v1/releases/{package}")
+    let wire = try alloc u8[64518] in memory.heap
+    errdefer free(wire) in memory.heap
+    let result = try http_client.request(net.SocketAddress.loopback((u16)port), "GET", path, host,
+        fields, 1, b"", wire)
+    if result.status != 200: error(invalid, "package version catalog request failed")
+    let versions = try pkg.decode_versions(wire[..<result.count])
+    return Catalog(storage = wire, versions = versions)
+
+pub func show(origin: str, package: str, vault_path: str) -> i32!:
+    var catalog = try fetch(origin, package, vault_path)
+    defer catalog.close()
+    for i in 0..<catalog.versions.count:
+        try io.stdout().write(f"{try catalog.versions.at(i)}\n")
+    return 0
+
+pub func resolve(origin: str, package: str, requirement: str, vault_path: str) -> i32!:
+    var catalog = try fetch(origin, package, vault_path)
+    defer catalog.close()
+    let selected = try pkg.select_version(catalog.versions, requirement)
+    try io.stdout().write(f"{selected}\n")
+    return 0

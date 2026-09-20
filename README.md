@@ -13,6 +13,8 @@ luc init [opts]           scaffold a project in the current directory
 luc add <path>            add a local package dependency to luce.toml
 luc lock --check          validate luc.lock syntax without fetching or changing files
 luc install <origin> <owner/package> <version> --trusted-key <key> (--vault <session> --password-stdin | --offline) [--locked]
+luc versions <origin> <owner/package> --vault <session> --password-stdin
+luc resolve <origin> <owner/package> <version|^version> --vault <session> --password-stdin
 luc remote-refs <url>     list remote Git refs (loopback HTTP development transport)
 luc remote-fetch <url> <commit-id> <new-pack-path>  fetch a validated full Git pack
 luc checkout-pack <pack> <commit-id> <new-directory>  materialize source files
@@ -190,8 +192,18 @@ from the authenticated registry, not an independent publisher trust source; this
 is publication reconciliation, not public package discovery or trust bootstrap.
 The repository and signed commit must already exist remotely. Release uploads
 are bounded to64MiB source plus envelope; readback loads source in memory. There
-is no automatic retry, version selection, metadata generation or dependency
+is no automatic retry, metadata generation or dependency
 installation here. Public verified HTTPS remains pending.
+
+`versions` authenticates with the encrypted session vault and fetches the bounded
+LPV1 version catalog for one package. It validates the complete canonical,
+unique, descending numeric-semver list before printing any server-controlled
+version text. `resolve` applies either an exact requirement or the package
+library's caret compatibility rule and prints only the highest match. Discovery
+and selection are advisory: neither command downloads a release, changes project
+files, establishes publisher-key trust or proves freshness. A later install must
+still verify signed metadata, the explicit trusted ML-DSA key, source digest and
+Git graph. Both commands remain owner-authenticated and loopback-only.
 
 `release-download` fetches an exact release into a new source directory. Supply
 an independently trusted1952-byte ML-DSA-65 publisher key; the command never
@@ -228,9 +240,10 @@ malformed/tampered artifacts, mismatched trust/identity/lock, unsafe checkout
 paths, missing manifests, language mismatches and existing install destinations
 fail without changing `luce.toml`; a verified cache artifact may remain after a
 later install failure. Installed source is ordinary local project state and is
-not continuously revalidated after installation. Version discovery, dependency
-graph resolution, lock generation/update and transitive installation remain next
-steps. Public HTTPS and publisher trust provisioning remain pending.
+not continuously revalidated after installation. Single-package version discovery
+and exact/caret selection now exist, but manifest-wide dependency graph resolution,
+lock generation/update and transitive installation remain next steps. Public HTTPS
+and publisher trust provisioning remain pending.
 
 The encrypted LUC1 payload is `LUC1\norigin\naccount\ntoken\n`. Origin must be exact
 `http://127.0.0.1:<nonzero-port>` without leading port zeroes or a trailing slash;

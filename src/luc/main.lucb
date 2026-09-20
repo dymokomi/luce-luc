@@ -25,6 +25,7 @@ import pkg
 import luc.remote as remote
 import luc.release_upload as release_upload
 import luc.release_download as release_download
+import luc.catalog as catalog
 import luc.credentials as credentials
 import luc.checkout as checkout
 import git
@@ -885,6 +886,14 @@ pub func main(arguments: c.str[]) -> i32!:
             try checkout.materialize(&pack, commit, destination)
             try io.stdout().write("Downloaded and checked out release verified against supplied trusted key.\n")
             return 0
+        if command == "versions":
+            if arguments.length != 7 or (str)arguments[4] != "--vault" or (str)arguments[6] != "--password-stdin":
+                error(usage_error, "usage: luc versions <origin> <owner/package> --vault <session> --password-stdin")
+            return try catalog.show((str)arguments[2], (str)arguments[3], (str)arguments[5])
+        if command == "resolve":
+            if arguments.length != 8 or (str)arguments[5] != "--vault" or (str)arguments[7] != "--password-stdin":
+                error(usage_error, "usage: luc resolve <origin> <owner/package> <version|^version> --vault <session> --password-stdin")
+            return try catalog.resolve((str)arguments[2], (str)arguments[3], (str)arguments[4], (str)arguments[6])
         if command == "release-upload" or command == "release-check":
             if arguments.length != 7 or (str)arguments[4] != "--vault" or (str)arguments[6] != "--password-stdin":
                 error(usage_error, "usage: luc release-upload|release-check <origin> <artifact> --vault <session> --password-stdin")
@@ -977,6 +986,8 @@ func usage(out: io.Writer) -> !:
     try out.write("  remove <name>         remove a dependency from luce.toml\n")
     try out.write("  lock --check          validate luc.lock syntax without fetching or changing files\n")
     try out.write("  install <origin> <owner/package> <version> --trusted-key <key> (--vault <session> --password-stdin | --offline) [--locked]\n")
+    try out.write("  versions <origin> <owner/package> --vault <session> --password-stdin  list canonical available versions\n")
+    try out.write("  resolve <origin> <owner/package> <version|^version> --vault <session> --password-stdin  select a catalog version\n")
     try out.write("  remote-refs <url>      list registry refs (loopback HTTP development transport)\n")
     try out.write("  auth-store <origin> <account> <new-vault> --secrets-stdin  encrypt a session token\n")
     try out.write("  release-sign <metadata> <pack> <new-upload> --key-vault <key> --password-stdin  save signed LRP1 artifact\n")
