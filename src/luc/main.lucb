@@ -26,13 +26,14 @@ import luc.remote as remote
 import luc.release_upload as release_upload
 import luc.release_download as release_download
 import luc.catalog as catalog
+import luc.graph_lock as graph_lock
 import luc.credentials as credentials
 import luc.checkout as checkout
 import git
 import crypto_native
 
 ## The luc version, kept in step with VERSION.
-pub let luc_version: str = "0.7.0"
+pub let luc_version: str = "0.8.0"
 
 ## A command-line or manifest problem the user can fix.
 pub let usage_error: ErrorCode = ErrorCode.package(1)
@@ -458,16 +459,19 @@ func checkout_release_command(own: str[]) -> i32!:
 ## Parse the entire pinned lock profile without changing the project or fetching.
 ## This is structural validation, not release-signature or cache verification.
 func lock_command(project: Project*, own: str[], passthrough: str[]) -> i32!:
-    if own.length != 1 or own[0] != "--check" or passthrough.length != 0:
-        error(usage_error, "usage: luc lock --check")
-    discard(try require_manifest(project))
-    let filename = try strings.copy(try paths.join(project.root, "luc.lock"))
-    let contents = try files.read_limit((c.str)filename, 1048576)
-    defer free(contents) in memory.heap
-    var lock = try pkg.decode_lock((str)contents)
-    defer lock.close()
-    try io.stdout().write(f"valid luc.lock syntax: {lock.count} packages (signatures not verified)\n")
-    return 0
+    if passthrough.length != 0: error(usage_error, "lock does not accept passthrough arguments")
+    let manifest = try require_manifest(project)
+    if own.length == 1 and own[0] == "--check":
+        let filename = try strings.copy(try paths.join(project.root, "luc.lock"))
+        let contents = try files.read_limit((c.str)filename, 1048576)
+        defer free(contents) in memory.heap
+        var lock = try pkg.decode_lock((str)contents)
+        defer lock.close()
+        try io.stdout().write(f"valid luc.lock syntax: {lock.count} packages (signatures not verified)\n")
+        return 0
+    if own.length == 6 and own[1] == "--trusted-key" and own[3] == "--vault" and own[5] == "--password-stdin":
+        return try graph_lock.generate(project.root, manifest, own[0], own[2], own[4])
+    error(usage_error, "usage: luc lock --check | luc lock <origin> --trusted-key <key> --vault <session> --password-stdin")
 
 func strict_directory(path: str, permissions: u32) -> !:
     let name = try strings.copy(path)
@@ -1006,6 +1010,7 @@ func usage(out: io.Writer) -> !:
     try out.write("  add <path>            add a local package dependency to luce.toml\n")
     try out.write("  remove <name>         remove a dependency from luce.toml\n")
     try out.write("  lock --check          validate luc.lock syntax without fetching or changing files\n")
+    try out.write("  lock <origin> --trusted-key <key> --vault <session> --password-stdin  resolve authenticated registry dependencies\n")
     try out.write("  install <origin> <owner/package> <version> --trusted-key <key> (--vault <session> --password-stdin | --offline) [--locked]\n")
     try out.write("  versions <origin> <owner/package> --vault <session> --password-stdin  list canonical available versions\n")
     try out.write("  resolve <origin> <owner/package> <version|^version> --vault <session> --password-stdin  select a catalog version\n")

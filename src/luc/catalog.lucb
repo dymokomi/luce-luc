@@ -23,18 +23,17 @@ pub struct Catalog:
 
 ## Fetch and eagerly validate one bounded LPV1 catalog. The returned version
 ## views borrow Catalog.storage and remain valid until close.
-pub func fetch(origin: str, package: str, vault_path: str) -> Catalog!:
+pub func fetch_authenticated(origin: str, package: str, token: const u8[]) -> Catalog!:
     # Reuse the exact release identity and loopback transport profile; 0.0.0 is
     # only a validation sentinel and never appears in the request path.
     try release_download.validate_request(origin, package, "0.0.0")
-    var token = try credentials.load(vault_path, origin)
-    defer token.close()
+    if token.length != 32: error(invalid, "invalid registry session token")
     var port: usize = 0
     for byte in origin.bytes[17..]: port = port * 10 + (usize)(byte - '0')
     let host = (str)origin.bytes[7..]
     var bearer_buffer: u8[80]
     defer crypto.wipe(bearer_buffer)
-    let bearer = try format(bearer_buffer, f"Bearer {(str)try token.bytes()}")
+    let bearer = try format(bearer_buffer, f"Bearer {(str)token}")
     var fields: net.HttpField[1]
     fields[0] = net.HttpField(name = "Authorization", value = bearer)
     var path_buffer: u8[384]
@@ -46,6 +45,11 @@ pub func fetch(origin: str, package: str, vault_path: str) -> Catalog!:
     if result.status != 200: error(invalid, "package version catalog request failed")
     let versions = try pkg.decode_versions(wire[..<result.count])
     return Catalog(storage = wire, versions = versions)
+
+pub func fetch(origin: str, package: str, vault_path: str) -> Catalog!:
+    var token = try credentials.load(vault_path, origin)
+    defer token.close()
+    return try fetch_authenticated(origin, package, try token.bytes())
 
 pub func show(origin: str, package: str, vault_path: str) -> i32!:
     var catalog = try fetch(origin, package, vault_path)

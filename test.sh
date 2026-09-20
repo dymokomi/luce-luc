@@ -12,7 +12,9 @@ luc="$PWD/build/luc"
 python3 tests/lock.py "$luc"
 "$base" build tests/release_fixture.lucb --native -o build/release-fixture
 python3 tests/release.py "$luc" build/release-fixture
-[ "$("$luc" --version)" = "luc 0.7.0" ] || { echo "FAIL: version"; exit 1; }
+"$base" build tests/graph_lock_fixture.lucb --native -o build/graph-lock-fixture
+python3 tests/graph_lock.py "$luc" build/graph-lock-fixture
+[ "$("$luc" --version)" = "luc 0.8.0" ] || { echo "FAIL: version"; exit 1; }
 # update/upgrade name the official installers (dry-run so nothing is installed)
 [ "$("$luc" update --dry-run | head -1)" = "curl -fsSL https://luce-base.luciaos.com/install.sh | sh" ] || { echo "FAIL: update --dry-run"; exit 1; }
 [ "$("$luc" upgrade --dry-run | tail -1)" = "curl -fsSL https://luce.luciaos.com/install.sh | sh" ] || { echo "FAIL: upgrade alias"; exit 1; }

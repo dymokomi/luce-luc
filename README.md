@@ -12,6 +12,7 @@ luc new <dir> [opts]      scaffold a new project (--package|--app, --luce|--luce
 luc init [opts]           scaffold a project in the current directory
 luc add <path>            add a local package dependency to luce.toml
 luc lock --check          validate luc.lock syntax without fetching or changing files
+luc lock <origin> --trusted-key <key> --vault <session> --password-stdin
 luc install <origin> <owner/package> <version> --trusted-key <key> (--vault <session> --password-stdin | --offline) [--locked]
 luc versions <origin> <owner/package> --vault <session> --password-stdin
 luc resolve <origin> <owner/package> <version|^version> --vault <session> --password-stdin
@@ -322,6 +323,15 @@ package cryptography. `luc lock --check` discovers the project from nested
 directories, reads at most 1 MiB, and rejects malformed restricted v1/v2/v3 lockfiles.
 It does not verify signatures, compare the manifest, resolve packages or install
 anything; its success output explicitly states that signatures are not verified.
+
+The networked `luc lock` form reads the same bounded `[registry.dependencies]`
+declaration enforced during publication, unlocks the session once, recursively
+fetches canonical catalogs and signed LRS2 metadata, and uses the shared bounded
+backtracking solver. It atomically writes canonical graph-complete lock v3 only
+after every candidate declaration authenticates. It does not fetch source bodies;
+the lock pins their signed SHA-256 digests for subsequent verified installation.
+For this first trust profile, one explicit ML-DSA-65 public key must authenticate
+the complete graph. Cross-publisher trust maps and public HTTPS remain pending.
 
 `luc verify-release <metadata> <signature> <trusted-key> <source>` verifies local
 LRS1 or LRS2 metadata with native ML-DSA-65 and binds the exact source bytes with SHA-256.

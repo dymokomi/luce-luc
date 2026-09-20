@@ -37,7 +37,25 @@ pub struct Download:
         self.signature = empty
         self.source = empty
 
-func trusted_key(path: str) -> u8[]!:
+## Signed release metadata authenticated by the caller's explicit publisher key.
+## Source bytes have not been fetched or digest-verified yet.
+pub struct Metadata:
+    var storage: u8[]
+    pub var signature: u8[]
+    pub var release: pkg.Release
+    pub var publisher_key_digest: u8[32]
+
+    pub func bytes() -> const u8[]:
+        return self.storage
+
+    pub mutating func close():
+        if self.storage.length > 0: free(self.storage) in memory.heap
+        if self.signature.length > 0: free(self.signature) in memory.heap
+        var empty: u8[]
+        self.storage = empty
+        self.signature = empty
+
+pub func trusted_key(path: str) -> u8[]!:
     let filename = try strings.copy(path)
     defer strings.release(filename)
     let key = try files.read_limit((c.str)filename, 1952)
@@ -76,27 +94,30 @@ pub func validate_request(origin: str, package: str, version: str) -> !:
         if not alnum and (i == 0 or (byte != '_' and byte != '-')): error(invalid, "invalid package name")
     discard(try pkg.parse_version(version))
 
-pub func fetch(origin: str, package: str, version: str, key_path: str, vault_path: str) -> Download!:
+## Fetch and authenticate only the bounded signed declaration. This is sufficient
+## for graph resolution; selected source still requires fetch_authenticated().
+pub func fetch_metadata_authenticated(origin: str, package: str, version: str,
+                                      key: const u8[], token: const u8[]) -> Metadata!:
     try validate_request(origin, package, version)
-    let key = try trusted_key(key_path)
-    defer free(key) in memory.heap
-    # Credential loading validates loopback origin before any network request.
-    var token = try credentials.load(vault_path, origin)
-    defer token.close()
+    if key.length != 1952: error(invalid, "trusted key must contain exactly1952 bytes")
+    if token.length != 32: error(invalid, "invalid registry session token")
     var port: usize = 0
     for byte in origin.bytes[17..]: port = port * 10 + (usize)(byte - '0')
     let host = (str)origin.bytes[7..]
     var bearer_buffer: u8[80]
     defer crypto.wipe(bearer_buffer)
-    let bearer = try format(bearer_buffer, f"Bearer {(str)try token.bytes()}")
+    let bearer = try format(bearer_buffer, f"Bearer {(str)token}")
     var fields: net.HttpField[1]
     fields[0] = net.HttpField(name = "Authorization", value = bearer)
     var path_buffer: u8[384]
     let path = try format(path_buffer, f"/v1/releases/{package}/{version}/metadata")
-    let metadata = try alloc u8[pkg.max_release_metadata] in memory.heap
-    errdefer free(metadata) in memory.heap
-    let meta_result = try http_client.request(net.SocketAddress.loopback((u16)port), "GET", path, host, fields, 1, b"", metadata)
+    let scratch = try alloc u8[pkg.max_release_metadata] in memory.heap
+    defer free(scratch) in memory.heap
+    let meta_result = try http_client.request(net.SocketAddress.loopback((u16)port), "GET", path, host, fields, 1, b"", scratch)
     if meta_result.status != 200: error(invalid, "release metadata download failed")
+    let metadata = try alloc u8[meta_result.count] in memory.heap
+    errdefer free(metadata) in memory.heap
+    for i in 0..<meta_result.count: metadata[i] = scratch[i]
     let release = try pkg.decode_release(metadata[..<meta_result.count])
     try identity(release, origin, package, version)
     var signature_path: u8[384]
@@ -105,23 +126,48 @@ pub func fetch(origin: str, package: str, version: str, key_path: str, vault_pat
     errdefer free(signature) in memory.heap
     let sig_result = try http_client.request(net.SocketAddress.loopback((u16)port), "GET", sig_path, host, fields, 1, b"", signature)
     if sig_result.status != 200 or sig_result.count != signature.length: error(invalid, "release signature download failed")
-    # Verify metadata before accepting a potentially large source response.
     if not try crypto.mldsa_verify(key, metadata[..<meta_result.count], signature):
         error(invalid, "release signature does not match supplied trusted key")
+    var key_digest: u8[32]
+    discard(try crypto.digest(key, key_digest, "sha256"))
+    return Metadata(storage = metadata, signature = signature, release = release,
+        publisher_key_digest = key_digest)
+
+pub func fetch_authenticated(origin: str, package: str, version: str,
+                             key: const u8[], token: const u8[]) -> Download!:
+    var metadata = try fetch_metadata_authenticated(origin, package, version, key, token)
+    errdefer metadata.close()
+    var port: usize = 0
+    for byte in origin.bytes[17..]: port = port * 10 + (usize)(byte - '0')
+    let host = (str)origin.bytes[7..]
+    var bearer_buffer: u8[80]
+    defer crypto.wipe(bearer_buffer)
+    let bearer = try format(bearer_buffer, f"Bearer {(str)token}")
+    var fields: net.HttpField[1]
+    fields[0] = net.HttpField(name = "Authorization", value = bearer)
     let source = try alloc u8[67108864] in memory.heap
     errdefer free(source) in memory.heap
     var source_path: u8[384]
     let src_path = try format(source_path, f"/v1/releases/{package}/{version}/source")
     let src_result = try http_client.request(net.SocketAddress.loopback((u16)port), "GET", src_path, host, fields, 1, b"", source)
     if src_result.status != 200: error(invalid, "release source download failed")
-    if not try pkg.verify_release(release, key, signature, source[..<src_result.count]):
+    if not try pkg.verify_release(metadata.release, key, metadata.signature, source[..<src_result.count]):
         error(invalid, "downloaded release source verification failed")
-    # Keep full allocation slices for matching frees; lengths are explicit below.
-    var key_digest: u8[32]
-    discard(try crypto.digest(key, key_digest, "sha256"))
-    return Download(metadata = metadata, signature = signature, source = source,
-        metadata_size = meta_result.count, source_size = src_result.count,
-        publisher_key_digest = key_digest)
+    let result = Download(metadata = metadata.storage, signature = metadata.signature, source = source,
+        metadata_size = metadata.storage.length, source_size = src_result.count,
+        publisher_key_digest = metadata.publisher_key_digest)
+    var empty: u8[]
+    metadata.storage = empty
+    metadata.signature = empty
+    return result
+
+pub func fetch(origin: str, package: str, version: str, key_path: str, vault_path: str) -> Download!:
+    let key = try trusted_key(key_path)
+    defer free(key) in memory.heap
+    # Credential loading validates loopback origin before any network request.
+    var token = try credentials.load(vault_path, origin)
+    defer token.close()
+    return try fetch_authenticated(origin, package, version, key, try token.bytes())
 
 ## Load and verify an exact cached LRP1 artifact without network access.
 pub func load_cache(path: str, origin: str, package: str, version: str, key_path: str) -> Download!:

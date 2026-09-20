@@ -27,6 +27,8 @@ signed_fixture = out / 'checkout-release-fixture'
 run([base, 'build', 'tests/checkout_release_fixture.lucb', '--native', '-o', signed_fixture])
 signing_verifier = out / 'signing-verifier'
 run([base, 'build', 'tests/signing_verify.lucb', '--native', '-o', signing_verifier])
+graph_fixture = out / 'graph-lock-fixture'
+run([base, 'build', 'tests/graph_lock_fixture.lucb', '--native', '-o', graph_fixture])
 modes = [(f'native{i}', ['--native', '--opt', str(i)]) for i in range(4)]
 modes += [('c', ['--backend=c']), ('c-release', ['--backend=c', '--release'])]
 for name, flags in modes:
@@ -44,6 +46,7 @@ for name, flags in modes:
     run([sys.executable, 'tests/upload.py', binary, signed_fixture])
     run([sys.executable, 'tests/install.py', binary, signed_fixture, base])
     run([sys.executable, 'tests/catalog.py', binary])
+    run([sys.executable, 'tests/graph_lock.py', binary, graph_fixture])
     run([sys.executable, 'tests/fetch.py', binary])
     run([sys.executable, 'tests/checkout.py', binary, base])
     run([sys.executable, 'tests/checkout_release.py', binary, signed_fixture])
@@ -68,6 +71,7 @@ run([sys.executable, 'tests/signing.py', binary, signed_fixture, signing_verifie
 run([sys.executable, 'tests/upload.py', binary, signed_fixture])
 run([sys.executable, 'tests/install.py', binary, signed_fixture, base])
 run([sys.executable, 'tests/catalog.py', binary])
+run([sys.executable, 'tests/graph_lock.py', binary, graph_fixture])
 run([sys.executable, 'tests/fetch.py', binary])
 run([sys.executable, 'tests/checkout.py', binary, base])
 run([sys.executable, 'tests/checkout_release.py', binary, signed_fixture])

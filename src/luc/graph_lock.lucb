@@ -1,0 +1,168 @@
+## Authenticated transitive resolution and canonical luc.lock v3 generation.
+## One explicit ML-DSA-65 publisher key is used for the complete graph in this
+## first trust profile; the lock records that exact fingerprint per package.
+import pkg
+import luc.catalog as catalog
+import luc.credentials as credentials
+import luc.release_download as release_download
+import crypto_native as crypto
+import files
+import paths
+import strings
+import memory
+import io
+import c
+
+let invalid: ErrorCode = ErrorCode.package(9)
+let max_discovered_packages: usize = 256
+
+struct Universe:
+    var metadata: release_download.Metadata[]
+    var releases: pkg.Release[]
+    var count: usize
+
+    mutating func close():
+        for i in 0..<self.count: self.metadata[i].close()
+        if self.metadata.length > 0: free(self.metadata) in memory.heap
+        if self.releases.length > 0: free(self.releases) in memory.heap
+        var empty_metadata: release_download.Metadata[]
+        var empty_releases: pkg.Release[]
+        self.metadata = empty_metadata
+        self.releases = empty_releases
+        self.count = 0
+
+func create_universe() -> Universe!:
+    let metadata = try alloc release_download.Metadata[pkg.max_graph_candidates] in memory.heap
+    errdefer free(metadata) in memory.heap
+    let releases = try alloc pkg.Release[pkg.max_graph_candidates] in memory.heap
+    return Universe(metadata = metadata, releases = releases)
+
+func enqueue(packages: str[], count: usize*, package: str) -> !:
+    for i in 0..<*count:
+        if packages[i] == package: return
+    if *count >= packages.length: error(invalid, "dependency graph discovery package limit exceeded")
+    packages[*count] = package
+    *count += 1
+
+func selected(universe: Universe*, resolution: pkg.Resolution*, package: str) -> usize!:
+    for i in 0..<resolution.count:
+        let index = try resolution.candidate_index(i)
+        if universe.releases[index].package == package: return index
+    error(invalid, "resolved graph is missing a signed dependency")
+
+func encode_hex(bytes: const u8[], output: u8[]) -> str!:
+    if bytes.length * 2 > output.length: error(invalid, "digest output too small")
+    let digits = b"0123456789abcdef"
+    for i in 0..<bytes.length:
+        output[i * 2] = digits[bytes[i] >> 4]
+        output[i * 2 + 1] = digits[bytes[i] & 15]
+    return (str)output[..<bytes.length * 2]
+
+func release_packages(values: pkg.Package[]):
+    if values.length > 0: free(values) in memory.heap
+
+func release_edges(values: pkg.LockedDependency[]):
+    if values.length > 0: free(values) in memory.heap
+
+func release_bytes(values: u8[]):
+    if values.length > 0: free(values) in memory.heap
+
+func publish_lock(root: str, wire: const u8[]) -> !:
+    let destination = try strings.copy(try paths.join(root, "luc.lock"))
+    defer strings.release(destination)
+    let directory_name = try strings.copy(root)
+    defer strings.release(directory_name)
+    var directory = try files.Directory.open((c.str)directory_name, follow_symlinks = false)
+    defer directory.destroy()
+    var directory_file = try files.File.open((c.str)directory_name)
+    defer directory_file.destroy()
+    var temporary = try files.TemporaryFile.create((c.str)directory_name, permissions = 420)
+    defer temporary.destroy()
+    try io.write_all(&temporary, wire)
+    try temporary.sync()
+    try temporary.publish((c.str)destination, replace = true)
+    try directory_file.sync()
+    try directory_file.close()
+
+## Resolve all signed candidates reachable from the root declaration, then atomically
+## replace luc.lock with the canonical graph. Source bodies are verified during sync;
+## this step authenticates metadata and pins their declared SHA-256 digests.
+pub func generate(root: str, manifest_path: str, origin: str, key_path: str, vault_path: str) -> i32!:
+    let manifest_name = try strings.copy(manifest_path)
+    defer strings.release(manifest_name)
+    let manifest_bytes = try files.read_limit((c.str)manifest_name, 1048576)
+    defer free(manifest_bytes) in memory.heap
+    var declaration = try pkg.decode_manifest((str)manifest_bytes)
+    defer declaration.close()
+    try release_download.validate_request(origin, "registry/validation", "0.0.0")
+    let key = try release_download.trusted_key(key_path)
+    defer free(key) in memory.heap
+    var token = try credentials.load(vault_path, origin)
+    defer token.close()
+    let token_bytes = try token.bytes()
+
+    var roots: pkg.Dependency[128]
+    for i in 0..<declaration.dependency_count: roots[i] = try declaration.dependency_at(i)
+    var universe = try create_universe()
+    defer universe.close()
+    let discovered = try alloc str[max_discovered_packages] in memory.heap
+    defer free(discovered) in memory.heap
+    var discovered_count: usize
+    for i in 0..<declaration.dependency_count:
+        try enqueue(discovered, &discovered_count, roots[i].package)
+    var package_index: usize
+    while package_index < discovered_count:
+        let package = discovered[package_index]
+        package_index += 1
+        var versions = try catalog.fetch_authenticated(origin, package, token_bytes)
+        defer versions.close()
+        for version_index in 0..<versions.versions.count:
+            if universe.count >= pkg.max_graph_candidates:
+                error(invalid, "dependency graph candidate limit exceeded")
+            let version = try versions.versions.at(version_index)
+            universe.metadata[universe.count] = try release_download.fetch_metadata_authenticated(
+                origin, package, version, key, token_bytes)
+            universe.releases[universe.count] = universe.metadata[universe.count].release
+            let release = universe.releases[universe.count]
+            universe.count += 1
+            for dependency_index in 0..<release.dependency_count:
+                try enqueue(discovered, &discovered_count,
+                    (try release.dependency_at(dependency_index)).package)
+
+    var resolution = try pkg.resolve_graph(origin, roots, declaration.dependency_count,
+        universe.releases, universe.count)
+    defer resolution.close()
+    var locked: pkg.Package[]
+    if resolution.count > 0: locked = try alloc pkg.Package[resolution.count] in memory.heap
+    defer release_packages(locked)
+    var edge_capacity = resolution.count * pkg.max_release_dependencies
+    var edges: pkg.LockedDependency[]
+    if edge_capacity > 0: edges = try alloc pkg.LockedDependency[edge_capacity] in memory.heap
+    defer release_edges(edges)
+    var digest_storage: u8[]
+    if resolution.count > 0: digest_storage = try alloc u8[resolution.count * 128] in memory.heap
+    defer release_bytes(digest_storage)
+    var edge_count: usize
+    for i in 0..<resolution.count:
+        let candidate_index = try resolution.candidate_index(i)
+        let release = universe.releases[candidate_index]
+        let edge_start = edge_count
+        for dependency_index in 0..<release.dependency_count:
+            let dependency = try release.dependency_at(dependency_index)
+            let target = universe.releases[try selected(&universe, &resolution, dependency.package)]
+            edges[edge_count] = pkg.LockedDependency(package = dependency.package,
+                requirement = dependency.requirement, version = try pkg.parse_version(target.version))
+            edge_count += 1
+        let source_hex = try encode_hex(release.source_digest, digest_storage[i * 128..<i * 128 + 64])
+        let key_hex = try encode_hex(universe.metadata[candidate_index].publisher_key_digest,
+            digest_storage[i * 128 + 64..<i * 128 + 128])
+        locked[i] = pkg.Package(name = release.package, version = try pkg.parse_version(release.version),
+            digest = source_hex, compiler = release.compiler, commit = release.commit,
+            toolchain = release.toolchain, package_name = release.package_name, root = ".",
+            publisher_key_sha256 = key_hex, dependencies = edges[edge_start..<edge_count])
+    let output = try alloc u8[1048576] in memory.heap
+    defer free(output) in memory.heap
+    let size = try pkg.encode_lock(origin, locked, resolution.count, output, schema_version = 3)
+    try publish_lock(root, output[..<size])
+    try io.stdout().write(f"locked {resolution.count} authenticated packages in luc.lock v3\n")
+    return 0
