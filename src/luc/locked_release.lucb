@@ -1,0 +1,40 @@
+## Bind authenticated release bytes to one already-decoded luc.lock entry.
+import pkg
+
+let invalid: ErrorCode = ErrorCode.package(10)
+
+func digest_matches(bytes: const u8[], text: str) -> bool:
+    if bytes.length * 2 != text.length: return false
+    let digits = "0123456789abcdef"
+    for index in 0..<bytes.length:
+        let byte = bytes[index]
+        if text.bytes[index * 2] != digits.bytes[(usize)(byte >> 4)] or text.bytes[index * 2 + 1] != digits.bytes[(usize)(byte & 15)]:
+            return false
+    return true
+
+pub func require(lock: pkg.Lock*, release: pkg.Release, publisher_key_digest: const u8[]) -> u8!:
+    if lock.origin != release.origin: error(invalid, "release origin does not match luc.lock")
+    let version = try pkg.parse_version(release.version)
+    for i in 0..<lock.count:
+        let entry = lock.packages[i]
+        if entry.name != release.package: continue
+        if entry.version.major != version.major or entry.version.minor != version.minor or entry.version.patch != version.patch or entry.compiler != release.compiler:
+            error(invalid, "release version or compiler does not match luc.lock")
+        if lock.schema_version >= 2 and (entry.commit != release.commit or entry.toolchain != release.toolchain):
+            error(invalid, "release commit or toolchain does not match luc.lock")
+        if not digest_matches(release.source_digest, entry.digest):
+            error(invalid, "release digest does not match luc.lock")
+        if lock.schema_version == 3:
+            if release.schema_version != 2 or entry.package_name != release.package_name or entry.root != ".":
+                error(invalid, "release compiler identity does not match luc.lock v3")
+            if not digest_matches(publisher_key_digest, entry.publisher_key_sha256):
+                error(invalid, "publisher key does not match luc.lock v3")
+            if entry.dependencies.length != release.dependency_count:
+                error(invalid, "release dependency count does not match luc.lock v3")
+            for dependency_index in 0..<entry.dependencies.length:
+                let signed = try release.dependency_at(dependency_index)
+                let locked = entry.dependencies[dependency_index]
+                if locked.package != signed.package or locked.requirement != signed.requirement:
+                    error(invalid, "release dependencies do not match luc.lock v3")
+        return lock.schema_version
+    error(invalid, "release package is absent from luc.lock")

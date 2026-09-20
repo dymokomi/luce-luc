@@ -14,6 +14,7 @@ luc add <path>            add a local package dependency to luce.toml
 luc lock --check          validate luc.lock syntax without fetching or changing files
 luc lock <origin> --trusted-key <key> --vault <session> --password-stdin
 luc install <origin> <owner/package> <version> --trusted-key <key> (--vault <session> --password-stdin | --offline) [--locked]
+luc sync --trusted-key <key> (--vault <session> --password-stdin | --offline)
 luc versions <origin> <owner/package> --vault <session> --password-stdin
 luc resolve <origin> <owner/package> <version|^version> --vault <session> --password-stdin
 luc remote-refs <url>     list remote Git refs (loopback HTTP development transport)
@@ -242,11 +243,10 @@ byte if concurrent installers publish the same entry. Final cache symlinks,
 malformed/tampered artifacts, mismatched trust/identity/lock, unsafe checkout
 paths, missing manifests, language mismatches and existing install destinations
 fail without changing `luce.toml`; a verified cache artifact may remain after a
-later install failure. Installed source is ordinary local project state and is
-not continuously revalidated after installation. Single-package version discovery
-and exact/caret selection now exist, but manifest-wide dependency graph resolution,
-lock generation/update and transitive installation remain next steps. Public HTTPS
-and publisher trust provisioning remain pending.
+later install failure. Installed source is ordinary local project state and is not
+continuously revalidated after installation. `install` remains the explicit
+single-package operation; use `lock` and `sync` for a complete declared dependency
+graph. Public HTTPS and publisher trust provisioning remain pending.
 
 The encrypted LUC1 payload is `LUC1\norigin\naccount\ntoken\n`. Origin must be exact
 `http://127.0.0.1:<nonzero-port>` without leading port zeroes or a trailing slash;
@@ -332,6 +332,26 @@ after every candidate declaration authenticates. It does not fetch source bodies
 the lock pins their signed SHA-256 digests for subsequent verified installation.
 For this first trust profile, one explicit ML-DSA-65 public key must authenticate
 the complete graph. Cross-publisher trust maps and public HTTPS remain pending.
+
+`luc sync` requires that graph-complete v3 lock and revalidates every current
+manifest root against it before creating any project state. Online mode unlocks
+one session, downloads each exact locked release, verifies its LRS2 signature,
+publisher-key fingerprint, source digest, commit, compiler identity and signed
+dependency declaration, then reconciles immutable LRP1 cache bytes. Offline mode
+performs no credential read and no network request; it applies the same checks to
+the cache. Both modes validate the Git graph and source manifest before checkout.
+
+All packages are first materialized in a private staging generation named by the
+SHA-256 digest of `luc.lock`. luc writes only its marked block inside each checked-out
+package's `[dependencies]`, wiring signed transitive dependencies by compiler package
+name and sibling-relative path. It then atomically publishes the whole generation
+and atomically updates the root manifest with only its declared roots. Repeated sync
+of the same lock replaces that deterministic generation with freshly verified bytes
+without changing the resulting manifest. A project remains buildable after moving
+the complete tree, and a relocated shared cache can seed a fresh offline project.
+Validation, download, checkout, or cache failures leave `luce.toml` unchanged; a
+successfully verified cache artifact may remain after a later failure. The current
+single-key trust profile deliberately rejects graphs requiring different publishers.
 
 `luc verify-release <metadata> <signature> <trusted-key> <source>` verifies local
 LRS1 or LRS2 metadata with native ML-DSA-65 and binds the exact source bytes with SHA-256.

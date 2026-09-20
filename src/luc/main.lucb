@@ -27,13 +27,15 @@ import luc.release_upload as release_upload
 import luc.release_download as release_download
 import luc.catalog as catalog
 import luc.graph_lock as graph_lock
+import luc.locked_release as locked_release
+import luc.graph_sync as graph_sync
 import luc.credentials as credentials
 import luc.checkout as checkout
 import git
 import crypto_native
 
 ## The luc version, kept in step with VERSION.
-pub let luc_version: str = "0.8.0"
+pub let luc_version: str = "0.9.0"
 
 ## A command-line or manifest problem the user can fix.
 pub let usage_error: ErrorCode = ErrorCode.package(1)
@@ -355,47 +357,13 @@ func read_project_lock() -> u8[]!:
             error(usage_error, "not in a Luce project (no luce.toml found)")
         directory = parent
 
-func digest_matches(bytes: const u8[], text: str) -> bool:
-    if bytes.length * 2 != text.length: return false
-    let digits = "0123456789abcdef"
-    for index in 0..<bytes.length:
-        let byte = bytes[index]
-        if text.bytes[index * 2] != digits.bytes[(usize)(byte >> 4)] or text.bytes[index * 2 + 1] != digits.bytes[(usize)(byte & 15)]:
-            return false
-    return true
-
 ## Bind a verified release and the exact key that verified it to the project lock.
 func require_locked_release(release: pkg.Release, publisher_key_digest: const u8[]) -> u8!:
     let contents = try read_project_lock()
     defer free(contents) in memory.heap
     var lock = try pkg.decode_lock((str)contents)
     defer lock.close()
-    if lock.origin != release.origin:
-        error(usage_error, "release origin does not match luc.lock")
-    let version = try pkg.parse_version(release.version)
-    for i in 0..<lock.count:
-        let entry = lock.packages[i]
-        if entry.name != release.package: continue
-        if entry.version.major != version.major or entry.version.minor != version.minor or entry.version.patch != version.patch or entry.compiler != release.compiler:
-            error(usage_error, "release version or compiler does not match luc.lock")
-        if lock.schema_version >= 2 and (entry.commit != release.commit or entry.toolchain != release.toolchain):
-            error(usage_error, "release commit or toolchain does not match luc.lock")
-        if not digest_matches(release.source_digest, entry.digest):
-            error(usage_error, "release digest does not match luc.lock")
-        if lock.schema_version == 3:
-            if release.schema_version != 2 or entry.package_name != release.package_name or entry.root != ".":
-                error(usage_error, "release compiler identity does not match luc.lock v3")
-            if not digest_matches(publisher_key_digest, entry.publisher_key_sha256):
-                error(usage_error, "publisher key does not match luc.lock v3")
-            if entry.dependencies.length != release.dependency_count:
-                error(usage_error, "release dependency count does not match luc.lock v3")
-            for dependency_index in 0..<entry.dependencies.length:
-                let signed = try release.dependency_at(dependency_index)
-                let locked = entry.dependencies[dependency_index]
-                if locked.package != signed.package or locked.requirement != signed.requirement:
-                    error(usage_error, "release dependencies do not match luc.lock v3")
-        return lock.schema_version
-    error(usage_error, "release package is absent from luc.lock")
+    return try locked_release.require(&lock, release, publisher_key_digest)
 
 ## Verify exact local release bytes against an explicitly supplied trusted public key.
 ## This does not establish key ownership or authorize installation.
@@ -973,6 +941,14 @@ pub func main(arguments: c.str[]) -> i32!:
         if command == "install":
             if passthrough.length != 0: error(usage_error, "install does not accept passthrough arguments")
             return try install_command(&project, own)
+        if command == "sync":
+            if passthrough.length != 0: error(usage_error, "sync does not accept passthrough arguments")
+            let manifest = try require_manifest(&project)
+            if own.length == 5 and own[0] == "--trusted-key" and own[2] == "--vault" and own[4] == "--password-stdin":
+                return try graph_sync.run(project.root, manifest, own[1], own[3])
+            if own.length == 3 and own[0] == "--trusted-key" and own[2] == "--offline":
+                return try graph_sync.run(project.root, manifest, own[1], offline = true)
+            error(usage_error, "usage: luc sync --trusted-key <key> (--vault <session> --password-stdin | --offline)")
         if command == "add":
             return try add_command(&project, own)
         if command == "remove":
@@ -1012,6 +988,7 @@ func usage(out: io.Writer) -> !:
     try out.write("  lock --check          validate luc.lock syntax without fetching or changing files\n")
     try out.write("  lock <origin> --trusted-key <key> --vault <session> --password-stdin  resolve authenticated registry dependencies\n")
     try out.write("  install <origin> <owner/package> <version> --trusted-key <key> (--vault <session> --password-stdin | --offline) [--locked]\n")
+    try out.write("  sync --trusted-key <key> (--vault <session> --password-stdin | --offline)  install exact luc.lock v3 graph\n")
     try out.write("  versions <origin> <owner/package> --vault <session> --password-stdin  list canonical available versions\n")
     try out.write("  resolve <origin> <owner/package> <version|^version> --vault <session> --password-stdin  select a catalog version\n")
     try out.write("  remote-refs <url>      list registry refs (loopback HTTP development transport)\n")

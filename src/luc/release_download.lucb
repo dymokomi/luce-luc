@@ -170,8 +170,10 @@ pub func fetch(origin: str, package: str, version: str, key_path: str, vault_pat
     return try fetch_authenticated(origin, package, version, key, try token.bytes())
 
 ## Load and verify an exact cached LRP1 artifact without network access.
-pub func load_cache(path: str, origin: str, package: str, version: str, key_path: str) -> Download!:
+pub func load_cache_authenticated(path: str, origin: str, package: str, version: str,
+                                  key: const u8[]) -> Download!:
     try validate_request(origin, package, version)
+    if key.length != 1952: error(invalid, "trusted key must contain exactly1952 bytes")
     let filename = try strings.copy(path)
     defer strings.release(filename)
     let directory_name = try strings.copy(paths.directory(filename))
@@ -206,8 +208,6 @@ pub func load_cache(path: str, origin: str, package: str, version: str, key_path
     if source.length > 67108864: error(invalid, "cached release source too large")
     let release = try pkg.decode_release(metadata)
     try identity(release, origin, package, version)
-    let key = try trusted_key(key_path)
-    defer free(key) in memory.heap
     if not try pkg.verify_release(release, key, signature, source):
         error(invalid, "cached release does not verify against supplied trusted key")
     var key_digest: u8[32]
@@ -215,6 +215,11 @@ pub func load_cache(path: str, origin: str, package: str, version: str, key_path
     return Download(storage = wire, metadata = metadata, signature = signature, source = source,
         metadata_size = metadata.length, source_size = source.length,
         publisher_key_digest = key_digest)
+
+pub func load_cache(path: str, origin: str, package: str, version: str, key_path: str) -> Download!:
+    let key = try trusted_key(key_path)
+    defer free(key) in memory.heap
+    return try load_cache_authenticated(path, origin, package, version, key)
 
 ## Atomically publish exact verified bytes into an existing cache directory.
 ## An existing destination is refused; callers reconcile it independently.

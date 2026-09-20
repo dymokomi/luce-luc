@@ -1,6 +1,7 @@
 ## Deterministic TEST ONLY graph signer; never use this identity in production.
 import pkg
 import crypto_native as crypto
+import git
 import files
 import paths
 import strings
@@ -11,14 +12,65 @@ func write(root: str, name: str, bytes: const u8[]) -> !:
     defer strings.release(path)
     try files.write((c.str)path, bytes)
 
+func tree_entry(output: u8[], at: usize*, name: str, id: const u8[]):
+    for byte in b"100644 ":
+        output[*at] = byte
+        *at += 1
+    for byte in name.bytes:
+        output[*at] = byte
+        *at += 1
+    output[*at] = 0
+    *at += 1
+    for byte in id:
+        output[*at] = byte
+        *at += 1
+
 func signed(root: str, origin: str, stem: str, package: str, version: str,
-            package_name: str, marker: u8, dependencies: const pkg.Dependency[], count: usize,
+            package_name: str, dependencies: const pkg.Dependency[], count: usize,
             secret: const u8[]) -> !:
-    var digest: u8[32]
-    digest[0] = marker
+    var dependency_buffer: u8[512]
+    var dependency_text = ""
+    if count == 1:
+        dependency_text = try format(dependency_buffer,
+            f"\n[registry.dependencies]\n\"{dependencies[0].package}\" = \"{dependencies[0].requirement}\"\n")
+    var manifest_buffer: u8[2048]
+    let manifest = try format(manifest_buffer,
+        f"[package]\nname = \"{package_name}\"\nlanguage = \"luce-base\"\nsource = \".\"\n\n[exports]\n{package_name} = \"{package_name}\"\n{dependency_text}")
+    var source_buffer: u8[512]
+    let source = try format(source_buffer,
+        f"from b_lib import base\n\npub func value() -> i32:\n    return base() + 1\n" if package_name == "a_lib" else
+        (f"from b_lib import base\n\npub func value() -> i32:\n    return base() + 2\n" if package_name == "c_lib" else
+         f"pub func base() -> i32:\n    return 40\n"))
+    var manifest_id: u8[20]
+    var source_id: u8[20]
+    discard(try git.hash_object("blob", manifest.bytes, manifest_id))
+    discard(try git.hash_object("blob", source.bytes, source_id))
+    var tree: u8[512]
+    var tree_size: usize
+    var module_name_buffer: u8[160]
+    let module_name = try format(module_name_buffer, f"{package_name}.lucb")
+    tree_entry(tree, &tree_size, module_name, source_id)
+    tree_entry(tree, &tree_size, "luce.toml", manifest_id)
+    var tree_id: u8[20]
+    discard(try git.hash_object("tree", tree[..<tree_size], tree_id))
+    var tree_hex: u8[40]
+    discard(try git.hex_id(tree_id, tree_hex))
+    var commit_buffer: u8[256]
+    let commit_text = try format(commit_buffer,
+        f"tree {(str)tree_hex}\nauthor A <a@b> 1 +0000\ncommitter A <a@b> 1 +0000\n\n{package}@{version}\n")
+    var commit_id: u8[20]
+    discard(try git.hash_object("commit", commit_text.bytes, commit_id))
     var commit: u8[40]
-    for i in 0..<commit.length: commit[i] = '0'
-    commit[39] = '0' + marker
+    discard(try git.hex_id(commit_id, commit))
+    var objects: git.Object[4]
+    objects[0] = git.Object(kind = "blob", payload = source.bytes)
+    objects[1] = git.Object(kind = "blob", payload = manifest.bytes)
+    objects[2] = git.Object(kind = "tree", payload = tree[..<tree_size])
+    objects[3] = git.Object(kind = "commit", payload = commit_text.bytes)
+    var source_pack: u8[8192]
+    let source_size = try git.encode_pack(objects, source_pack)
+    var digest: u8[32]
+    discard(try pkg.source_digest(source_pack[..<source_size], digest))
     let release = pkg.Release(origin = origin, package = package, version = version,
         commit = (str)commit, source_digest = digest, compiler = "luce-base", toolchain = "0.20.0")
     var metadata: u8[24576]
@@ -30,6 +82,8 @@ func signed(root: str, origin: str, stem: str, package: str, version: str,
     var signature_name: u8[96]
     try write(root, try format(metadata_name, f"{stem}-metadata"), metadata[..<size])
     try write(root, try format(signature_name, f"{stem}-signature"), signature)
+    var source_name: u8[96]
+    try write(root, try format(source_name, f"{stem}-source"), source_pack[..<source_size])
 
 pub func main(arguments: str[]) -> i32!:
     assert(arguments.length == 3)
@@ -46,9 +100,9 @@ pub func main(arguments: str[]) -> i32!:
     var c_dependency: pkg.Dependency[1]
     c_dependency[0] = pkg.Dependency(package = "acme/b", requirement = "1.5.0")
     var no_dependencies: pkg.Dependency[1]
-    try signed(arguments[1], arguments[2], "a-1.1.0", "acme/a", "1.1.0", "a_lib", 1, a_new, 1, secret)
-    try signed(arguments[1], arguments[2], "a-1.0.0", "acme/a", "1.0.0", "a_lib", 2, a_old, 1, secret)
-    try signed(arguments[1], arguments[2], "b-2.0.0", "acme/b", "2.0.0", "b_lib", 3, no_dependencies[..<0], 0, secret)
-    try signed(arguments[1], arguments[2], "b-1.5.0", "acme/b", "1.5.0", "b_lib", 4, no_dependencies[..<0], 0, secret)
-    try signed(arguments[1], arguments[2], "c-1.0.0", "acme/c", "1.0.0", "c_lib", 5, c_dependency, 1, secret)
+    try signed(arguments[1], arguments[2], "a-1.1.0", "acme/a", "1.1.0", "a_lib", a_new, 1, secret)
+    try signed(arguments[1], arguments[2], "a-1.0.0", "acme/a", "1.0.0", "a_lib", a_old, 1, secret)
+    try signed(arguments[1], arguments[2], "b-2.0.0", "acme/b", "2.0.0", "b_lib", no_dependencies[..<0], 0, secret)
+    try signed(arguments[1], arguments[2], "b-1.5.0", "acme/b", "1.5.0", "b_lib", no_dependencies[..<0], 0, secret)
+    try signed(arguments[1], arguments[2], "c-1.0.0", "acme/c", "1.0.0", "c_lib", c_dependency, 1, secret)
     return 0
