@@ -36,7 +36,7 @@ import git
 import crypto_native
 
 ## The luc version, kept in step with VERSION.
-pub let luc_version: str = "0.12.0"
+pub let luc_version: str = "0.12.1"
 
 ## A command-line or manifest problem the user can fix.
 pub let usage_error: ErrorCode = ErrorCode.package(1)
@@ -91,12 +91,22 @@ struct Project:
             return try paths.join(self.root, self.entry)
         let suffix = ".luc" if self.language == "luce" else ".lucb"
         let main_name = try join_name("main", suffix)
-        let module = try paths.join(try paths.join("src", self.name), try join_name(self.name, suffix))
-        for relative in [try paths.join("src", main_name), main_name, module]:
+        defer strings.release(main_name)
+        let module_name = try join_name(self.name, suffix)
+        defer strings.release(module_name)
+        let module_directory = try paths.join("src", self.name)
+        defer strings.release(module_directory)
+        let module = try paths.join(module_directory, module_name)
+        defer strings.release(module)
+        let application = try paths.join("src", main_name)
+        defer strings.release(application)
+        for relative in [application, main_name, module]:
             let candidate = try paths.join(self.root, relative)
             let terminated = try strings.copy(candidate)
-            if files.exists((c.str)terminated):
-                return candidate
+            let exists = files.exists((c.str)terminated)
+            strings.release(terminated)
+            if exists: return candidate
+            strings.release(candidate)
         error(usage_error, "no entry source found (expected src/main or src/<name>/<name>); set entry in luce.toml")
 
     func find_task(name: str) -> Task?:
@@ -252,23 +262,32 @@ func release_spawn_arguments(arguments: c.str[], count: usize):
 
 ## The project's build output path, build/<name> under its root.
 func output_path(project: Project*) -> str!:
-    return try paths.join(try paths.join(project.root, "build"), project.name)
+    let directory = try paths.join(project.root, "build")
+    defer strings.release(directory)
+    return try paths.join(directory, project.name)
 
 ## Build the project's entry into build/<name> under the project root.
 func build(project: Project*, release: bool, extra: str[]) -> i32!:
     let entry = try project.entry_path()
+    defer strings.release(entry)
     try ensure_build(project)
     let output = try output_path(project)
+    defer strings.release(output)
     var arguments: str[]
+    defer release_string_array(arguments)
     for word in ["build", entry, "--native", "-o", output]:
         arguments = try append(arguments, word)
     if release:
         arguments = try append(arguments, "--release")
-    return try spawn(try project.compiler(), try concat(arguments, extra))
+    let combined = try concat(arguments, extra)
+    defer release_string_array(combined)
+    return try spawn(try project.compiler(), combined)
 
 func ensure_build(project: Project*) -> !:
     let directory = try paths.join(project.root, "build")
+    defer strings.release(directory)
     let terminated = try strings.copy(directory)
+    defer strings.release(terminated)
     if not files.exists((c.str)terminated):
         try files.create_directory((c.str)terminated)
 
@@ -278,7 +297,9 @@ func run_app(project: Project*, release: bool, arguments: str[]) -> i32!:
     let status = try build(project, release, no_extra)
     if status != 0:
         return status
-    return try spawn(try output_path(project), arguments)
+    let executable = try output_path(project)
+    defer strings.release(executable)
+    return try spawn(executable, arguments)
 
 ## A task run in progress: the tasks already finished (each runs once) and the tasks on the
 ## current dependency chain (to catch a cycle).
@@ -478,7 +499,10 @@ func lock_command(project: Project*, own: str[], passthrough: str[]) -> i32!:
     let manifest = try require_manifest(project)
     defer strings.release(manifest)
     if own.length == 1 and own[0] == "--check":
-        let filename = try strings.copy(try paths.join(project.root, "luc.lock"))
+        let path = try paths.join(project.root, "luc.lock")
+        defer strings.release(path)
+        let filename = try strings.copy(path)
+        defer strings.release(filename)
         let contents = try files.read_limit((c.str)filename, 1048576)
         defer free(contents) in memory.heap
         var lock = try pkg.decode_lock((str)contents)
@@ -852,11 +876,13 @@ func scaffold(target: str, name: str, language: str, is_package: bool) -> !:
 
 func ensure_dir(path: str) -> !:
     let terminated = try strings.copy(path)
+    defer strings.release(terminated)
     if not files.exists((c.str)terminated):
         try files.create_directory((c.str)terminated)
 
 func write_file(path: str, content: str) -> !:
     let terminated = try strings.copy(path)
+    defer strings.release(terminated)
     try files.write((c.str)terminated, content.bytes)
 
 func join_name(stem: str, suffix: str) -> str!:
@@ -888,6 +914,7 @@ func append(items: str[], value: str) -> str[]!:
         grown[index] = items[index]
         index += 1
     grown[items.length] = value
+    if items.length > 0: free(items) in memory.heap
     return grown
 
 func concat(left: str[], right: str[]) -> str[]!:
@@ -1098,6 +1125,8 @@ pub func main(arguments: c.str[]) -> i32!:
             if arguments.length != 5: error(usage_error, "usage: luc checkout-pack <pack-path> <commit-id> <new-directory>")
             return try checkout.from_pack((str)arguments[2], (str)arguments[3], (str)arguments[4])
         let (own, passthrough) = try partition(arguments, 2)
+        defer release_string_array(own)
+        defer release_string_array(passthrough)
         if command == "new" or command == "init":
             return try scaffold_command(command, own)
         if command == "update" or command == "upgrade":

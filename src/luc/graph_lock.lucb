@@ -68,7 +68,9 @@ func release_bytes(values: u8[]):
     if values.length > 0: free(values) in memory.heap
 
 func publish_lock(root: str, wire: const u8[]) -> !:
-    let destination = try strings.copy(try paths.join(root, "luc.lock"))
+    let path = try paths.join(root, "luc.lock")
+    defer strings.release(path)
+    let destination = try strings.copy(path)
     defer strings.release(destination)
     let directory_name = try strings.copy(root)
     defer strings.release(directory_name)

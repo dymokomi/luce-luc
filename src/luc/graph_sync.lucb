@@ -18,6 +18,11 @@ let invalid: ErrorCode = ErrorCode.package(11)
 let managed_begin = "# luc managed registry dependencies begin"
 let managed_end = "# luc managed registry dependencies end"
 
+func terminated_path(left: str, right: str) -> str!:
+    let path = try paths.join(left, right)
+    defer strings.release(path)
+    return try strings.copy(path)
+
 struct Assignment:
     var name: str
     var path: str
@@ -215,7 +220,7 @@ func release_assignments(values: Assignment[], count: usize):
     for i in 0..<count: strings.release(values[i].path)
 
 func wire_package(lock: pkg.Lock*, index: usize, directory: str, release: pkg.Release) -> !:
-    let manifest_path = try strings.copy(try paths.join(directory, "luce.toml"))
+    let manifest_path = try terminated_path(directory, "luce.toml")
     defer strings.release(manifest_path)
     let original = try files.read_limit((c.str)manifest_path, 1048576)
     defer free(original) in memory.heap
@@ -240,7 +245,7 @@ func materialize_package(lock: pkg.Lock*, index: usize, generation: str,
     try git.decode_id(release.commit, commit)
     var pack = try git.decode_pack(downloaded.source[..<downloaded.source_size])
     defer pack.close()
-    let destination = try strings.copy(try paths.join(generation, lock.packages[index].package_name))
+    let destination = try terminated_path(generation, lock.packages[index].package_name)
     defer strings.release(destination)
     try checkout.materialize(&pack, commit, destination)
     try wire_package(lock, index, destination, release)
@@ -312,13 +317,13 @@ func root_manifest(lock: pkg.Lock*, declaration: pkg.Manifest*, original: const 
 func execute(root: str, manifest_path: str, manifest_bytes: const u8[], declaration: pkg.Manifest*,
              lock_bytes: const u8[], lock: pkg.Lock*, key: const u8[], token: const u8[], online: bool) -> i32!:
     try validate_roots(lock, declaration)
-    let state = try strings.copy(try paths.join(root, ".luc"))
+    let state = try terminated_path(root, ".luc")
     defer strings.release(state)
     try strict_directory(state, 448)
-    let packages = try strings.copy(try paths.join(state, "packages"))
+    let packages = try terminated_path(state, "packages")
     defer strings.release(packages)
     try strict_directory(packages, 448)
-    let default_cache = try strings.copy(try paths.join(state, "cache"))
+    let default_cache = try terminated_path(state, "cache")
     defer strings.release(default_cache)
     let cache = try strings.copy(os.env((c.str)"LUC_PACKAGE_CACHE") else default_cache)
     defer strings.release(cache)
@@ -333,12 +338,12 @@ func execute(root: str, manifest_path: str, manifest_bytes: const u8[], declarat
     var stage = try files.TemporaryDirectory((c.str)packages)
     defer stage.destroy()
     # Keep failure-path cleanup out of Base's current empty remove_tree UBSan bug.
-    let marker = try strings.copy(try paths.join(stage.path(), ".luc-generation"))
+    let marker = try terminated_path(stage.path(), ".luc-generation")
     defer strings.release(marker)
     try files.write((c.str)marker, lock_hex.bytes)
     for i in 0..<lock.count:
         try materialize_one(cache, lock, i, key, token, online, stage.path())
-    let destination = try strings.copy(try paths.join(packages, generation))
+    let destination = try terminated_path(packages, generation)
     defer strings.release(destination)
     try publish_generation(&stage, destination, packages)
     let rendered = try root_manifest(lock, declaration, manifest_bytes, generation)
@@ -355,7 +360,7 @@ pub func run(root: str, manifest_path: str, key_path: str, vault_path: str = "",
     defer free(manifest_bytes) in memory.heap
     var declaration = try pkg.decode_manifest((str)manifest_bytes)
     defer declaration.close()
-    let lock_path = try strings.copy(try paths.join(root, "luc.lock"))
+    let lock_path = try terminated_path(root, "luc.lock")
     defer strings.release(lock_path)
     let lock_bytes = try files.read_limit((c.str)lock_path, 1048576)
     defer free(lock_bytes) in memory.heap
