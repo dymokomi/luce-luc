@@ -20,6 +20,10 @@ luc resolve <origin> <owner/package> <version|^version> --vault <session> --pass
 luc remote-refs <url>     list remote Git refs (verified production HTTPS or loopback HTTP)
 luc remote-fetch <url> <commit-id> <new-pack-path>  fetch a validated full Git pack
 luc git-token <origin> <repository> <read|write> --vault <session> --password-stdin
+luc pr-create <origin> <owner/repository> <base> <head> <title> <body> --vault <session> --password-stdin
+luc pr-list <origin> <owner/repository> --vault <session> --password-stdin
+luc pr-show <origin> <owner/repository> <number> --vault <session> --password-stdin
+luc pr-state <origin> <owner/repository> <number> <open|closed|merged> --vault <session> --password-stdin
 luc checkout-pack <pack> <commit-id> <new-directory>  materialize source files
 luc checkout-release <metadata> <signature> <key> <pack> <new-directory> [--locked]
 luc publish <origin> <owner/package> <version> <commit> <toolchain> <new-artifact> --vault <session> --key-vault <key> --passwords-stdin
@@ -145,6 +149,17 @@ a letter or digit. It writes no local files, does not initialize a Git working
 tree or configure a remote, and does not publish a signed package release.
 Conflicts and other non-success responses fail without automatic retry; an
 ambiguous network failure may mean the remote repository was created.
+
+`pr-create`, `pr-list`, `pr-show`, and `pr-state` manage review metadata for two
+branches in the same remote repository. They decrypt the origin-bound session
+vault, authenticate directly with the registry, and print the server's canonical
+JSON response. `pr-create` takes short branch names (without `refs/heads/`) and
+explicit title/body arguments. Git still creates, pushes, and merges the branches.
+After the merged result has been pushed to the base branch, `pr-state ... merged`
+asks the server to verify ancestry before making the review terminal. There is no
+fork command, cross-repository PR head, automatic merge, local file mutation, or
+automatic retry. Current server ACLs are owner-only; collaborator PR authors are
+a later access-control milestone.
 
 `git-token` decrypts the same origin-bound session vault and prints exactly one
 five-minute repository credential plus a newline. Select `write` for push or

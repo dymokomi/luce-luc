@@ -1,0 +1,163 @@
+## Same-repository pull-request client. Git creates and merges branches; this
+## module only manages bounded review metadata through an encrypted session.
+import luc.credentials as credentials
+import luc.registry_http as registry
+import crypto_native as crypto
+import io
+import memory
+
+let invalid: ErrorCode = ErrorCode.package(19)
+
+func owner_valid(value: str) -> bool:
+    if value.length == 0 or value.length > 32: return false
+    for byte in value.bytes:
+        if not ((byte >= 'a' and byte <= 'z') or (byte >= '0' and byte <= '9') or byte == '_'): return false
+    return true
+
+func repository_valid(value: str) -> bool:
+    if value.length == 0 or value.length > 64: return false
+    for i in 0..<value.length:
+        let byte = value.bytes[i]
+        let alnum = (byte >= 'a' and byte <= 'z') or (byte >= '0' and byte <= '9')
+        if not alnum and (i == 0 or (byte != '_' and byte != '-')): return false
+    return true
+
+func coordinate(value: str) -> (str, str)!:
+    var split = value.length
+    for i in 0..<value.length:
+        if value.bytes[i] == '/':
+            if split != value.length: error(invalid, "invalid repository coordinate")
+            split = i
+    if split == value.length: error(invalid, "repository coordinate must be owner/name")
+    let owner = (str)value.bytes[..<split]
+    let repository = (str)value.bytes[split + 1..]
+    if not owner_valid(owner) or not repository_valid(repository): error(invalid, "invalid repository coordinate")
+    return (owner, repository)
+
+func branch_valid(value: str) -> bool:
+    if value.length == 0 or value.length > 255: return false
+    if value.length >= 5 and (str)value.bytes[..<5] == "refs/": return false
+    for byte in value.bytes:
+        if byte == 0 or byte == ' ' or byte < 32 or byte == 127: return false
+    return true
+
+func number_valid(value: str) -> bool:
+    if value.length == 0 or value.length > 3: return false
+    var number: usize = 0
+    for byte in value.bytes:
+        if byte < '0' or byte > '9': return false
+        number = number * 10 + (usize)(byte - '0')
+    return number > 0 and number <= 256
+
+func quote(value: str, output: u8[]) -> usize!:
+    var used: usize = 1
+    output[0] = '"'
+    let digits = b"0123456789abcdef"
+    for byte in value.bytes:
+        let need: usize = 6 if byte < 32 else (2 if byte == '"' or byte == '\\' else 1)
+        if used + need + 1 > output.length: error(invalid, "pull request JSON exceeds limit")
+        if byte < 32:
+            output[used] = '\\'
+            output[used + 1] = 'u'
+            output[used + 2] = '0'
+            output[used + 3] = '0'
+            output[used + 4] = digits[byte >> 4]
+            output[used + 5] = digits[byte & 15]
+        elif need == 2:
+            output[used] = '\\'
+            output[used + 1] = byte
+        else: output[used] = byte
+        used += need
+    output[used] = '"'
+    return used + 1
+
+func endpoint(package: str, suffix: str, output: u8[]) -> str!:
+    let (owner, repository) = try coordinate(package)
+    return try format(output, f"/v1/repositories/{owner}/{repository}/pull-requests{suffix}")
+
+func emit(response: const u8[]) -> i32!:
+    try io.stdout().write((str)response)
+    try io.stdout().write("\n")
+    return 0
+
+pub func create(origin: str, package: str, base: str, head: str, title: str, body: str, path: str) -> i32!:
+    if not registry.valid(origin) or not branch_valid(base) or not branch_valid(head) or base == head or title.length == 0 or title.length > 256 or body.length > 8192 or path.length == 0:
+        error(invalid, "invalid pull request")
+    var target_buffer: u8[256]
+    let target = try endpoint(package, "", target_buffer)
+    let payload = try alloc u8[65536] in memory.heap
+    defer free(payload) in memory.heap
+    let beginning = try format(payload, f"{{\"base\":")
+    var used = beginning.length
+    used += try quote(base, payload[used..])
+    let head_field = try format(payload[used..], f",\"head\":")
+    used += head_field.length
+    used += try quote(head, payload[used..])
+    let title_field = try format(payload[used..], f",\"title\":")
+    used += title_field.length
+    used += try quote(title, payload[used..])
+    let body_field = try format(payload[used..], f",\"body\":")
+    used += body_field.length
+    used += try quote(body, payload[used..])
+    payload[used] = '}'
+    used += 1
+    var bearer: u8[48]
+    defer crypto.wipe(bearer)
+    var session = try credentials.load(path, origin)
+    defer session.close()
+    let authorization = try format(bearer, f"Bearer {(str)try session.bytes()}")
+    var response: u8[16384]
+    let result = try registry.request(origin, "POST", target, authorization, "application/json", payload[..<used], response)
+    if result.status != 201: error(invalid, "pull request creation was not confirmed")
+    return try emit(response[..<result.count])
+
+pub func list(origin: str, package: str, path: str) -> i32!:
+    if not registry.valid(origin) or path.length == 0: error(invalid, "invalid pull request request")
+    var target_buffer: u8[256]
+    let target = try endpoint(package, "", target_buffer)
+    var bearer: u8[48]
+    defer crypto.wipe(bearer)
+    var session = try credentials.load(path, origin)
+    defer session.close()
+    let authorization = try format(bearer, f"Bearer {(str)try session.bytes()}")
+    let response = try alloc u8[4194304] in memory.heap
+    defer free(response) in memory.heap
+    let result = try registry.request(origin, "GET", target, authorization, "", b"", response)
+    if result.status != 200: error(invalid, "pull request listing failed")
+    return try emit(response[..<result.count])
+
+pub func show(origin: str, package: str, number: str, path: str) -> i32!:
+    if not registry.valid(origin) or not number_valid(number) or path.length == 0:
+        error(invalid, "invalid pull request request")
+    var suffix_buffer: u8[8]
+    let suffix = try format(suffix_buffer, f"/{number}")
+    var target_buffer: u8[256]
+    let target = try endpoint(package, suffix, target_buffer)
+    var bearer: u8[48]
+    defer crypto.wipe(bearer)
+    var session = try credentials.load(path, origin)
+    defer session.close()
+    let authorization = try format(bearer, f"Bearer {(str)try session.bytes()}")
+    var response: u8[16384]
+    let result = try registry.request(origin, "GET", target, authorization, "", b"", response)
+    if result.status != 200: error(invalid, "pull request read failed")
+    return try emit(response[..<result.count])
+
+pub func state(origin: str, package: str, number: str, target_state: str, path: str) -> i32!:
+    if not registry.valid(origin) or not number_valid(number) or (target_state != "open" and target_state != "closed" and target_state != "merged") or path.length == 0:
+        error(invalid, "invalid pull request state request")
+    var suffix_buffer: u8[8]
+    let suffix = try format(suffix_buffer, f"/{number}")
+    var target_buffer: u8[256]
+    let target = try endpoint(package, suffix, target_buffer)
+    var payload_buffer: u8[32]
+    let payload = try format(payload_buffer, f"{{\"state\":\"{target_state}\"}}")
+    var bearer: u8[48]
+    defer crypto.wipe(bearer)
+    var session = try credentials.load(path, origin)
+    defer session.close()
+    let authorization = try format(bearer, f"Bearer {(str)try session.bytes()}")
+    var response: u8[16384]
+    let result = try registry.request(origin, "POST", target, authorization, "application/json", payload.bytes, response)
+    if result.status != 200: error(invalid, "pull request state change failed")
+    return try emit(response[..<result.count])

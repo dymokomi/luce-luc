@@ -31,12 +31,13 @@ import luc.graph_lock as graph_lock
 import luc.locked_release as locked_release
 import luc.graph_sync as graph_sync
 import luc.credentials as credentials
+import luc.pull_requests as pull_requests
 import luc.checkout as checkout
 import git
 import crypto_native
 
 ## The luc version, kept in step with VERSION.
-pub let luc_version: str = "0.13.0"
+pub let luc_version: str = "0.14.0"
 
 ## A command-line or manifest problem the user can fix.
 pub let usage_error: ErrorCode = ErrorCode.package(1)
@@ -1113,6 +1114,24 @@ pub func main(arguments: c.str[]) -> i32!:
                 error(usage_error, "usage: luc git-token <origin> <repository> <read|write> --vault <session-vault> --password-stdin")
             return try credentials.issue_git_token((str)arguments[2], (str)arguments[3],
                 (str)arguments[4], (str)arguments[6])
+        if command == "pr-create":
+            if arguments.length != 11 or (str)arguments[8] != "--vault" or (str)arguments[10] != "--password-stdin":
+                error(usage_error, "usage: luc pr-create <origin> <owner/repository> <base> <head> <title> <body> --vault <session-vault> --password-stdin")
+            return try pull_requests.create((str)arguments[2], (str)arguments[3], (str)arguments[4],
+                (str)arguments[5], (str)arguments[6], (str)arguments[7], (str)arguments[9])
+        if command == "pr-list":
+            if arguments.length != 7 or (str)arguments[4] != "--vault" or (str)arguments[6] != "--password-stdin":
+                error(usage_error, "usage: luc pr-list <origin> <owner/repository> --vault <session-vault> --password-stdin")
+            return try pull_requests.list((str)arguments[2], (str)arguments[3], (str)arguments[5])
+        if command == "pr-show":
+            if arguments.length != 8 or (str)arguments[5] != "--vault" or (str)arguments[7] != "--password-stdin":
+                error(usage_error, "usage: luc pr-show <origin> <owner/repository> <number> --vault <session-vault> --password-stdin")
+            return try pull_requests.show((str)arguments[2], (str)arguments[3], (str)arguments[4], (str)arguments[6])
+        if command == "pr-state":
+            if arguments.length != 9 or (str)arguments[6] != "--vault" or (str)arguments[8] != "--password-stdin":
+                error(usage_error, "usage: luc pr-state <origin> <owner/repository> <number> <open|closed|merged> --vault <session-vault> --password-stdin")
+            return try pull_requests.state((str)arguments[2], (str)arguments[3], (str)arguments[4],
+                (str)arguments[5], (str)arguments[7])
         if command == "checkout-release":
             if arguments.length < 7 or arguments.length > 8:
                 error(usage_error, "usage: luc checkout-release <metadata> <signature> <trusted-key> <pack> <new-directory> [--locked]")
@@ -1207,6 +1226,10 @@ func usage(out: io.Writer) -> !:
     try out.write("  register <origin> <account> --secrets-stdin  redeem an invitation\n")
     try out.write("  repo-create <origin> <name> --vault <path> --password-stdin  create a remote repository\n")
     try out.write("  git-token <origin> <repository> <read|write> --vault <path> --password-stdin  mint a five-minute stock-Git password\n")
+    try out.write("  pr-create <origin> <owner/repository> <base> <head> <title> <body> --vault <path> --password-stdin  open a same-repository review\n")
+    try out.write("  pr-list <origin> <owner/repository> --vault <path> --password-stdin  list pull requests as JSON\n")
+    try out.write("  pr-show <origin> <owner/repository> <number> --vault <path> --password-stdin  show one pull request\n")
+    try out.write("  pr-state <origin> <owner/repository> <number> <open|closed|merged> --vault <path> --password-stdin  change review state\n")
     try out.write("  remote-refs/remote-fetch also accept --vault <path> --password-stdin\n")
     try out.write("  remote-fetch <url> <commit> <new-pack-path>  fetch a validated full Git pack\n")
     try out.write("  checkout-pack <pack> <commit> <new-directory>  materialize validated source\n")
