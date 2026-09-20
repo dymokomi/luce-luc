@@ -1,7 +1,6 @@
-## Development transport until general verified HTTPS is available.
-import http_client
+## Native Git smart-HTTP transport over canonical loopback HTTP or verified
+## production HTTPS.
 import git
-import net
 import os
 import c
 import strings
@@ -12,6 +11,7 @@ import paths
 import crypto_native
 import luc.pack_check as pack_check
 import luc.credentials as credentials
+import luc.registry_http as registry
 
 let invalid: ErrorCode = ErrorCode.package(2)
 
@@ -86,18 +86,8 @@ pub func fetch(url: str, commit: str, destination: str, vault_path: str = "") ->
 func run(url: str, commit: str, destination: str, vault_path: str) -> i32!:
     var requested: u8[20]
     if commit.length > 0: try git.decode_id(commit, requested)
-    let prefix = "http://127.0.0.1:"
-    if not strings.starts_with(url, prefix):
-        error(invalid, "remote-refs currently requires http://127.0.0.1:<port>/git/<owner>/<name>; public HTTPS pending")
-    var at = prefix.length
-    var port: usize = 0
-    let begin = at
-    while at < url.length and url.bytes[at] != '/':
-        let byte = url.bytes[at]
-        if byte < '0' or byte > '9' or at - begin >= 5: error(invalid, "invalid registry port")
-        port = port * 10 + (usize)(byte - '0')
-        at += 1
-    if at == begin or port == 0 or port > 65535 or at == url.length: error(invalid, "invalid registry port")
+    let at = try registry.url_origin_length(url)
+    let origin = (str)url.bytes[..<at]
     let path = (str)url.bytes[at..]
     if not strings.starts_with(path, "/git/"): error(invalid, "invalid registry repository URL")
     var split: usize = 5
@@ -109,7 +99,7 @@ func run(url: str, commit: str, destination: str, vault_path: str) -> i32!:
     defer secret.close()
     var token: str
     if vault_path.length > 0:
-        secret = try credentials.load(vault_path, (str)url.bytes[..<at])
+        secret = try credentials.load(vault_path, origin)
         token = (str)try secret.bytes()
     else:
         token = os.env((c.str)"LUCE_REGISTRY_TOKEN") else error(invalid, "LUCE_REGISTRY_TOKEN is required")
@@ -122,13 +112,9 @@ func run(url: str, commit: str, destination: str, vault_path: str) -> i32!:
     var credential: u8[80]
     defer crypto_native.wipe(credential)
     let bearer = try format(credential, f"Bearer {token}")
-    var fields: net.HttpField[2]
-    fields[0] = net.HttpField(name = "Authorization", value = bearer)
     let output = try alloc u8[4194304] in memory.heap
     defer free(output) in memory.heap
-    var host_buffer: u8[32]
-    let host = try format(host_buffer, f"127.0.0.1:{port}")
-    let result = try http_client.request(net.SocketAddress.loopback((u16)port), "GET", target, host, fields, 1, b"", output)
+    let result = try registry.request(origin, "GET", target, bearer, "", b"", output)
     if result.status != 200: error(invalid, "registry discovery request failed")
     if commit.length == 0:
         discard(try advertisement(output[..<result.count], false, b""))
@@ -145,10 +131,10 @@ func run(url: str, commit: str, destination: str, vault_path: str) -> i32!:
     size += try git.encode_packet(git.PacketKind.data, b"done\n", request[size..])
     var fetch_target: u8[256]
     let endpoint = try format(fetch_target, f"{path}/git-upload-pack")
-    fields[1] = net.HttpField(name = "Content-Type", value = "application/x-git-upload-pack-request")
     let incoming = try alloc u8[67108864] in memory.heap
     defer free(incoming) in memory.heap
-    let response = try http_client.request(net.SocketAddress.loopback((u16)port), "POST", endpoint, host, fields, 2, request[..<size], incoming)
+    let response = try registry.request(origin, "POST", endpoint, bearer,
+        "application/x-git-upload-pack-request", request[..<size], incoming)
     if response.status != 200: error(invalid, "registry fetch request failed")
     let acknowledgement = try git.decode_packet(incoming[..<response.count])
     if acknowledgement.kind != git.PacketKind.data or (str)acknowledgement.payload != "NAK\n":

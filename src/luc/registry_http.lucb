@@ -1,0 +1,81 @@
+## One strict registry transport boundary. Local integration keeps canonical
+## numeric-loopback HTTP; production uses verified native HTTPS at the single
+## Lucia OS registry origin.
+import http_client
+import https
+import net
+import strings
+
+pub let invalid: ErrorCode = ErrorCode.package(12)
+pub let production_origin = "https://pkg.luciaos.com"
+
+pub struct Origin:
+    pub var secure: bool
+    pub var host: str
+    pub var port: u16
+
+pub struct Response:
+    pub var status: u16
+    pub var count: usize
+
+pub func parse(origin: str) -> Origin!:
+    if origin == production_origin:
+        return Origin(secure = true, host = "pkg.luciaos.com", port = 443)
+    let prefix = "http://127.0.0.1:"
+    if not strings.starts_with(origin, prefix):
+        error(invalid, "registry origin must be https://pkg.luciaos.com or canonical numeric loopback HTTP")
+    let digits = (str)origin.bytes[prefix.length..]
+    if digits.length == 0 or digits.length > 5 or digits.bytes[0] == '0':
+        error(invalid, "invalid registry origin port")
+    var port: usize = 0
+    for byte in digits.bytes:
+        if byte < '0' or byte > '9': error(invalid, "invalid registry origin port")
+        port = port * 10 + (usize)(byte - '0')
+    if port == 0 or port > 65535: error(invalid, "invalid registry origin port")
+    return Origin(secure = false, host = (str)origin.bytes[7..], port = (u16)port)
+
+pub func valid(origin: str) -> bool:
+    discard(parse(origin) catch failure:
+        discard(failure)
+        return false)
+    return true
+
+## Return the canonical origin-prefix length of a full repository URL. A slash
+## and repository path must follow it; user-info, query origins and fragments
+## are never accepted.
+pub func url_origin_length(url: str) -> usize!:
+    if strings.starts_with(url, production_origin):
+        if url.length <= production_origin.length or url.bytes[production_origin.length] != '/':
+            error(invalid, "production registry URL has no repository path")
+        return production_origin.length
+    let prefix = "http://127.0.0.1:"
+    if not strings.starts_with(url, prefix):
+        error(invalid, "unsupported registry repository URL")
+    var at = prefix.length
+    while at < url.length and url.bytes[at] != '/': at += 1
+    if at == url.length: error(invalid, "registry repository URL has no path")
+    discard(try parse((str)url.bytes[..<at]))
+    return at
+
+## Perform one bounded registry request. Request headers are validated before
+## either transport opens a socket. Public HTTPS authenticates the complete
+## certificate path under ISRG Root X2 through luce-http-client/luce-tls.
+pub func request(origin: str, method: str, target: str, authorization: str,
+                 content_type: str, body: const u8[], output: u8[],
+                 timeout_ms: u64 = 30000) -> Response!:
+    let parsed = try parse(origin)
+    if parsed.secure:
+        let result = try https.fetch_public(parsed.host, parsed.port, method, target,
+            authorization, content_type, body, output)
+        return Response(status = result.status, count = result.length)
+    var fields: net.HttpField[2]
+    var count: usize = 0
+    if authorization.length > 0:
+        fields[count] = net.HttpField(name = "Authorization", value = authorization)
+        count += 1
+    if content_type.length > 0:
+        fields[count] = net.HttpField(name = "Content-Type", value = content_type)
+        count += 1
+    let result = try http_client.request(net.SocketAddress.loopback(parsed.port), method,
+        target, parsed.host, fields, count, body, output, timeout_ms = timeout_ms)
+    return Response(status = result.status, count = result.count)

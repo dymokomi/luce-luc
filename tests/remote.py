@@ -62,6 +62,12 @@ def check(binary):
             missing = dict(env)
             missing.pop('LUCE_REGISTRY_TOKEN')
             run(['remote-refs', url], environment=missing)
+            production = subprocess.run(
+                [str(binary), 'remote-refs', 'https://pkg.luciaos.com/git/alice/demo'],
+                cwd=root, env=missing, capture_output=True, timeout=40)
+            assert production.returncode > 0
+            assert b'LUCE_REGISTRY_TOKEN is required' in production.stderr
+            assert production.stdout == b'' and not list(root.iterdir())
             run(['remote-refs', url], environment=dict(env, LUCE_REGISTRY_TOKEN='a\r\nb'))
             state['status'] = 401
             run(['remote-refs', url])

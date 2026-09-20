@@ -17,7 +17,7 @@ luc install <origin> <owner/package> <version> --trusted-key <key> (--vault <ses
 luc sync --trusted-key <key> (--vault <session> --password-stdin | --offline)
 luc versions <origin> <owner/package> --vault <session> --password-stdin
 luc resolve <origin> <owner/package> <version|^version> --vault <session> --password-stdin
-luc remote-refs <url>     list remote Git refs (loopback HTTP development transport)
+luc remote-refs <url>     list remote Git refs (verified production HTTPS or loopback HTTP)
 luc remote-fetch <url> <commit-id> <new-pack-path>  fetch a validated full Git pack
 luc checkout-pack <pack> <commit-id> <new-directory>  materialize source files
 luc checkout-release <metadata> <signature> <key> <pack> <new-directory> [--locked]
@@ -66,26 +66,29 @@ target task through `"$@"`: `luc run ci -- --filter parse`. The build cache is t
 
 ## Build and test
 
-`luc remote-refs http://127.0.0.1:<port>/git/<owner>/<name>` performs native
+`luc remote-refs <origin>/git/<owner>/<name>` performs native
 authenticated upload-pack discovery without a project manifest or file writes.
 Set `LUCE_REGISTRY_TOKEN` to a disposable 32-character hex session token from the
 native test registry; it is never printed or accepted as a command-line argument.
 The command validates the complete bounded advertisement before printing any refs,
 including HEAD and peeled tags. Invalid responses produce no partial ref output.
-Only explicit numeric loopback HTTP is enabled: public HTTPS trust remains
-unfinished. This is not login, clone, installation or signature
-verification, and environment-token delivery is not a production custody solution.
+The accepted origins are exactly `https://pkg.luciaos.com` and canonical numeric
+loopback HTTP used by isolated tests. Production requests use native TLS 1.3 and
+validate the complete bounded Caddy/Let's Encrypt path under the pinned ISRG Root
+X2 P-384 key. This is not a general system CA store and currently has no OCSP/CRL
+revocation check. Git discovery is not login, clone, installation or release
+signature verification, and environment-token delivery is not production custody.
 
-Encrypted session-token storage is available for loopback development:
+Encrypted session-token storage is available for either accepted origin:
 
 ```text
-luc auth-store <http://127.0.0.1:port> <account> <new-vault> --secrets-stdin
-luc login <http://127.0.0.1:port> <account> <new-vault> --passwords-stdin
-luc register <http://127.0.0.1:port> <account> --secrets-stdin
-luc repo-create <http://127.0.0.1:port> <name> --vault <vault> --password-stdin
-luc key-create <http://127.0.0.1:port> <account> <new-key-vault> --password-stdin
-luc key-enroll <http://127.0.0.1:port> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin
-luc key-check <http://127.0.0.1:port> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin
+luc auth-store <origin> <account> <new-vault> --secrets-stdin
+luc login <origin> <account> <new-vault> --passwords-stdin
+luc register <origin> <account> --secrets-stdin
+luc repo-create <origin> <name> --vault <vault> --password-stdin
+luc key-create <origin> <account> <new-key-vault> --password-stdin
+luc key-enroll <origin> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin
+luc key-check <origin> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin
 luc release-sign <metadata> <pack> <new-upload> --key-vault <key-vault> --password-stdin
 luc release-upload <origin> <artifact> --vault <session-vault> --password-stdin
 luc release-check <origin> <artifact> --vault <session-vault> --password-stdin
@@ -113,8 +116,9 @@ attempts revocation with a five-second timeout; network failure can leave a sess
 alive until server expiry. A failure after publication does not revoke the stored
 token, since a directory-sync error may leave a usable file with uncertain durability.
 The registry password and vault password may differ; neither is printed. No raw
-server response body is included in error messages. Loopback HTTP is still for
-disposable development accounts, not real credentials.
+server response body is included in error messages. Loopback HTTP is only for
+disposable development accounts; use the exact verified HTTPS origin for remote
+credentials.
 
 `register` reads an invitation-code line (32 lowercase hex characters), then
 a registry-password line and EOF, with the same terminal refusal. It redeems the
@@ -155,7 +159,8 @@ only verifies identity and compares the remote key to the vault-derived public
 key. An unbound account is an error in check-only mode, never an implicit enrollment.
 Neither command overwrites a conflicting key. This command
 is first-key enrollment, not release publication. Both commands refuse terminal
-secret input, and remain restricted to disposable loopback development credentials.
+secret input. The production path uses the same origin-bound encrypted custody
+over verified HTTPS; the overall stack remains experimental and not security-reviewed.
 
 `release-sign` is offline: it reads canonical LRS1 or LRS2 metadata and a standalone Git
 pack, verifies SHA-256 source binding and typed pack closure for the signed commit,
@@ -163,8 +168,9 @@ then unlocks the matching origin/account LUK1 signing vault. It requires an
 `owner/package` identity using the registry naming rules and a numeric toolchain
 version. LRS2 source-manifest agreement is enforced again by the registry during
 publication; offline signing validates the signed declaration and pack closure.
-One vault-password line and EOF must come from nonterminal stdin. Current
-vault-origin policy remains loopback-only; this is not production key tooling.
+One vault-password line and EOF must come from nonterminal stdin. The vault origin
+must be either the exact production registry origin or canonical numeric loopback
+HTTP; no arbitrary host, redirect or downgrade is accepted.
 
 It creates a fresh randomized native ML-DSA-65 signature, self-verifies it, and
 saves an LRP1 upload:8-byte header (`LRP1`, u16le metadata length, two reserved zero
@@ -191,13 +197,13 @@ the artifact and use `release-check`, which performs GETs only, before deciding
 whether to retry the exact artifact. Neither command changes local vaults or
 artifacts. Conflicts are never overwritten and redirects are not followed.
 
-These commands remain loopback-development-only. The enrolled key is obtained
+These commands use verified production HTTPS or canonical loopback HTTP. The enrolled key is obtained
 from the authenticated registry, not an independent publisher trust source; this
 is publication reconciliation, not public package discovery or trust bootstrap.
 The repository and signed commit must already exist remotely. Release uploads
 are bounded to64MiB source plus envelope; readback loads source in memory. There
 is no automatic retry, metadata generation or dependency
-installation here. Public verified HTTPS remains pending.
+installation here. Publisher trust provisioning remains separate.
 
 `versions` authenticates with the encrypted session vault and fetches the bounded
 LPV1 version catalog for one package. It validates the complete canonical,
@@ -207,7 +213,8 @@ library's caret compatibility rule and prints only the highest match. Discovery
 and selection are advisory: neither command downloads a release, changes project
 files, establishes publisher-key trust or proves freshness. A later install must
 still verify signed metadata, the explicit trusted ML-DSA key, source digest and
-Git graph. Both commands remain owner-authenticated and loopback-only.
+Git graph. Both commands remain owner-authenticated and use the same strict
+production-HTTPS/loopback transport boundary.
 
 `release-download` fetches an exact release into a new source directory. Supply
 an independently trusted1952-byte ML-DSA-65 publisher key; the command never
@@ -220,8 +227,8 @@ digest, identity or lock failure creates no checkout. Existing destinations are
 never replaced; checkout path restrictions still apply. No project manifest or
 lock is edited, no build runs, and this is not yet dependency installation/cache.
 Caller-supplied trust does not establish freshness or key ownership automatically.
-The current endpoint is owner-authenticated and loopback-only, not public catalog
-access; production HTTPS and publisher trust provisioning remain pending.
+The endpoint is owner-authenticated rather than anonymous public catalog access;
+production HTTPS is implemented, while publisher trust provisioning remains explicit.
 
 `install` turns the verified release into a compiler-native local dependency.
 Online mode downloads and verifies the exact release, then atomically saves its
@@ -246,16 +253,15 @@ fail without changing `luce.toml`; a verified cache artifact may remain after a
 later install failure. Installed source is ordinary local project state and is not
 continuously revalidated after installation. `install` remains the explicit
 single-package operation; use `lock` and `sync` for a complete declared dependency
-graph. Public HTTPS and publisher trust provisioning remain pending.
+graph. Publisher trust provisioning remains explicit and single-key.
 
 The encrypted LUC1 payload is `LUC1\norigin\naccount\ntoken\n`. Origin must be exact
-`http://127.0.0.1:<nonzero-port>` without leading port zeroes or a trailing slash;
-it is checked before any HTTP request. Account names follow native auth syntax.
+`https://pkg.luciaos.com` or `http://127.0.0.1:<nonzero-port>` without leading port
+zeroes or a trailing slash; it is checked before any request. Account names follow native auth syntax.
 The stored account label is not proof of server identity or account ownership.
 Wrong password, malformed vault or origin mismatch stops the request without
 exposing the token. `auth-store` only imports an existing session; `login` obtains
-one and checks its principal. Neither renews expired tokens,
-rotates credentials, or supports public HTTPS yet.
+one and checks its principal. Neither renews expired tokens or rotates credentials.
 
 Build dependencies also include pinned siblings `luce-git`, `luce-compress`,
 `luce-http-client`, `luce-tls`, `luce-auth` and `luce-prism`; `build.sh` and CI check their exact revisions.
@@ -269,8 +275,8 @@ An optional fourth `CHECKOUT_RELEASE_FIXTURE` argument adds CLI artifact signing
 with the enrolled random key, native registry acceptance, exact retries and
 downloaded-byte verification. The test harness performs HTTP upload for now.
 
-`luc remote-fetch <url> <commit-id> <new-pack-path>` uses the same loopback/token
-policy, requires the requested ID to be advertised, and performs native Git
+`luc remote-fetch <url> <commit-id> <new-pack-path>` uses the same strict
+production-HTTPS/loopback token policy, requires the requested ID to be advertised, and performs native Git
 upload-pack negotiation without haves. It accepts a complete self-contained pack,
 checks its checksum, requires the requested object to be a commit, rejects duplicate
 objects, and validates all tree/commit/tag references and expected types. Gitlinks
@@ -331,7 +337,8 @@ backtracking solver. It atomically writes canonical graph-complete lock v3 only
 after every candidate declaration authenticates. It does not fetch source bodies;
 the lock pins their signed SHA-256 digests for subsequent verified installation.
 For this first trust profile, one explicit ML-DSA-65 public key must authenticate
-the complete graph. Cross-publisher trust maps and public HTTPS remain pending.
+the complete graph. Cross-publisher trust maps remain pending; transport uses the
+verified production HTTPS profile when the lock origin is `https://pkg.luciaos.com`.
 
 `luc sync` requires that graph-complete v3 lock and revalidates every current
 manifest root against it before creating any project state. Online mode unlocks
@@ -361,7 +368,8 @@ Paths are relative to the working directory; no project manifest is required.
 It performs no network requests, extraction, installation or file writes.
 The supplied key must already be trusted: success does not prove origin ownership,
 publisher authorization, freshness or that the release matches a project request.
-Remote installation and registry-root/key-distribution policy are not implemented.
+Remote installation transport is implemented; registry publisher-key distribution,
+rotation/revocation and multi-publisher trust policy remain explicit unfinished work.
 Add `--locked` after the four paths to require an existing project and `luc.lock`:
 the signed origin, package, version, SHA-256 source digest and compiler must match
 the lock. Project discovery walks upward from the current directory; input paths

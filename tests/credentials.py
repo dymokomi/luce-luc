@@ -57,6 +57,17 @@ def check(binary):
             run(store, password + b'\n' + token + b'\n', True)
             original = vault.read_bytes()
             assert vault.stat().st_mode & 0o777 == 0o600
+            production_vault = root / 'production.vault'
+            production_origin = 'https://pkg.luciaos.com'
+            for invalid_origin in ('https://pkg.luciaos.com/', 'https://PKG.luciaos.com',
+                                   'https://pkg.luciaos.com:443', 'http://pkg.luciaos.com',
+                                   'https://example.test'):
+                run(['auth-store', invalid_origin, 'alice', production_vault, '--secrets-stdin'],
+                    password + b'\n' + token + b'\n')
+                assert not production_vault.exists()
+            run(['auth-store', production_origin, 'alice', production_vault, '--secrets-stdin'],
+                password + b'\n' + token + b'\n', True)
+            assert production_vault.stat().st_mode & 0o777 == 0o600
             run(store, password + b'\n' + token + b'\n')
             assert vault.read_bytes() == original
             fetch = ['remote-refs', origin + '/git/alice/demo', '--vault', vault, '--password-stdin']
@@ -74,6 +85,10 @@ def check(binary):
             other = list(fetch)
             other[1] = 'http://127.0.0.1:1/git/alice/demo'
             rejected = run(other, password + b'\n')
+            assert b'origin mismatch' in rejected.stderr
+            production_bound = list(fetch)
+            production_bound[3] = production_vault
+            rejected = run(production_bound, password + b'\n')
             assert b'origin mismatch' in rejected.stderr
             assert len(requests) == previous
             assert vault.read_bytes() == original

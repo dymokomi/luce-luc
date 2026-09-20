@@ -35,7 +35,7 @@ import git
 import crypto_native
 
 ## The luc version, kept in step with VERSION.
-pub let luc_version: str = "0.9.0"
+pub let luc_version: str = "0.10.0"
 
 ## A command-line or manifest problem the user can fix.
 pub let usage_error: ErrorCode = ErrorCode.package(1)
@@ -854,11 +854,11 @@ pub func main(arguments: c.str[]) -> i32!:
             if arguments.length == 6 and (str)arguments[3] == "--vault" and (str)arguments[5] == "--password-stdin":
                 if ((str)arguments[4]).length == 0: error(usage_error, "vault path is required")
                 return try remote.refs((str)arguments[2], (str)arguments[4])
-            if arguments.length != 3: error(usage_error, "usage: luc remote-refs <loopback-git-url>")
+            if arguments.length != 3: error(usage_error, "usage: luc remote-refs <registry-git-url>")
             return try remote.refs((str)arguments[2])
         if command == "auth-store":
             if arguments.length != 6 or (str)arguments[5] != "--secrets-stdin":
-                error(usage_error, "usage: luc auth-store <loopback-origin> <account> <new-vault> --secrets-stdin")
+                error(usage_error, "usage: luc auth-store <origin> <account> <new-vault> --secrets-stdin")
             return try credentials.store((str)arguments[2], (str)arguments[3], (str)arguments[4])
         if command == "release-download":
             let locked = arguments.length == 12 and (str)arguments[11] == "--locked"
@@ -897,23 +897,23 @@ pub func main(arguments: c.str[]) -> i32!:
             return try release_upload.sign((str)arguments[2], (str)arguments[3], (str)arguments[4], (str)arguments[6])
         if command == "key-create":
             if arguments.length != 6 or (str)arguments[5] != "--password-stdin":
-                error(usage_error, "usage: luc key-create <loopback-origin> <account> <new-key-vault> --password-stdin")
+                error(usage_error, "usage: luc key-create <origin> <account> <new-key-vault> --password-stdin")
             return try credentials.key_create((str)arguments[2], (str)arguments[3], (str)arguments[4])
         if command == "key-enroll" or command == "key-check":
             if arguments.length != 9 or (str)arguments[4] != "--vault" or (str)arguments[6] != "--key-vault" or (str)arguments[8] != "--passwords-stdin":
-                error(usage_error, "usage: luc key-enroll|key-check <loopback-origin> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin")
+                error(usage_error, "usage: luc key-enroll|key-check <origin> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin")
             return try credentials.key_enroll((str)arguments[2], (str)arguments[3], (str)arguments[5], (str)arguments[7], check_only = command == "key-check")
         if command == "login":
             if arguments.length != 6 or (str)arguments[5] != "--passwords-stdin":
-                error(usage_error, "usage: luc login <loopback-origin> <account> <new-vault> --passwords-stdin")
+                error(usage_error, "usage: luc login <origin> <account> <new-vault> --passwords-stdin")
             return try credentials.login((str)arguments[2], (str)arguments[3], (str)arguments[4])
         if command == "register":
             if arguments.length != 5 or (str)arguments[4] != "--secrets-stdin":
-                error(usage_error, "usage: luc register <loopback-origin> <account> --secrets-stdin")
+                error(usage_error, "usage: luc register <origin> <account> --secrets-stdin")
             return try credentials.register((str)arguments[2], (str)arguments[3])
         if command == "repo-create":
             if arguments.length != 7 or (str)arguments[4] != "--vault" or (str)arguments[6] != "--password-stdin":
-                error(usage_error, "usage: luc repo-create <loopback-origin> <name> --vault <path> --password-stdin")
+                error(usage_error, "usage: luc repo-create <origin> <name> --vault <path> --password-stdin")
             return try credentials.create_repository((str)arguments[2], (str)arguments[3], (str)arguments[5])
         if command == "checkout-release":
             if arguments.length < 7 or arguments.length > 8:
@@ -925,7 +925,7 @@ pub func main(arguments: c.str[]) -> i32!:
             if arguments.length == 8 and (str)arguments[5] == "--vault" and (str)arguments[7] == "--password-stdin":
                 if ((str)arguments[6]).length == 0: error(usage_error, "vault path is required")
                 return try remote.fetch((str)arguments[2], (str)arguments[3], (str)arguments[4], (str)arguments[6])
-            if arguments.length != 5: error(usage_error, "usage: luc remote-fetch <loopback-git-url> <commit-id> <new-pack-path>")
+            if arguments.length != 5: error(usage_error, "usage: luc remote-fetch <registry-git-url> <commit-id> <new-pack-path>")
             return try remote.fetch((str)arguments[2], (str)arguments[3], (str)arguments[4])
         if command == "checkout-pack":
             if arguments.length != 5: error(usage_error, "usage: luc checkout-pack <pack-path> <commit-id> <new-directory>")
@@ -991,7 +991,7 @@ func usage(out: io.Writer) -> !:
     try out.write("  sync --trusted-key <key> (--vault <session> --password-stdin | --offline)  install exact luc.lock v3 graph\n")
     try out.write("  versions <origin> <owner/package> --vault <session> --password-stdin  list canonical available versions\n")
     try out.write("  resolve <origin> <owner/package> <version|^version> --vault <session> --password-stdin  select a catalog version\n")
-    try out.write("  remote-refs <url>      list registry refs (loopback HTTP development transport)\n")
+    try out.write("  remote-refs <url>      list registry refs over verified production HTTPS or loopback HTTP\n")
     try out.write("  auth-store <origin> <account> <new-vault> --secrets-stdin  encrypt a session token\n")
     try out.write("  release-sign <metadata> <pack> <new-upload> --key-vault <key> --password-stdin  save signed LRP1 artifact\n")
     try out.write("  release-upload|release-check <origin> <artifact> --vault <session> --password-stdin  publish or reconcile exact release bytes\n")
