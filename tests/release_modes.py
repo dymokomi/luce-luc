@@ -31,6 +31,7 @@ for name, flags in modes:
     binary = out / name
     run([base, 'build', 'src/luc/main.lucb', *flags, '-o', binary])
     run([sys.executable, 'tests/release.py', binary, fixture])
+    run([sys.executable, 'tests/version_bounds.py', binary, fixture])
     run([sys.executable, 'tests/remote.py', binary])
     run([sys.executable, 'tests/credentials.py', binary])
     run([sys.executable, 'tests/login.py', binary])
@@ -50,6 +51,7 @@ run([os.environ.get('CC', 'cc'), '-std=gnu11', '-O1', '-g', '-w',
 env['ASAN_OPTIONS'] = 'halt_on_error=1:abort_on_error=1'
 env['UBSAN_OPTIONS'] = 'halt_on_error=1:print_stacktrace=1'
 run([sys.executable, 'tests/release.py', binary, fixture])
+run([sys.executable, 'tests/version_bounds.py', binary, fixture])
 run([sys.executable, 'tests/remote.py', binary])
 run([sys.executable, 'tests/credentials.py', binary])
 run([sys.executable, 'tests/login.py', binary])
