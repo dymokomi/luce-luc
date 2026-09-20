@@ -45,14 +45,17 @@ pub func upload(origin: str, artifact_path: str, vault_path: str, check_only: bo
         let byte = name.bytes[i]
         let alnum = (byte >= 'a' and byte <= 'z') or (byte >= '0' and byte <= '9')
         if not alnum and (i == 0 or (byte != '_' and byte != '-')): error(invalid, "invalid package name")
-    # load validates the exact registry origin before reading the password.
-    var token = try credentials.load(vault_path, origin, account)
-    defer token.close()
-    var bearer_buffer: u8[80]
-    defer crypto.wipe(bearer_buffer)
-    let bearer = try format(bearer_buffer, f"Bearer {(str)try token.bytes()}")
+    # The encrypted vault holds only the interactive session. It is used to
+    # read the enrolled key and mint a bounded publication credential; package
+    # endpoints never receive the session token.
+    var session = try credentials.load(vault_path, origin, account)
+    defer session.close()
+    let session_bytes = try session.bytes()
+    var session_bearer_buffer: u8[48]
+    defer crypto.wipe(session_bearer_buffer)
+    let session_bearer = try format(session_bearer_buffer, f"Bearer {(str)session_bytes}")
     var key: u8[1952]
-    let identity = try registry.request(origin, "GET", "/v1/identity/key", bearer, "", b"", key)
+    let identity = try registry.request(origin, "GET", "/v1/identity/key", session_bearer, "", b"", key)
     if identity.status != 200 or identity.count != key.length: error(invalid, "cannot read enrolled signing key")
     if not try pkg.verify_release(release, key, signature, source): error(invalid, "artifact does not verify against enrolled key")
     var requested: u8[20]
@@ -60,6 +63,13 @@ pub func upload(origin: str, artifact_path: str, vault_path: str, check_only: bo
     var pack = try git.decode_pack(source)
     defer pack.close()
     try pack_check.validate(&pack, requested)
+    var token = try credentials.issue_credential(session_bytes, origin, name, "package:publish")
+    defer token.close()
+    let token_bytes = try token.bytes()
+    defer credentials.revoke_quiet(session_bytes, origin, token_bytes)
+    var bearer_buffer: u8[80]
+    defer crypto.wipe(bearer_buffer)
+    let bearer = try format(bearer_buffer, f"Bearer {(str)token_bytes}")
     var endpoint_buffer: u8[256]
     let endpoint = try format(endpoint_buffer, f"/v1/releases/{release.package}")
     if not check_only:

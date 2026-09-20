@@ -1,6 +1,7 @@
 """Verified online/offline package install, cache relocation and Base build/run."""
 import hashlib
 import http.server
+import json
 import os
 from pathlib import Path
 import shutil
@@ -12,6 +13,7 @@ import threading
 binary, fixture, compiler = [Path(value).resolve() for value in sys.argv[1:]]
 standard = Path(__file__).resolve().parents[2] / 'luce-base/src/std'
 token = b'a' * 32
+scoped = b'b' * 64
 state = {'calls': []}
 parts = {}
 
@@ -23,12 +25,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
     def do_GET(self):
         state['calls'].append(self.path)
-        assert self.headers['Authorization'] == 'Bearer ' + token.decode()
+        assert self.headers['Authorization'] == 'Bearer ' + scoped.decode()
         prefix = '/v1/releases/acme/demo/1.2.3/'
         assert self.path.startswith(prefix), self.path
         part = self.path[len(prefix):]
         assert part in parts
         self.reply(200, parts[part])
+    def do_POST(self):
+        assert self.headers['Authorization'] == 'Bearer ' + token.decode()
+        value = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        if self.path == '/v1/credentials':
+            assert value == {'scope': 'package:read', 'repository': 'demo', 'lifetime_seconds': 300}
+            self.reply(201, scoped)
+        else:
+            assert self.path == '/v1/credentials/revoke' and value == {'token': scoped.decode()}
+            self.reply(200, b'revoked')
     def log_message(self, *args): pass
 
 def project(path):

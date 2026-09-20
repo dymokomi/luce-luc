@@ -15,6 +15,12 @@ import luc.registry_http as registry
 
 let invalid: ErrorCode = ErrorCode.package(2)
 
+func revoke_managed(managed: bool, origin: str, session: crypto_native.Secret*, credential: crypto_native.Secret*):
+    if not managed: return
+    let session_bytes = session.bytes() catch: return
+    let credential_bytes = credential.bytes() catch: return
+    discard(credentials.revoke_credential(session_bytes, origin, credential_bytes) catch: recover ())
+
 func component(value: str, owner: bool) -> bool:
     if value.length == 0 or value.length > (32 if owner else 64): return false
     for i in 0..<value.length:
@@ -93,28 +99,32 @@ func run(url: str, commit: str, destination: str, vault_path: str) -> i32!:
     var split: usize = 5
     while split < path.length and path.bytes[split] != '/': split += 1
     if split == path.length: error(invalid, "missing registry package name")
-    if not component((str)path.bytes[5..<split], true) or not component((str)path.bytes[split + 1..], false):
+    let owner = (str)path.bytes[5..<split]
+    let repository = (str)path.bytes[split + 1..]
+    if not component(owner, true) or not component(repository, false):
         error(invalid, "invalid registry owner or package name")
-    var secret = crypto_native.Secret()
-    defer secret.close()
+    var session = crypto_native.Secret()
+    defer session.close()
+    var scoped = crypto_native.Secret()
+    defer scoped.close()
+    var managed = false
+    defer revoke_managed(managed, origin, &session, &scoped)
     var token: str
     if vault_path.length > 0:
-        secret = try credentials.load(vault_path, origin)
-        token = (str)try secret.bytes()
+        session = try credentials.load(vault_path, origin, owner)
+        scoped = try credentials.issue_credential(try session.bytes(), origin, repository, "git:read")
+        token = (str)try scoped.bytes()
+        managed = true
     else:
         token = os.env((c.str)"LUCE_REGISTRY_TOKEN") else error(invalid, "LUCE_REGISTRY_TOKEN is required")
-    if token.length != 32: error(invalid, "invalid registry session token")
-    for byte in token.bytes:
-        if not ((byte >= '0' and byte <= '9') or (byte >= 'a' and byte <= 'f')):
-            error(invalid, "invalid registry session token")
     var target_buffer: u8[256]
     let target = try format(target_buffer, f"{path}/info/refs?service=git-upload-pack")
-    var credential: u8[80]
-    defer crypto_native.wipe(credential)
-    let bearer = try format(credential, f"Bearer {token}")
+    var authorization_buffer: u8[160]
+    defer crypto_native.wipe(authorization_buffer)
+    let authorization = try credentials.basic_authorization(owner, token.bytes, authorization_buffer)
     let output = try alloc u8[4194304] in memory.heap
     defer free(output) in memory.heap
-    let result = try registry.request(origin, "GET", target, bearer, "", b"", output)
+    let result = try registry.request(origin, "GET", target, authorization, "", b"", output)
     if result.status != 200: error(invalid, "registry discovery request failed")
     if commit.length == 0:
         discard(try advertisement(output[..<result.count], false, b""))
@@ -133,7 +143,7 @@ func run(url: str, commit: str, destination: str, vault_path: str) -> i32!:
     let endpoint = try format(fetch_target, f"{path}/git-upload-pack")
     let incoming = try alloc u8[67108864] in memory.heap
     defer free(incoming) in memory.heap
-    let response = try registry.request(origin, "POST", endpoint, bearer,
+    let response = try registry.request(origin, "POST", endpoint, authorization,
         "application/x-git-upload-pack-request", request[..<size], incoming)
     if response.status != 200: error(invalid, "registry fetch request failed")
     let acknowledgement = try git.decode_packet(incoming[..<response.count])

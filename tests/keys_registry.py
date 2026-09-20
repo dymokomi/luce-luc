@@ -103,6 +103,15 @@ with tempfile.TemporaryDirectory(prefix='luc-key-registry-', dir='/tmp') as temp
                 status, token = request('POST', '/v1/sessions', json.dumps({'name': 'testadmin', 'password': 'fixture-password'}))
                 assert status == 200
                 headers = {'Authorization': 'Bearer ' + token.decode(), 'Content-Type': 'application/octet-stream'}
+                def scoped(scope):
+                    status, value = request('POST', '/v1/credentials', json.dumps({
+                        'scope': scope, 'repository': 'signed-account', 'lifetime_seconds': 3600,
+                    }).encode(), {'Authorization': 'Bearer ' + token.decode(), 'Content-Type': 'application/json'})
+                    assert status == 201 and len(value) == 64
+                    return {'Authorization': 'Bearer ' + value.decode()}
+                package_publish_headers = scoped('package:publish')
+                package_publish_binary = dict(package_publish_headers, **{'Content-Type': 'application/octet-stream'})
+                package_read_headers = scoped('package:read')
                 subprocess.run([str(signing_fixture), str(root)], check=True, timeout=30)
                 metadata = (root / 'metadata').read_bytes()
                 fields, at = [], 6
@@ -135,7 +144,7 @@ with tempfile.TemporaryDirectory(prefix='luc-key-registry-', dir='/tmp') as temp
                 command(publish, b'vault-password\n')
                 command(reconcile, b'vault-password\n')
                 command(publish, b'vault-password\n')
-                assert request('POST', endpoint, upload, headers) == (200, b'unchanged')
+                assert request('POST', endpoint, upload, package_publish_binary) == (200, b'unchanged')
                 listed = command(['versions', origin, 'testadmin/signed-account', '--vault', session,
                                   '--password-stdin'], b'vault-password\n')
                 assert listed.stdout == b'1.2.3\n'
@@ -144,7 +153,7 @@ with tempfile.TemporaryDirectory(prefix='luc-key-registry-', dir='/tmp') as temp
                 assert selected.stdout == b'1.2.3\n'
                 size = int.from_bytes(upload[4:6], 'little')
                 for part, expected in (('metadata', metadata), ('signature', upload[8 + size:3317 + size]), ('source', source)):
-                    assert request('GET', endpoint + '/1.2.3/' + part, headers=headers) == (200, expected)
+                    assert request('GET', endpoint + '/1.2.3/' + part, headers=package_read_headers) == (200, expected)
                 # Test-only trust provisioning from the already reconciled account;
                 # the client itself never fetches/accepts a publisher key implicitly.
                 status, public_key = request('GET', '/v1/identity/key', headers=headers)

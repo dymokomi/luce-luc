@@ -1,5 +1,7 @@
 """Disposable vault CLI and origin-bound authenticated discovery oracle."""
 import http.server
+import base64
+import json
 import os
 import pty
 from pathlib import Path
@@ -11,16 +13,32 @@ from remote import pkt
 
 def check(binary):
     token = b'a' * 32
+    scoped = b'd' * 64
     password = b'disposable vault password'
     requests = []
     body = pkt(b'# service=git-upload-pack\n') + b'0000' + pkt(b'0' * 40 + b' capabilities^{}\0ofs-delta') + b'0000'
     class Handler(http.server.BaseHTTPRequestHandler):
+        def respond(self, status, payload):
+            self.send_response(status)
+            self.send_header('Content-Length', str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        def do_POST(self):
+            assert self.headers['Authorization'] == 'Bearer ' + token.decode()
+            value = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            if self.path == '/v1/credentials':
+                assert value == {'scope': 'git:read', 'repository': 'demo', 'lifetime_seconds': 300}
+                requests.append('issue')
+                self.respond(201, scoped)
+            else:
+                assert self.path == '/v1/credentials/revoke' and value == {'token': scoped.decode()}
+                requests.append('revoke')
+                self.respond(200, b'revoked')
         def do_GET(self):
             requests.append(self.headers.get('Authorization'))
-            self.send_response(200)
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            expected = 'Basic ' + base64.b64encode(b'alice:' + scoped).decode()
+            assert self.headers['Authorization'] == expected
+            self.respond(200, body)
         def log_message(self, *args): pass
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -72,7 +90,8 @@ def check(binary):
             assert vault.read_bytes() == original
             fetch = ['remote-refs', origin + '/git/alice/demo', '--vault', vault, '--password-stdin']
             run(fetch, password + b'\n', True)
-            assert requests == ['Bearer ' + token.decode()], requests
+            expected = 'Basic ' + base64.b64encode(b'alice:' + scoped).decode()
+            assert requests == ['issue', expected, 'revoke'], requests
             previous = len(requests)
             empty = list(fetch)
             empty[3] = ''

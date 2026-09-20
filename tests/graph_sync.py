@@ -1,5 +1,6 @@
 """Whole-graph verified sync, compiler wiring, offline cache and relocation."""
 import http.server
+import json
 import os
 from pathlib import Path
 import shutil
@@ -11,6 +12,7 @@ import threading
 binary, fixture, compiler = [Path(value).resolve() for value in sys.argv[1:]]
 standard = Path(__file__).resolve().parents[2] / 'luce-base/src/std'
 token = b'a' * 32
+scoped = {'a': b'b' * 64, 'b': b'c' * 64, 'c': b'd' * 64}
 state = {'root': None, 'calls': []}
 catalogs = {
     'acme/a': ['1.1.0', '1.0.0'],
@@ -25,20 +27,34 @@ def catalog(values):
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    def reply(self, status, body):
+        self.send_response(status)
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        assert self.headers['Authorization'] == 'Bearer ' + token.decode()
+        value = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        if self.path == '/v1/credentials':
+            assert value['scope'] == 'package:read' and value['repository'] in scoped and value['lifetime_seconds'] == 300
+            self.reply(201, scoped[value['repository']])
+        else:
+            assert self.path == '/v1/credentials/revoke'
+            assert value['token'] in {item.decode() for item in scoped.values()}
+            self.reply(200, b'revoked')
+
     def do_GET(self):
         state['calls'].append(self.path)
-        assert self.headers['Authorization'] == 'Bearer ' + token.decode()
         pieces = self.path.removeprefix('/v1/releases/').split('/')
+        assert self.headers['Authorization'] == 'Bearer ' + scoped[pieces[1]].decode()
         if len(pieces) == 2:
             body = catalog(catalogs['/'.join(pieces)])
         else:
             _, name, version, part = pieces
             assert part in ('metadata', 'signature', 'source')
             body = (state['root'] / f'{name}-{version}-{part}').read_bytes()
-        self.send_response(200)
-        self.send_header('Content-Length', str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        self.reply(200, body)
 
     def log_message(self, *_):
         pass

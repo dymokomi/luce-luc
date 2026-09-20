@@ -17,7 +17,7 @@ import git_http
 original = git_http.check
 
 
-def check(port, headers, root, request):
+def check(port, headers, git_token, git_read_token, root, request):
     token = headers['Authorization'].removeprefix('Bearer ')
     env = dict(os.environ, LUCE_REGISTRY_TOKEN=token)
     url = f'http://127.0.0.1:{port}/git/testuser/git-wire'
@@ -39,7 +39,8 @@ def check(port, headers, root, request):
         assert created.returncode == 0, created.stderr
         assert token.encode() not in created.stdout + created.stderr
         print('PASS luc vault-authenticated native repository creation', flush=True)
-    latest = original(port, headers, root, request, create_repository=create_repository)
+    latest = original(port, headers, git_token, git_read_token, root, request,
+                      create_repository=create_repository)
     result = subprocess.run([str(luc), 'remote-refs', url, '--vault', str(vault), '--password-stdin'],
                             input=password + b'\n', cwd=root, env=env, capture_output=True, timeout=60)
     assert result.returncode == 0, result.stderr

@@ -1,5 +1,6 @@
 """Independent login, identity verification and failed-publication cleanup oracle."""
 import http.server
+import base64
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ from remote import pkt
 
 def check(binary):
     token = b'c' * 32
+    scoped = b'd' * 64
     password = 'quote" slash\\ tab\t café'.encode()
     vault_password = b'local vault password'
     state = {'status': 200, 'identity': b'alice', 'token': token, 'calls': [], 'collision': None}
@@ -28,14 +30,30 @@ def check(binary):
                 assert value == {'name': 'alice', 'password': password.decode()}, value
                 if state['collision'] is not None: state['collision'].write_bytes(b'preserve')
                 self.respond(state['status'], state['token'])
-            else:
+            elif self.path == '/v1/sessions/revoke':
                 assert self.path == '/v1/sessions/revoke'
                 assert self.headers['Authorization'] == 'Bearer ' + token.decode()
                 self.respond(200, b'revoked')
+            elif self.path == '/v1/credentials':
+                assert self.headers['Authorization'] == 'Bearer ' + token.decode()
+                value = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                assert value == {'scope': 'git:read', 'repository': 'demo', 'lifetime_seconds': 300}
+                self.respond(201, scoped)
+            else:
+                assert self.path == '/v1/credentials/revoke'
+                assert self.headers['Authorization'] == 'Bearer ' + token.decode()
+                value = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                assert value == {'token': scoped.decode()}
+                self.respond(200, b'revoked')
         def do_GET(self):
             state['calls'].append(self.path)
-            assert self.headers['Authorization'] == 'Bearer ' + token.decode()
-            self.respond(200, state['identity'] if self.path == '/v1/identity' else body)
+            if self.path == '/v1/identity':
+                assert self.headers['Authorization'] == 'Bearer ' + token.decode()
+                self.respond(200, state['identity'])
+            else:
+                expected = 'Basic ' + base64.b64encode(b'alice:' + scoped).decode()
+                assert self.headers['Authorization'] == expected
+                self.respond(200, body)
         def log_message(self, *args): pass
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)

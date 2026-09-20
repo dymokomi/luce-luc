@@ -68,8 +68,10 @@ target task through `"$@"`: `luc run ci -- --filter parse`. The build cache is t
 
 `luc remote-refs <origin>/git/<owner>/<name>` performs native
 authenticated upload-pack discovery without a project manifest or file writes.
-Set `LUCE_REGISTRY_TOKEN` to a disposable 32-character hex session token from the
-native test registry; it is never printed or accepted as a command-line argument.
+Set `LUCE_REGISTRY_TOKEN` only for the vaultless form, to a disposable 64-character
+hex `git:read` credential bound to the URL's repository. luc sends it with canonical
+HTTP Basic authentication using the URL owner as the username; it is never printed
+or accepted as a command-line argument.
 The command validates the complete bounded advertisement before printing any refs,
 including HEAD and peeled tags. Invalid responses produce no partial ref output.
 The accepted origins are exactly `https://pkg.luciaos.com` and canonical numeric
@@ -105,7 +107,10 @@ or history. No password environment variable or secret command argument is used.
 The parent directory must already be private, owned, trusted and stable. The
 native auth vault uses Argon2id/XChaCha20-Poly1305, mode0600 no-clobber publication,
 and authenticated reads. Optional vault flags take precedence over the legacy
-token environment variable; failure never falls back to it.
+token environment variable; failure never falls back to it. Vault-authenticated Git
+and package commands use the session only to mint a five-minute credential for the
+exact repository and scope, then best-effort revoke it. Git requests use Basic;
+package requests use Bearer. The session token is never sent to either data plane.
 
 `login` instead reads the registry-password line, then a separate vault-password
 line and EOF. It posts bounded JSON to `/v1/sessions`, checks `/v1/identity` matches
@@ -190,7 +195,9 @@ correctness. Metadata generation and `luc publish` remain separate work.
 `release-upload` consumes that saved artifact and an explicit matching origin.
 It unlocks an origin/account-bound session vault from one password line plus EOF,
 reads the authenticated account's enrolled key, and verifies the signature, source
-digest and Git pack closure before sending one POST. Success requires a201
+digest and Git pack closure. It then mints a bounded `package:publish` credential
+for the signed repository before sending one POST and exact readback requests.
+Success requires a201
 `published` or200 `unchanged` reply followed by exact metadata/signature/source
 readback. A failed request or readback can still mean publication happened. Retain
 the artifact and use `release-check`, which performs GETs only, before deciding
@@ -205,8 +212,8 @@ are bounded to64MiB source plus envelope; readback loads source in memory. There
 is no automatic retry, metadata generation or dependency
 installation here. Publisher trust provisioning remains separate.
 
-`versions` authenticates with the encrypted session vault and fetches the bounded
-LPV1 version catalog for one package. It validates the complete canonical,
+`versions` unlocks the encrypted session vault, mints a bounded `package:read`
+credential for the exact repository, and fetches its LPV1 catalog. It validates the complete canonical,
 unique, descending numeric-semver list before printing any server-controlled
 version text. `resolve` applies either an exact requirement or the package
 library's caret compatibility rule and prints only the highest match. Discovery
@@ -332,7 +339,8 @@ anything; its success output explicitly states that signatures are not verified.
 
 The networked `luc lock` form reads the same bounded `[registry.dependencies]`
 declaration enforced during publication, unlocks the session once, recursively
-fetches canonical catalogs and signed LRS2 metadata, and uses the shared bounded
+fetches canonical catalogs and signed LRS2 metadata with separately minted and
+revoked repository-bound `package:read` credentials, and uses the shared bounded
 backtracking solver. It atomically writes canonical graph-complete lock v3 only
 after every candidate declaration authenticates. It does not fetch source bodies;
 the lock pins their signed SHA-256 digests for subsequent verified installation.
@@ -342,7 +350,8 @@ verified production HTTPS profile when the lock origin is `https://pkg.luciaos.c
 
 `luc sync` requires that graph-complete v3 lock and revalidates every current
 manifest root against it before creating any project state. Online mode unlocks
-one session, downloads each exact locked release, verifies its LRS2 signature,
+one session, mints a separate bounded read credential for each locked repository,
+downloads each exact release, verifies its LRS2 signature,
 publisher-key fingerprint, source digest, commit, compiler identity and signed
 dependency declaration, then reconciles immutable LRP1 cache bytes. Offline mode
 performs no credential read and no network request; it applies the same checks to

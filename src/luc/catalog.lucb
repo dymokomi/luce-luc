@@ -26,7 +26,7 @@ pub func fetch_authenticated(origin: str, package: str, token: const u8[]) -> Ca
     # Reuse the exact release identity and registry transport profile; 0.0.0 is
     # only a validation sentinel and never appears in the request path.
     try release_download.validate_request(origin, package, "0.0.0")
-    if token.length != 32: error(invalid, "invalid registry session token")
+    if token.length != 64: error(invalid, "invalid registry package credential")
     var bearer_buffer: u8[80]
     defer crypto.wipe(bearer_buffer)
     let bearer = try format(bearer_buffer, f"Bearer {(str)token}")
@@ -40,9 +40,22 @@ pub func fetch_authenticated(origin: str, package: str, token: const u8[]) -> Ca
     return Catalog(storage = wire, versions = versions)
 
 pub func fetch(origin: str, package: str, vault_path: str) -> Catalog!:
-    var token = try credentials.load(vault_path, origin)
+    var session = try credentials.load(vault_path, origin)
+    defer session.close()
+    return try fetch_session_authenticated(origin, package, try session.bytes())
+
+## Use the interactive session only to mint one bounded read credential. The
+## package request itself never receives the session token.
+pub func fetch_session_authenticated(origin: str, package: str, session: const u8[]) -> Catalog!:
+    try release_download.validate_request(origin, package, "0.0.0")
+    var split: usize = 0
+    while split < package.length and package.bytes[split] != '/': split += 1
+    let repository = (str)package.bytes[split + 1..]
+    var token = try credentials.issue_credential(session, origin, repository, "package:read")
     defer token.close()
-    return try fetch_authenticated(origin, package, try token.bytes())
+    let bytes = try token.bytes()
+    defer credentials.revoke_quiet(session, origin, bytes)
+    return try fetch_authenticated(origin, package, bytes)
 
 pub func show(origin: str, package: str, vault_path: str) -> i32!:
     var catalog = try fetch(origin, package, vault_path)

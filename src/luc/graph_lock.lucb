@@ -97,9 +97,9 @@ pub func generate(root: str, manifest_path: str, origin: str, key_path: str, vau
     try release_download.validate_request(origin, "registry/validation", "0.0.0")
     let key = try release_download.trusted_key(key_path)
     defer free(key) in memory.heap
-    var token = try credentials.load(vault_path, origin)
-    defer token.close()
-    let token_bytes = try token.bytes()
+    var session = try credentials.load(vault_path, origin)
+    defer session.close()
+    let session_bytes = try session.bytes()
 
     var roots: pkg.Dependency[128]
     for i in 0..<declaration.dependency_count: roots[i] = try declaration.dependency_at(i)
@@ -114,14 +114,14 @@ pub func generate(root: str, manifest_path: str, origin: str, key_path: str, vau
     while package_index < discovered_count:
         let package = discovered[package_index]
         package_index += 1
-        var versions = try catalog.fetch_authenticated(origin, package, token_bytes)
+        var versions = try catalog.fetch_session_authenticated(origin, package, session_bytes)
         defer versions.close()
         for version_index in 0..<versions.versions.count:
             if universe.count >= pkg.max_graph_candidates:
                 error(invalid, "dependency graph candidate limit exceeded")
             let version = try versions.versions.at(version_index)
-            universe.metadata[universe.count] = try release_download.fetch_metadata_authenticated(
-                origin, package, version, key, token_bytes)
+            universe.metadata[universe.count] = try release_download.fetch_metadata_session_authenticated(
+                origin, package, version, key, session_bytes)
             universe.releases[universe.count] = universe.metadata[universe.count].release
             let release = universe.releases[universe.count]
             universe.count += 1

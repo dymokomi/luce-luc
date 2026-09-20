@@ -91,7 +91,7 @@ pub func fetch_metadata_authenticated(origin: str, package: str, version: str,
                                       key: const u8[], token: const u8[]) -> Metadata!:
     try validate_request(origin, package, version)
     if key.length != 1952: error(invalid, "trusted key must contain exactly1952 bytes")
-    if token.length != 32: error(invalid, "invalid registry session token")
+    if token.length != 64: error(invalid, "invalid registry package credential")
     var bearer_buffer: u8[80]
     defer crypto.wipe(bearer_buffer)
     let bearer = try format(bearer_buffer, f"Bearer {(str)token}")
@@ -146,9 +146,33 @@ pub func fetch(origin: str, package: str, version: str, key_path: str, vault_pat
     let key = try trusted_key(key_path)
     defer free(key) in memory.heap
     # Credential loading validates the exact origin before any network request.
-    var token = try credentials.load(vault_path, origin)
+    var session = try credentials.load(vault_path, origin)
+    defer session.close()
+    return try fetch_session_authenticated(origin, package, version, key, try session.bytes())
+
+func repository_name(package: str) -> str!:
+    var split: usize = 0
+    while split < package.length and package.bytes[split] != '/': split += 1
+    if split == package.length: error(invalid, "invalid package identity")
+    return (str)package.bytes[split + 1..]
+
+pub func fetch_metadata_session_authenticated(origin: str, package: str, version: str,
+                                               key: const u8[], session: const u8[]) -> Metadata!:
+    try validate_request(origin, package, version)
+    var token = try credentials.issue_credential(session, origin, try repository_name(package), "package:read")
     defer token.close()
-    return try fetch_authenticated(origin, package, version, key, try token.bytes())
+    let bytes = try token.bytes()
+    defer credentials.revoke_quiet(session, origin, bytes)
+    return try fetch_metadata_authenticated(origin, package, version, key, bytes)
+
+pub func fetch_session_authenticated(origin: str, package: str, version: str,
+                                     key: const u8[], session: const u8[]) -> Download!:
+    try validate_request(origin, package, version)
+    var token = try credentials.issue_credential(session, origin, try repository_name(package), "package:read")
+    defer token.close()
+    let bytes = try token.bytes()
+    defer credentials.revoke_quiet(session, origin, bytes)
+    return try fetch_authenticated(origin, package, version, key, bytes)
 
 ## Load and verify an exact cached LRP1 artifact without network access.
 pub func load_cache_authenticated(path: str, origin: str, package: str, version: str,

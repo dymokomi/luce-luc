@@ -1,5 +1,6 @@
 """Native luc discovery against an independent, bounded loopback HTTP oracle."""
 import http.server
+import base64
 import os
 from pathlib import Path
 import subprocess
@@ -13,7 +14,7 @@ def pkt(data):
 
 
 def check(binary):
-    token = 'a' * 32  # Matches current native auth session encoding; fixture only.
+    token = 'a' * 64  # Disposable repository-scoped credential; fixture only.
     prefix = pkt(b'# service=git-upload-pack\n') + b'0000'
     oid = b'1' * 40
     body = prefix + pkt(oid + b' HEAD\0ofs-delta\n') + pkt(oid + b' refs/heads/main\n') + b'0000'
@@ -23,7 +24,8 @@ def check(binary):
         def do_GET(self):
             state['requests'] += 1
             assert self.path == '/git/alice/demo/info/refs?service=git-upload-pack'
-            assert self.headers['Authorization'] == 'Bearer ' + token
+            expected = 'Basic ' + base64.b64encode(b'alice:' + token.encode()).decode()
+            assert self.headers['Authorization'] == expected
             self.send_response(state['status'])
             self.send_header('Content-Length', str(len(state['body'])))
             self.end_headers()

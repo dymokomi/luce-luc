@@ -1,6 +1,7 @@
 """Native upload: exact retries, uncertain outcomes and read-only reconciliation."""
 import http.server
 import hashlib
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -11,6 +12,8 @@ binary, fixture = [Path(v).resolve() for v in sys.argv[1:]]
 state = dict(calls=[], stored=False, mode='normal', corrupt='', key=b'')
 parts = {}
 token = b'a' * 32
+publish_token = b'b' * 64
+read_token = b'c' * 64
 class Handler(http.server.BaseHTTPRequestHandler):
     def reply(self, status, body):
         self.send_response(status)
@@ -19,18 +22,30 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
     def do_GET(self):
         state['calls'].append(('GET', self.path))
-        assert self.headers['Authorization'] == 'Bearer ' + token.decode()
         if self.path == '/v1/identity/key':
+            assert self.headers['Authorization'] == 'Bearer ' + token.decode()
             return self.reply(200, state['key'])
+        assert self.headers['Authorization'] in ('Bearer ' + publish_token.decode(), 'Bearer ' + read_token.decode())
         assert self.path.startswith('/v1/releases/acme/demo/1.2.3/')
         part = self.path.rsplit('/', 1)[1]
         data = parts[part]
         if state['corrupt'] == part: data += b'x'
         self.reply(200 if state['stored'] else 404, data if state['stored'] else b'')
     def do_POST(self):
+        if self.path == '/v1/credentials':
+            assert self.headers['Authorization'] == 'Bearer ' + token.decode()
+            value = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            assert value['repository'] == 'demo' and value['lifetime_seconds'] == 300
+            assert value['scope'] in ('package:read', 'package:publish')
+            return self.reply(201, read_token if value['scope'] == 'package:read' else publish_token)
+        if self.path == '/v1/credentials/revoke':
+            assert self.headers['Authorization'] == 'Bearer ' + token.decode()
+            value = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            assert value['token'] in (publish_token.decode(), read_token.decode())
+            return self.reply(200, b'revoked')
         state['calls'].append(('POST', self.path))
         assert self.path == '/v1/releases/acme/demo'
-        assert self.headers['Authorization'] == 'Bearer ' + token.decode()
+        assert self.headers['Authorization'] == 'Bearer ' + publish_token.decode()
         assert self.headers['Content-Type'] == 'application/octet-stream'
         assert self.rfile.read(int(self.headers['Content-Length'])) == artifact_bytes
         existed = state['stored']

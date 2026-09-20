@@ -1,5 +1,6 @@
 """Independent native luc fetch oracle and atomic no-clobber publication checks."""
 import hashlib
+import base64
 import http.server
 import os
 from pathlib import Path
@@ -43,7 +44,8 @@ def check(binary):
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def respond(self, data):
-            assert self.headers['Authorization'] == 'Bearer ' + 'a' * 32
+            expected = 'Basic ' + base64.b64encode(b'alice:' + b'a' * 64).decode()
+            assert self.headers['Authorization'] == expected
             self.send_response(200)
             self.send_header('Content-Length', str(len(data)))
             self.end_headers()
@@ -68,7 +70,7 @@ def check(binary):
     try:
         with tempfile.TemporaryDirectory(prefix='luc-fetch-') as temporary:
             root = Path(temporary)
-            env = dict(os.environ, LUCE_REGISTRY_TOKEN='a' * 32)
+            env = dict(os.environ, LUCE_REGISTRY_TOKEN='a' * 64)
             url = f'http://127.0.0.1:{server.server_port}/git/alice/demo'
             output = root / 'source.pack'
 

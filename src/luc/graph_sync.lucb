@@ -186,7 +186,7 @@ func fetch_package(cache: str, origin: str, package: pkg.Package, lock: pkg.Lock
     defer strings.release(artifact)
     var downloaded: release_download.Download
     if online:
-        downloaded = try release_download.fetch_authenticated(origin, package.name, version, key, token)
+        downloaded = try release_download.fetch_session_authenticated(origin, package.name, version, key, token)
         var verified = false
         errdefer close_unverified(&downloaded, &verified)
         let release = try pkg.decode_release(downloaded.metadata[..<downloaded.metadata_size])
@@ -364,6 +364,6 @@ pub func run(root: str, manifest_path: str, key_path: str, vault_path: str = "",
     let key = try release_download.trusted_key(key_path)
     defer free(key) in memory.heap
     if offline: return try execute(root, manifest_path, manifest_bytes, &declaration, lock_bytes, &lock, key, b"", false)
-    var token = try credentials.load(vault_path, lock.origin)
-    defer token.close()
-    return try execute(root, manifest_path, manifest_bytes, &declaration, lock_bytes, &lock, key, try token.bytes(), true)
+    var session = try credentials.load(vault_path, lock.origin)
+    defer session.close()
+    return try execute(root, manifest_path, manifest_bytes, &declaration, lock_bytes, &lock, key, try session.bytes(), true)

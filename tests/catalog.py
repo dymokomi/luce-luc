@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Authenticated bounded version discovery and semantic selection."""
 import http.server
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -9,6 +10,7 @@ import threading
 
 binary = Path(sys.argv[1]).resolve()
 token = b'a' * 32
+scoped = b'b' * 64
 state = {'calls': [], 'status': 200, 'wire': b''}
 
 
@@ -18,15 +20,28 @@ def encode(versions):
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        state['calls'].append((self.command, self.path))
-        assert self.path == '/v1/releases/acme/demo'
-        assert self.headers['Authorization'] == 'Bearer ' + token.decode()
-        body = state['wire'] if state['status'] == 200 else b'unavailable'
-        self.send_response(state['status'])
+    def respond(self, status, body):
+        self.send_response(status)
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_POST(self):
+        assert self.headers['Authorization'] == 'Bearer ' + token.decode()
+        value = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        if self.path == '/v1/credentials':
+            assert value == {'scope': 'package:read', 'repository': 'demo', 'lifetime_seconds': 300}
+            self.respond(201, scoped)
+        else:
+            assert self.path == '/v1/credentials/revoke' and value == {'token': scoped.decode()}
+            self.respond(200, b'revoked')
+
+    def do_GET(self):
+        state['calls'].append((self.command, self.path))
+        assert self.path == '/v1/releases/acme/demo'
+        assert self.headers['Authorization'] == 'Bearer ' + scoped.decode()
+        body = state['wire'] if state['status'] == 200 else b'unavailable'
+        self.respond(state['status'], body)
 
     def log_message(self, *_):
         pass
