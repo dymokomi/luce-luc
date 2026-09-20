@@ -62,5 +62,5 @@ def check(port, headers, root, request):
 
 
 git_http.check = check
-sys.argv = [str(tests / 'check_accounts.py'), str(registry), str(fixture), str(client)]
+sys.argv = [str(tests / 'check_accounts.py'), str(registry), str(fixture), str(client), str(luc)]
 runpy.run_path(str(tests / 'check_accounts.py'), run_name='__main__')

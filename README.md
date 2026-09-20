@@ -76,6 +76,7 @@ Encrypted session-token storage is available for loopback development:
 ```text
 luc auth-store <http://127.0.0.1:port> <account> <new-vault> --secrets-stdin
 luc login <http://127.0.0.1:port> <account> <new-vault> --passwords-stdin
+luc register <http://127.0.0.1:port> <account> --secrets-stdin
 luc remote-refs <git-url> --vault <vault> --password-stdin
 luc remote-fetch <git-url> <commit> <new-pack-path> --vault <vault> --password-stdin
 ```
@@ -102,13 +103,21 @@ The registry password and vault password may differ; neither is printed. No raw
 server response body is included in error messages. Loopback HTTP is still for
 disposable development accounts, not real credentials.
 
+`register` reads an invitation-code line (32 lowercase hex characters), then
+a registry-password line and EOF, with the same terminal refusal. It redeems the
+invitation through `/v1/invites/redeem` and writes no local files. It does not
+automatically log in, retry, or undo registration: a dropped response may leave
+an account created and its invitation consumed. Check account state/login before
+retrying an ambiguous failure. Invitation issuance remains an administrator-side
+operation; no public invitation creation endpoint is introduced.
+
 The encrypted LUC1 payload is `LUC1\norigin\naccount\ntoken\n`. Origin must be exact
 `http://127.0.0.1:<nonzero-port>` without leading port zeroes or a trailing slash;
 it is checked before any HTTP request. Account names follow native auth syntax.
 The stored account label is not proof of server identity or account ownership.
 Wrong password, malformed vault or origin mismatch stops the request without
 exposing the token. `auth-store` only imports an existing session; `login` obtains
-one and checks its principal. Neither registers users, renews expired tokens,
+one and checks its principal. Neither renews expired tokens,
 rotates credentials, or supports public HTTPS yet.
 
 Build dependencies also include pinned siblings `luce-git`, `luce-compress`,
