@@ -53,7 +53,7 @@ def check(binary):
         with tempfile.TemporaryDirectory(prefix='luc-keys-') as temporary:
             root = Path(temporary)
             origin = f'http://127.0.0.1:{server.server_port}'
-            key, session = root / 'key.vault', root / 'session.vault'
+            key, public, session = root / 'key.vault', root / 'key.pub', root / 'session.vault'
             env = dict(os.environ, LUCE_REGISTRY_TOKEN='e' * 32)
             def run(args, data, success=False):
                 result = subprocess.run([str(binary), *map(str, args)], input=data,
@@ -81,6 +81,27 @@ def check(binary):
             assert original[:4] == b'LAV1' and key.stat().st_mode & 0o777 == 0o600
             run(create, b'key-pass\n')
             assert key.read_bytes() == original and not state['calls']
+            export = ['key-export', origin, 'alice', public, '--key-vault', key, '--password-stdin']
+            for invalid in (b'', b'\n', b'key-pass', b'key-pass\nextra\n', b'wrong\n'):
+                run(export, invalid)
+                assert not public.exists() and not state['calls']
+            for index, value in ((1, 'http://127.0.0.1:1'), (2, 'bob'), (3, ''), (5, '')):
+                bad = list(export)
+                bad[index] = value
+                run(bad, b'key-pass\n')
+                assert not public.exists() and not state['calls']
+            link = root / 'key-link.pub'
+            link.symlink_to(key)
+            bad = list(export)
+            bad[3] = link
+            run(bad, b'key-pass\n')
+            assert link.is_symlink() and key.read_bytes() == original and not state['calls']
+            link.unlink()
+            run(export, b'key-pass\n', True)
+            public_bytes = public.read_bytes()
+            assert len(public_bytes) == 1952 and public.stat().st_mode & 0o777 == 0o600
+            run(export, b'')
+            assert public.read_bytes() == public_bytes and not state['calls']
             run(['auth-store', origin, 'alice', session, '--secrets-stdin'], b'session-pass\n' + token + b'\n', True)
             session_bytes = session.read_bytes()
             enroll = ['key-enroll', origin, 'alice', '--vault', session, '--key-vault', key, '--passwords-stdin']
@@ -123,6 +144,7 @@ def check(binary):
             run(check_key, b'session-pass\nkey-pass\n')
             assert state['calls'][before_calls:] == ['/v1/identity', '/v1/identity/key']
             run(enroll, b'session-pass\nkey-pass\n', True)
+            assert state['bound'] == public_bytes
             before_calls = len(state['calls'])
             run(check_key, b'session-pass\nkey-pass\n', True)
             run(enroll, b'session-pass\nkey-pass\n', True)
@@ -145,7 +167,7 @@ def check(binary):
             assert len(state['proofs']) == 6
             assert len({proof[:1952] for proof in state['proofs']}) == 1
             assert len({proof[1952:] for proof in state['proofs']}) == 6
-            assert sorted(p.name for p in root.iterdir()) == ['key.vault', 'session.vault']
+            assert sorted(p.name for p in root.iterdir()) == ['key.pub', 'key.vault', 'session.vault']
     finally:
         server.shutdown()
         server.server_close()

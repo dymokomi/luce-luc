@@ -92,6 +92,7 @@ luc register <origin> <account> --secrets-stdin
 luc repo-create <origin> <name> --vault <vault> --password-stdin
 luc git-token <origin> <repository> <read|write> --vault <session-vault> --password-stdin
 luc key-create <origin> <account> <new-key-vault> --password-stdin
+luc key-export <origin> <account> <new-public-key> --key-vault <key-vault> --password-stdin
 luc key-enroll <origin> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin
 luc key-check <origin> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin
 luc release-sign <metadata> <pack> <new-upload> --key-vault <key-vault> --password-stdin
@@ -159,6 +160,15 @@ replacement. Its LAV1-encrypted payload is `LUK1\norigin\naccount\n` followed by
 32 binary seed bytes. It uses the same private-directory/file policy as session
 vaults. Keep a secure backup before enrollment; there is no rotation/recovery yet.
 The seed and expanded private-key buffers are wiped when their owners close.
+
+`key-export` is also offline. It unlocks the origin/account-bound signing vault,
+derives the raw 1952-byte ML-DSA-65 public key, and durably publishes a new mode-0600
+file without replacing an existing file or symlink. This is the explicit trust-anchor
+input accepted by `lock`, `sync`, `install`, and release verification. Exporting from
+local encrypted custody avoids treating a key downloaded from the registry as its own
+proof of authenticity; distribute or compare the public-key fingerprint through an
+independent trusted channel. The command never changes the vault or contacts the
+registry.
 
 `key-enroll` reads the session-vault password line followed by the signing-key-vault
 password line and EOF. Both vaults must already exist and match the exact origin

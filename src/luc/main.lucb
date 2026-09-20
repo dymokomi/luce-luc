@@ -36,7 +36,7 @@ import git
 import crypto_native
 
 ## The luc version, kept in step with VERSION.
-pub let luc_version: str = "0.12.1"
+pub let luc_version: str = "0.13.0"
 
 ## A command-line or manifest problem the user can fix.
 pub let usage_error: ErrorCode = ErrorCode.package(1)
@@ -1088,6 +1088,10 @@ pub func main(arguments: c.str[]) -> i32!:
             if arguments.length != 6 or (str)arguments[5] != "--password-stdin":
                 error(usage_error, "usage: luc key-create <origin> <account> <new-key-vault> --password-stdin")
             return try credentials.key_create((str)arguments[2], (str)arguments[3], (str)arguments[4])
+        if command == "key-export":
+            if arguments.length != 8 or (str)arguments[5] != "--key-vault" or (str)arguments[7] != "--password-stdin":
+                error(usage_error, "usage: luc key-export <origin> <account> <new-public-key> --key-vault <key-vault> --password-stdin")
+            return try credentials.key_export((str)arguments[2], (str)arguments[3], (str)arguments[4], (str)arguments[6])
         if command == "key-enroll" or command == "key-check":
             if arguments.length != 9 or (str)arguments[4] != "--vault" or (str)arguments[6] != "--key-vault" or (str)arguments[8] != "--passwords-stdin":
                 error(usage_error, "usage: luc key-enroll|key-check <origin> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin")
@@ -1196,6 +1200,7 @@ func usage(out: io.Writer) -> !:
     try out.write("  publish <origin> <owner/package> <version> <commit> <toolchain> <new-artifact> --vault <session> --key-vault <key> --passwords-stdin\n")
     try out.write("  release-download <origin> <owner/package> <version> <new-directory> --trusted-key <key> --vault <session> --password-stdin [--locked]\n")
     try out.write("  key-create <origin> <account> <new-key-vault> --password-stdin  save an encrypted signing seed\n")
+    try out.write("  key-export <origin> <account> <new-public-key> --key-vault <key> --password-stdin  derive an offline trust anchor\n")
     try out.write("  key-enroll <origin> <account> --vault <session> --key-vault <key> --passwords-stdin  enroll signing key\n")
     try out.write("  key-check <origin> <account> --vault <session> --key-vault <key> --passwords-stdin  compare enrolled key without mutation\n")
     try out.write("  login <origin> <account> <new-vault> --passwords-stdin  log in and encrypt the session\n")
