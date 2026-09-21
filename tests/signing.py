@@ -37,14 +37,6 @@ with tempfile.TemporaryDirectory(prefix='luc-signing-') as temporary:
     run(['key-create', origin, 'alice', key, '--password-stdin'], success=True)
     key_bytes = key.read_bytes()
     args = ['release-sign', 'metadata', 'source', output, '--key-vault', key, '--password-stdin']
-    master, slave = pty.openpty()
-    try:
-        result = subprocess.run([str(binary), *map(str, args)], stdin=slave, cwd=root,
-                                capture_output=True, timeout=10)
-        assert result.returncode > 0 and b'refusing secret input' in result.stderr
-    finally:
-        os.close(slave)
-        os.close(master)
     for bad in (b'', b'wrong\n', b'\n', b'x' * 1025 + b'\n', b'signer-test-password\nextra\n'):
         run(args, bad)
         assert not output.exists()

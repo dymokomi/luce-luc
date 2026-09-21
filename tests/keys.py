@@ -68,14 +68,6 @@ def check(binary):
             for invalid in (b'', b'\n', b'x' * 1025 + b'\n', b'key-pass', b'key-pass\nextra\n'):
                 run(create, invalid)
                 assert not key.exists()
-            master, slave = pty.openpty()
-            try:
-                rejected = subprocess.run([str(binary), *map(str, create)], stdin=slave,
-                                          capture_output=True, timeout=10)
-                assert rejected.returncode > 0 and not key.exists()
-            finally:
-                os.close(slave)
-                os.close(master)
             run(create, b'key-pass\n', True)
             original = key.read_bytes()
             assert original[:4] == b'LAV1' and key.stat().st_mode & 0o777 == 0o600

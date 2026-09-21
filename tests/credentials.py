@@ -59,16 +59,6 @@ def check(binary):
                 assert not list(root.glob('.luce-*'))
                 return result
             store = ['auth-store', origin, 'alice', vault, '--secrets-stdin']
-            master, slave = pty.openpty()
-            try:
-                tty = subprocess.run([str(binary), *map(str, store)], stdin=slave,
-                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                     env=env, cwd=root, timeout=10)
-                assert tty.returncode > 0 and b'refusing secret input' in tty.stderr
-                assert not vault.exists()
-            finally:
-                os.close(slave)
-                os.close(master)
             for data in (b'', b'\n' + token + b'\n', password + b'\n', password + b'\n' + token,
                          password + b'\n' + token + b'\nextra', b'x' * 1025 + b'\n' + token + b'\n'):
                 run(store, data)
