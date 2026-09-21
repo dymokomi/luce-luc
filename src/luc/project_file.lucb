@@ -41,6 +41,20 @@ struct Output:
         for i in 0..<text.length: self.bytes[self.used + i] = text.bytes[i]
         self.used += text.length
 
+    ## `key = ["a", "b"]`, or nothing for an empty list.
+    mutating func array(key: str, values: const str[]) -> !:
+        if values.length == 0: return
+        try self.put(key)
+        try self.put(" = [")
+        for i in 0..<values.length:
+            for byte in values[i].bytes:
+                if byte == '"' or byte == '\\' or byte < 0x20: error(invalid, "value cannot be written to luce.toml")
+            if i > 0: try self.put(", ")
+            try self.put("\"")
+            try self.put(values[i])
+            try self.put("\"")
+        try self.put("]\n")
+
     mutating func pair(key: str, value: str) -> !:
         for byte in value.bytes:
             if byte == '"' or byte == '\\' or byte < 0x20: error(invalid, "value cannot be written to luce.toml")
@@ -73,6 +87,14 @@ func render(definition: pkg.Definition*, output: Output*, root: str, registry: b
         for i in 0..<definition.export_count:
             let item = try definition.export_at(i)
             try output.pair(item.name, item.module)
+    let native = &definition.native
+    if native.source_count + native.link_search_count + native.library_count + native.framework_count + native.pkg_config_count > 0:
+        try output.put("\n[native]\n")
+        try output.array("sources", native.sources[..<native.source_count])
+        try output.array("link_search", native.link_search[..<native.link_search_count])
+        try output.array("libraries", native.libraries[..<native.library_count])
+        try output.array("frameworks", native.frameworks[..<native.framework_count])
+        try output.array("pkg_config", native.pkg_config[..<native.pkg_config_count])
     var opened = false
     for i in 0..<definition.dependency_count:
         let item = try definition.dependency_at(i)

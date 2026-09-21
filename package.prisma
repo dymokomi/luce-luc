@@ -1,0 +1,45 @@
+#prisma 4.0
+def package "luc" {
+    str owner = "dymokomi"
+    str version = "0.14.0"
+    str language = "luce-base"
+    str description = "The unified project tool for the Luce languages — one command to build, run, test and format a project and to run the workflows declared in its luce.toml. Written in Luce Base."
+    str readme = "README.md"
+    str entry = "src/luc/main.lucb"
+
+    def dependency "luce-pkg" {
+        str owner = "dymokomi"
+        str version = "^0.1.0"
+        str path = "../luce-pkg"
+    }
+
+    def dependency "luce-crypto" {
+        str owner = "dymokomi"
+        str version = "^0.1.0"
+        str path = "../luce-crypto"
+    }
+
+    def dependency "luce-git" {
+        str owner = "dymokomi"
+        str version = "^0.1.0"
+        str path = "../luce-git"
+    }
+
+    def dependency "luce-http-client" {
+        str owner = "dymokomi"
+        str version = "^0.1.0"
+        str path = "../luce-http-client"
+    }
+
+    def dependency "luce-auth" {
+        str owner = "dymokomi"
+        str version = "^0.1.0"
+        str path = "../luce-auth"
+    }
+
+    def dependency "luce-prism" {
+        str owner = "dymokomi"
+        str version = "^0.1.0"
+        str path = "../luce-prism"
+    }
+}
