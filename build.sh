@@ -1,6 +1,8 @@
 #!/bin/sh
-# Build luc with the exact Base commit in bootstrap/BASE. An isolated build/luce-base checkout
-# keeps the build independent of any working tree. LUCE_BASE_SOURCE selects the repository
+# Build luc with the exact commits in bootstrap/. Missing package siblings are fetched by
+# commit from their public repositories; an existing checkout is never changed and must
+# already be at the pinned revision. An isolated build/luce-base checkout keeps the compiler
+# build independent of any working tree. LUCE_BASE_SOURCE selects the Base repository
 # (default ../luce-base); LUCE_BASE_COMPILER selects an already-built compiler.
 set -eu
 cd "$(dirname "$0")"
@@ -9,7 +11,15 @@ for dependency in PKG CRYPTO GIT HTTP_CLIENT TLS COMPRESS AUTH PRISM; do
     case "$dependency" in PKG) repo=luce-pkg ;; CRYPTO) repo=luce-crypto ;; GIT) repo=luce-git ;; HTTP_CLIENT) repo=luce-http-client ;; TLS) repo=luce-tls ;; COMPRESS) repo=luce-compress ;; AUTH) repo=luce-auth ;; PRISM) repo=luce-prism ;; esac
     expected=$(cat "bootstrap/$dependency")
     actual=$(git -C "../$repo" rev-parse HEAD 2>/dev/null || true)
-    [ "$actual" = "$expected" ] || { echo "FAIL: ../$repo must be checked out at $expected"; exit 1; }
+    if [ "$actual" != "$expected" ]; then
+        [ ! -e "../$repo" ] || { echo "FAIL: ../$repo must be checked out at $expected"; exit 1; }
+        git init -q "../$repo"
+        git -C "../$repo" remote add origin "https://github.com/dymokomi/$repo.git"
+        git -C "../$repo" fetch -q --depth 1 origin "$expected"
+        git -C "../$repo" checkout -q --detach FETCH_HEAD
+        actual=$(git -C "../$repo" rev-parse HEAD)
+        [ "$actual" = "$expected" ] || { echo "FAIL: fetched ../$repo at $actual, expected $expected"; exit 1; }
+    fi
 done
 if [ -n "${LUCE_BASE_COMPILER:-}" ]; then
     case "$LUCE_BASE_COMPILER" in /*) base=$LUCE_BASE_COMPILER ;; *) base=$PWD/$LUCE_BASE_COMPILER ;; esac
