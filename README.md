@@ -380,11 +380,13 @@ freshness remain unfinished. V2 also compares the signed commit and toolchain to
 the lock; v1 retains its weaker compatibility contract. This is not automatic
 dependency resolution or installation and does not establish registry-wide trust.
 
-Check out sibling `luce-pkg` and `luce-crypto` at `bootstrap/PKG` and
-`bootstrap/CRYPTO` before building. The build verifies their revisions. These
-native dependencies supply shared lock parsing and, for later remote integration,
-package cryptography. `luc lock --check` discovers the project from nested
-directories, reads at most 1 MiB, and rejects malformed restricted v1/v2/v3 lockfiles.
+The build verifies every package dependency against its exact `bootstrap/` revision.
+When a sibling checkout is absent it fetches that public repository at the pinned
+commit; an existing checkout at any other revision is rejected and never changed.
+These native dependencies supply shared lock parsing, Git and HTTP transport,
+authentication, storage, compression, TLS, and package cryptography. `luc lock --check`
+discovers the project from nested directories, reads at most 1 MiB, and rejects
+malformed restricted v1/v2/v3 lockfiles.
 It does not verify signatures, compare the manifest, resolve packages or install
 anything; its success output explicitly states that signatures are not verified.
 
@@ -461,9 +463,10 @@ covers online verification, offline and relocated-cache installation, lock
 enforcement, tamper rejection, concurrent cache publication, and real import,
 build and execution through each language frontend.
 
-`./build.sh` builds luc with the Base commit pinned in `bootstrap/BASE` (fetched into an
-isolated `build/luce-base`); `LUCE_BASE_COMPILER=/path/to/luce-base ./build.sh` uses an
-existing compiler instead. `./test.sh` runs the gate.
+`./build.sh` fetches absent package siblings at their pinned commits and builds luc
+with the Base commit pinned in `bootstrap/BASE` (fetched into an isolated
+`build/luce-base`); `LUCE_BASE_COMPILER=/path/to/luce-base ./build.sh` uses an existing
+compiler instead. `./test.sh` runs the gate.
 
 ## Not yet (next slices)
 
