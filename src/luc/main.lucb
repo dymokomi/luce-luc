@@ -638,6 +638,29 @@ func default_vault() -> str!:
     defer strings.release(home)
     return try paths.join(home, "session.vault")
 
+func account_file() -> str!:
+    let home = try apps.home()
+    defer strings.release(home)
+    return try paths.join(home, "account")
+
+func remember_account(account: str) -> !:
+    let path = try account_file()
+    defer strings.release(path)
+    let terminated = try strings.copy(path)
+    defer strings.release(terminated)
+    try files.write((c.str)terminated, account.bytes)
+
+## The account last registered or logged in here, or empty.
+func remembered_account() -> str!:
+    let path = try account_file()
+    defer strings.release(path)
+    let terminated = try strings.copy(path)
+    defer strings.release(terminated)
+    if not files.exists((c.str)terminated): return try strings.copy("")
+    let bytes = try files.read_limit((c.str)terminated, 128)
+    defer free(bytes) in memory.heap
+    return try strings.copy(strings.trim((str)bytes))
+
 func if_release(text: str):
     if text.length > 0: process.release(text)
 
@@ -1189,17 +1212,38 @@ pub func main(arguments: c.str[]) -> i32!:
                 words = try append(words, word)
             let fallback = try default_vault()
             defer strings.release(fallback)
+            # The origin may be omitted: it is the Lucia OS registry unless one is given.
+            var origin = packages.origin()
+            var first: usize = 0
+            if words.length > 0 and strings.starts_with(words[0], "http"):
+                origin = words[0]
+                first = 1
+            let rest = words[first..]
             if command == "register":
-                if words.length != 2: error(usage_error, "usage: luc register <origin> <account>")
-                return try credentials.register(words[0], words[1])
+                if rest.length != 1: error(usage_error, "usage: luc register <account>")
+                let status = try credentials.register(origin, rest[0])
+                if status == 0: try remember_account(rest[0])
+                return status
             if command == "login":
-                if words.length != 2 and words.length != 3: error(usage_error, "usage: luc login <origin> <account> [<new-vault>]")
-                return try credentials.login(words[0], words[1], words[2] if words.length == 3 else fallback)
+                if rest.length > 2: error(usage_error, "usage: luc login [<account>] [<new-vault>]")
+                let remembered = try remembered_account()
+                defer strings.release(remembered)
+                let account = rest[0] if rest.length > 0 else remembered
+                if account.length == 0: error(usage_error, "usage: luc login <account>   (the account is remembered afterwards)")
+                let target = rest[1] if rest.length == 2 else fallback
+                # A saved session is replaced: logging in again is the normal way to renew it.
+                if rest.length < 2:
+                    let existing = try strings.copy(target)
+                    defer strings.release(existing)
+                    discard(files.remove_file((c.str)existing) catch: recover ())
+                let status = try credentials.login(origin, account, target)
+                if status == 0: try remember_account(account)
+                return status
             if command == "repo-create":
-                if words.length != 2: error(usage_error, "usage: luc repo-create <origin> <name> [--vault <path>]")
-                return try credentials.create_repository(words[0], words[1], vault if vault.length > 0 else fallback)
-            if words.length != 3: error(usage_error, "usage: luc git-token <origin> <repository> <read|write> [--vault <path>]")
-            return try credentials.issue_git_token(words[0], words[1], words[2], vault if vault.length > 0 else fallback)
+                if rest.length != 1: error(usage_error, "usage: luc repo-create <name>")
+                return try credentials.create_repository(origin, rest[0], vault if vault.length > 0 else fallback)
+            if rest.length != 2: error(usage_error, "usage: luc git-token <repository> <read|write>")
+            return try credentials.issue_git_token(origin, rest[0], rest[1], vault if vault.length > 0 else fallback)
         if command == "pr-create":
             if arguments.length != 11 or (str)arguments[8] != "--vault" or (str)arguments[10] != "--password-stdin":
                 error(usage_error, "usage: luc pr-create <origin> <owner/repository> <base> <head> <title> <body> --vault <session-vault> --password-stdin")
