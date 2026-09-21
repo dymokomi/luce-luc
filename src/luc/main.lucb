@@ -37,6 +37,7 @@ import luc.project_file as project_file
 import luc.packages as packages
 import luc.registry_http as registry_http
 import luc.apps as apps
+import luc.release as releasing
 import git
 import crypto_native
 
@@ -1176,11 +1177,29 @@ pub func main(arguments: c.str[]) -> i32!:
             if arguments.length != 7 or (str)arguments[4] != "--vault" or (str)arguments[6] != "--password-stdin":
                 error(usage_error, "usage: luc release-upload|release-check <origin> <artifact> --vault <session> --password-stdin")
             return try release_upload.upload((str)arguments[2], (str)arguments[3], (str)arguments[5], check_only = command == "release-check")
+        if command == "git-credential":
+            if arguments.length != 3: return 0
+            let session = try default_vault()
+            defer strings.release(session)
+            return try releasing.credential_helper((str)arguments[2], session)
         if command == "publish":
-            if arguments.length != 13 or (str)arguments[8] != "--vault" or (str)arguments[10] != "--key-vault" or (str)arguments[12] != "--passwords-stdin":
-                error(usage_error, "usage: luc publish <origin> <owner/package> <version> <commit> <toolchain> <new-artifact> --vault <session> --key-vault <key> --passwords-stdin")
-            return try publish_command((str)arguments[2], (str)arguments[3], (str)arguments[4],
-                (str)arguments[5], (str)arguments[6], (str)arguments[7], (str)arguments[9], (str)arguments[11])
+            var notes = ""
+            var index: usize = 2
+            while index < arguments.length:
+                let word = (str)arguments[index]
+                index += 1
+                if (word == "-m" or word == "--notes") and index < arguments.length:
+                    notes = (str)arguments[index]
+                    index += 1
+                else:
+                    error(usage_error, "usage: luc publish -m \"what changed in this version\"")
+            var project = try load_project(prepare = false)
+            defer project.close()
+            let manifest = try require_manifest(&project)
+            strings.release(manifest)
+            let session = try default_vault()
+            defer strings.release(session)
+            return try releasing.publish(project.root, packages.origin(), session, notes)
         if command == "release-sign":
             if arguments.length != 8 or (str)arguments[5] != "--key-vault" or (str)arguments[7] != "--password-stdin":
                 error(usage_error, "usage: luc release-sign <metadata> <pack> <new-upload> --key-vault <key-vault> --password-stdin")

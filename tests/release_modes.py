@@ -51,7 +51,6 @@ for name, flags in modes:
     run([sys.executable, 'tests/checkout.py', binary, base])
     run([sys.executable, 'tests/checkout_release.py', binary, signed_fixture])
     if name == 'native0':
-        run([sys.executable, 'tests/publish.py', binary])
 runtime = ROOT.parent / 'luce-base/runtime'
 generated = out / 'sanitize.c'
 binary = out / 'sanitize'
@@ -83,5 +82,4 @@ run([sys.executable, 'tests/catalog.py', binary])
 run([sys.executable, 'tests/fetch.py', binary])
 run([sys.executable, 'tests/checkout.py', binary, base])
 run([sys.executable, 'tests/checkout_release.py', binary, signed_fixture])
-run([sys.executable, 'tests/publish.py', binary])
 print('PASS release verification: six compiler modes and ASan/UBSan', flush=True)

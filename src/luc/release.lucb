@@ -1,0 +1,148 @@
+## Releasing without tokens.
+##
+## `luc publish -m "notes"` pushes the current branch to the registry and publishes the
+## version in package.prisma: it creates the registry repository if needed, points the
+## `pkg` remote at it, tags `v<version>` with the notes, and pushes the tag. The registry
+## turns that tag into the release.
+##
+## `luc git-credential` is a Git credential helper. publish configures it for the
+## registry only, so plain `git push pkg` and `git fetch pkg` need no password either:
+## the helper mints a five-minute git:write password from the saved session.
+import c
+import io
+import memory
+import process
+import strings
+import pkg
+import luc.credentials as credentials
+import luc.project_file as project_file
+import luc.registry_http as registry_http
+
+pub let invalid = pkg.invalid
+
+struct Output:
+    var status: i32
+    var out: str
+    var err: str
+
+    mutating func close():
+        process.release(self.out)
+        process.release(self.err)
+
+func git(root: str, arguments: const str[]) -> Output!:
+    let argv = try alloc c.str[arguments.length] in memory.heap
+    defer free(argv) in memory.heap
+    var filled: usize
+    defer release_arguments(argv, &filled)
+    while filled < arguments.length:
+        argv[filled] = (c.str)try strings.copy(arguments[filled])
+        filled += 1
+    let directory = try strings.copy(root)
+    defer strings.release(directory)
+    let (status, out, err) = try process.run((c.str)"git", argv, (c.str)directory)
+    return Output(status = status, out = out, err = err)
+
+func release_arguments(arguments: c.str[], filled: usize*):
+    for i in 0..<*filled: strings.release((str)arguments[i])
+
+## Run git and fail with its own message when it does.
+func must(root: str, arguments: const str[], what: str) -> !:
+    var result = try git(root, arguments)
+    defer result.close()
+    if result.status == 0: return
+    try io.stderr().write(result.err)
+    error(invalid, what)
+
+## `luc git-credential get|store|erase`, speaking Git's helper protocol on stdin/stdout.
+pub func credential_helper(action: str, session: str) -> i32!:
+    if action != "get": return 0
+    var buffer: u8[4096]
+    var reader = io.stdin()
+    var size: usize
+    while size < buffer.length:
+        let n = try reader.read(buffer[size..])
+        if n == 0: break
+        size += n
+    var protocol = ""
+    var host = ""
+    var path = ""
+    var start: usize
+    for end in 0..<size:
+        if buffer[end] != '\n': continue
+        let line = (str)buffer[start..<end]
+        start = end + 1
+        let (key, value) = strings.split_once(line, "=") else continue
+        if key == "protocol": protocol = value
+        elif key == "host": host = value
+        elif key == "path": path = value
+    var origin_buffer: u8[300]
+    let origin = try format(origin_buffer, f"{protocol}://{host}")
+    # Answer only for a registry, and only for /git/<owner>/<name>; say nothing otherwise.
+    if not registry_http.valid(origin) or not strings.starts_with(path, "git/"): return 0
+    let (owner, tail) = strings.split_once((str)path.bytes[4..], "/") else return 0
+    var name = tail
+    for i in 0..<tail.length:
+        if tail.bytes[i] == '/':
+            name = (str)tail.bytes[..<i]
+            break
+    if strings.ends_with(name, ".git"): name = (str)name.bytes[..<name.length - 4]
+    var password = credentials.write_password(origin, name, session) catch: return 0
+    defer password.close()
+    try io.stdout().write(f"username={owner}\npassword={(str)try password.bytes()}\n")
+    return 0
+
+## Point the `pkg` remote at the registry repository and make Git ask luc, and only luc,
+## for its password. The empty first value clears helpers inherited from the system, such
+## as the macOS keychain, which would otherwise cache a password that expires in minutes.
+func configure(root: str, origin: str, owner: str, name: str) -> !:
+    var url_buffer: u8[400]
+    let url = try format(url_buffer, f"{origin}/git/{owner}/{name}")
+    var existing = try git(root, ["remote", "get-url", "pkg"])
+    let present = existing.status == 0
+    existing.close()
+    if present: try must(root, ["remote", "set-url", "pkg", url], "could not update the pkg remote")
+    else: try must(root, ["remote", "add", "pkg", url], "could not add the pkg remote")
+    var key_buffer: u8[400]
+    let helper = try format(key_buffer, f"credential.{origin}.helper")
+    try must(root, ["config", "--local", "--replace-all", helper, ""], "could not configure Git credentials")
+    try must(root, ["config", "--local", "--add", helper, "!luc git-credential"], "could not configure Git credentials")
+    var path_buffer: u8[400]
+    try must(root, ["config", "--local", try format(path_buffer, f"credential.{origin}.useHttpPath"), "true"], "could not configure Git credentials")
+
+pub func publish(root: str, origin: str, session: str, notes: str) -> i32!:
+    if strings.trim(notes).length == 0:
+        error(invalid, "release notes are required: luc publish -m \"what changed\"")
+    var definition = try project_file.read(root)
+    defer definition.close()
+    var tag_buffer: u8[96]
+    let tag = try format(tag_buffer, f"v{definition.version}")
+
+    var inside = try git(root, ["rev-parse", "--is-inside-work-tree"])
+    let repository = inside.status == 0
+    inside.close()
+    if not repository: error(invalid, "this project is not a Git repository; run git init and commit first")
+    var state = try git(root, ["status", "--porcelain"])
+    let dirty = strings.trim(state.out).length > 0
+    state.close()
+    if dirty: error(invalid, "there are uncommitted changes; commit them before publishing")
+    var tag_ref: u8[128]
+    var tagged = try git(root, ["rev-parse", "-q", "--verify", try format(tag_ref, f"refs/tags/{tag}")])
+    let exists = tagged.status == 0
+    tagged.close()
+    if exists: error(invalid, "this version is already tagged; raise `version` in package.prisma and commit")
+
+    if try credentials.ensure_repository(origin, definition.name, session):
+        try io.stdout().write(f"created {definition.owner}/{definition.name} on the registry\n")
+    try configure(root, origin, definition.owner, definition.name)
+    try must(root, ["push", "pkg", "HEAD"], "the push was refused")
+    try must(root, ["tag", "-a", tag, "-m", notes], "could not create the release tag")
+    var pushed = try git(root, ["push", "pkg", tag])
+    defer pushed.close()
+    if pushed.status != 0:
+        # The registry's reason is in Git's output. Drop the tag so the release can be retried.
+        try io.stderr().write(pushed.err)
+        var dropped = try git(root, ["tag", "-d", tag])
+        dropped.close()
+        error(invalid, "the registry refused the release")
+    try io.stdout().write(f"published {definition.owner}/{definition.name} {definition.version}\n{origin}/{definition.owner}/{definition.name}/\n")
+    return 0
