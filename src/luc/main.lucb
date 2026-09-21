@@ -34,6 +34,7 @@ import luc.credentials as credentials
 import luc.pull_requests as pull_requests
 import luc.checkout as checkout
 import luc.project_file as project_file
+import luc.packages as packages
 import git
 import crypto_native
 
@@ -129,7 +130,7 @@ struct Project:
 ## Find the nearest package.prisma from the current directory upward, load it, and
 ## regenerate the luce.toml the compilers read. Absent one, the project is an anonymous
 ## luce-base app rooted at the current directory.
-func load_project() -> Project!:
+func load_project(prepare: bool = true) -> Project!:
     let start = try os.cwd()
     defer strings.release(start)
     var project = Project(root = try strings.copy(start), name = try strings.copy("app"),
@@ -142,7 +143,8 @@ func load_project() -> Project!:
             strings.release(project.root)
             project.root = try strings.copy(directory)
             try apply_definition(&project)
-            try project_file.generate(project.root)
+            if prepare: try packages.prepare(project.root)
+            try project_file.generate(project.root, project.root)
             return project
         let parent = paths.directory(directory)
         if parent == directory or parent.length == 0:
@@ -511,144 +513,6 @@ func checkout_release_command(own: str[]) -> i32!:
     try io.stdout().write("checked out release verified against supplied key (origin ownership and freshness not verified)\n")
     return 0
 
-## Parse the entire pinned lock profile without changing the project or fetching.
-## This is structural validation, not release-signature or cache verification.
-func lock_command(project: Project*, own: str[], passthrough: str[]) -> i32!:
-    if passthrough.length != 0: error(usage_error, "lock does not accept passthrough arguments")
-    let manifest = try require_manifest(project)
-    defer strings.release(manifest)
-    if own.length == 1 and own[0] == "--check":
-        let path = try paths.join(project.root, "luc.lock")
-        defer strings.release(path)
-        let filename = try strings.copy(path)
-        defer strings.release(filename)
-        let contents = try files.read_limit((c.str)filename, 1048576)
-        defer free(contents) in memory.heap
-        var lock = try pkg.decode_lock((str)contents)
-        defer lock.close()
-        try io.stdout().write(f"valid luc.lock syntax: {lock.count} packages (signatures not verified)\n")
-        return 0
-    if own.length == 6 and own[1] == "--trusted-key" and own[3] == "--vault" and own[5] == "--password-stdin":
-        return try graph_lock.generate(project.root, manifest, own[0], own[2], own[4])
-    error(usage_error, "usage: luc lock --check | luc lock <origin> --trusted-key <key> --vault <session> --password-stdin")
-
-func strict_directory(path: str, permissions: u32) -> !:
-    let name = try strings.copy(path)
-    defer strings.release(name)
-    let info = files.metadata((c.str)name, follow_symlinks = false) catch failure:
-        if failure.code != files.missing: error(failure.code, failure.message)
-        files.create_directory((c.str)name, permissions) catch create_failure:
-            if create_failure.code != files.already_exists: error(create_failure.code, create_failure.message)
-        recover try files.metadata((c.str)name, follow_symlinks = false)
-    if info.kind != files.FileKind.directory: error(usage_error, "package cache path is not a directory")
-
-func install_identity(origin: str, package: str, version: str, output: u8[]) -> str!:
-    var input: u8[512]
-    let value = try format(input, f"{origin}\n{package}\n{version}")
-    var digest: u8[32]
-    discard(try crypto_native.digest(value.bytes, digest, "sha256"))
-    if output.length < 64: error(usage_error, "package cache identity output too small")
-    let digits = b"0123456789abcdef"
-    for i in 0..<digest.length:
-        output[i * 2] = digits[digest[i] >> 4]
-        output[i * 2 + 1] = digits[digest[i] & 15]
-    return (str)output[..<64]
-
-func cleanup_install(path: str, keep: bool*):
-    if not *keep: discard(files.remove_tree((c.str)path) catch: recover ())
-
-## Install a verified exact release as an ordinary local manifest dependency.
-## Online writes the immutable artifact cache; offline never opens credentials/network.
-func install_command(project: Project*, own: str[]) -> i32!:
-    let online = (own.length == 8 or own.length == 9) and own[3] == "--trusted-key" and own[5] == "--vault" and own[7] == "--password-stdin"
-    let offline = (own.length == 6 or own.length == 7) and own[3] == "--trusted-key" and own[5] == "--offline"
-    if not online and not offline:
-        error(usage_error, "usage: luc install <origin> <owner/package> <version> --trusted-key <key> (--vault <session> --password-stdin | --offline) [--locked]")
-    let locked = (online and own.length == 9 and own[8] == "--locked") or (offline and own.length == 7 and own[6] == "--locked")
-    if ((online and own.length == 9) or (offline and own.length == 7)) and not locked:
-        error(usage_error, "the only trailing install option is --locked")
-    let manifest = try require_manifest(project)
-    defer strings.release(manifest)
-    let origin = own[0]
-    let package = own[1]
-    let version = own[2]
-    let key = own[4]
-    try release_download.validate_request(origin, package, version)
-    var encoded: u8[64]
-    let identity = try install_identity(origin, package, version, encoded)
-    let state = try paths.join(project.root, ".luc")
-    defer strings.release(state)
-    try strict_directory(state, 448)
-    let packages = try paths.join(state, "packages")
-    defer strings.release(packages)
-    try strict_directory(packages, 448)
-    let default_cache = try paths.join(state, "cache")
-    defer strings.release(default_cache)
-    let cache = try strings.copy(os.env((c.str)"LUC_PACKAGE_CACHE") else default_cache)
-    defer strings.release(cache)
-    if cache.length == 0: error(usage_error, "LUC_PACKAGE_CACHE must not be empty")
-    try strict_directory(cache, 448)
-    var artifact_name_buffer: u8[96]
-    let artifact_name = try format(artifact_name_buffer, f"release-{identity}.lrp1")
-    let artifact = try paths.join(cache, artifact_name)
-    defer strings.release(artifact)
-    var downloaded: release_download.Download
-    if offline:
-        downloaded = try release_download.load_cache(artifact, origin, package, version, key)
-    else:
-        downloaded = try release_download.fetch(origin, package, version, key, own[6])
-        if files.exists((c.str)artifact):
-            var cached = try release_download.load_cache(artifact, origin, package, version, key)
-            defer cached.close()
-            if not release_download.same(&downloaded, &cached): error(usage_error, "cached release differs from immutable registry release")
-        else:
-            release_download.save_cache(&downloaded, artifact) catch failure:
-                if failure.code != files.already_exists: error(failure.code, failure.message)
-                var raced = try release_download.load_cache(artifact, origin, package, version, key)
-                defer raced.close()
-                if not release_download.same(&downloaded, &raced): error(usage_error, "concurrent cache publication differs from registry release")
-    defer downloaded.close()
-    let release = try pkg.decode_release(downloaded.metadata[..<downloaded.metadata_size])
-    if locked: discard(try require_locked_release(release, downloaded.publisher_key_digest))
-    var commit: u8[20]
-    try git.decode_id(release.commit, commit)
-    var pack = try git.decode_pack(downloaded.source[..<downloaded.source_size])
-    defer pack.close()
-    var install_name_buffer: u8[96]
-    let install_name = try format(install_name_buffer, f"release-{identity}")
-    let destination = try paths.join(packages, install_name)
-    defer strings.release(destination)
-    try checkout.materialize(&pack, commit, destination)
-    var keep = false
-    errdefer cleanup_install(destination, &keep)
-    let dependency_manifest = try paths.join(destination, "luce.toml")
-    defer strings.release(dependency_manifest)
-    if not files.exists((c.str)dependency_manifest):
-        error(usage_error, "installed release has no root luce.toml")
-    let dependency = try package_name_at(dependency_manifest)
-    defer strings.release(dependency)
-    var probe = Project(root = try strings.copy(destination), name = try strings.copy(""),
-        language = try strings.copy("luce-base"), entry = try strings.copy(""))
-    probe.tasks = try alloc Task[1]
-    defer probe.close()
-    let dependency_name = try strings.copy(dependency_manifest)
-    defer strings.release(dependency_name)
-    let dependency_text = try files.read((c.str)dependency_name)
-    defer free(dependency_text) in memory.heap
-    try parse_manifest(&probe, (str)dependency_text)
-    if probe.language != release.compiler:
-        error(usage_error, "installed manifest language does not match signed release compiler")
-    var relative_buffer: u8[128]
-    let relative = try format(relative_buffer, f".luc/packages/{install_name}")
-    try upsert_dependency(manifest, dependency, relative)
-    keep = true
-    let mode = "offline cache" if offline else "registry and verified cache"
-    try io.stdout().write(f"installed {package}@{version} as {dependency} from {mode}\n")
-    return 0
-
-## `luc add <path>` (or `luc add <name> <path>`) records a local package dependency in
-## luce.toml. The dependency's own luce.toml gives its name, which Base requires the key to
-## match; the value is the path, relative to this manifest, to that package's directory.
 func add_command(project: Project*, own: str[]) -> i32!:
     let manifest = try require_manifest(project)
     strings.release(manifest)
@@ -656,10 +520,22 @@ func add_command(project: Project*, own: str[]) -> i32!:
     for word in own:
         if not strings.starts_with(word, "--"): location = word
     if location.length == 0:
-        error(usage_error, "luc add needs a path: luc add <path-to-package>")
+        error(usage_error, "luc add needs a package: luc add <owner>/<name> or luc add <path-to-package>")
+    if not try project_file.exists_in(location):
+        # Not a local package: a registry coordinate, pinned to its newest release.
+        let (owner, name) = strings.split_once(location, "/") else error(usage_error, "no package.prisma at that path, and not an <owner>/<name> coordinate")
+        var newest: u8[64]
+        let version = try packages.latest(owner, name, newest)
+        var requirement: u8[80]
+        try project_file.add_registry_dependency(project.root, owner, name, try format(requirement, f"^{version}"))
+        discard(try packages.lock(project.root))
+        discard(try packages.sync(project.root))
+        try project_file.generate(project.root, project.root)
+        try io.stdout().write(f"added dependency {location} ^{version}\n")
+        return 0
     let name = try project_file.add_dependency(project.root, location)
     defer strings.release(name)
-    try project_file.generate(project.root)
+    try project_file.generate(project.root, project.root)
     try io.stdout().write(f"added dependency {name} from {location}\n")
     return 0
 
@@ -677,7 +553,7 @@ func remove_command(project: Project*, own: str[]) -> i32!:
     if not try project_file.remove_dependency(project.root, name):
         try io.stderr().write(f"luc: no dependency named '{name}'\n")
         return 1
-    try project_file.generate(project.root)
+    try project_file.generate(project.root, project.root)
     try io.stdout().write(f"removed dependency {name}\n")
     return 0
 
@@ -1155,22 +1031,23 @@ pub func main(arguments: c.str[]) -> i32!:
             return try scaffold_command(command, own)
         if command == "update" or command == "upgrade":
             return try update_command(own)
-        var project = try load_project()
+        let manages = command == "lock" or command == "sync" or command == "add" or command == "remove" or command == "clean"
+        var project = try load_project(prepare = not manages)
         defer project.close()
-        if command == "lock":
-            return try lock_command(&project, own, passthrough)
-        if command == "install":
-            if passthrough.length != 0: error(usage_error, "install does not accept passthrough arguments")
-            return try install_command(&project, own)
-        if command == "sync":
-            if passthrough.length != 0: error(usage_error, "sync does not accept passthrough arguments")
+        if command == "lock" or command == "sync":
+            if passthrough.length != 0: error(usage_error, "lock and sync do not accept passthrough arguments")
             let manifest = try require_manifest(&project)
-            defer strings.release(manifest)
-            if own.length == 5 and own[0] == "--trusted-key" and own[2] == "--vault" and own[4] == "--password-stdin":
-                return try graph_sync.run(project.root, manifest, own[1], own[3])
-            if own.length == 3 and own[0] == "--trusted-key" and own[2] == "--offline":
-                return try graph_sync.run(project.root, manifest, own[1], offline = true)
-            error(usage_error, "usage: luc sync --trusted-key <key> (--vault <session> --password-stdin | --offline)")
+            strings.release(manifest)
+            if command == "lock":
+                if own.length != 0: error(usage_error, "usage: luc lock")
+                let count = try packages.lock(project.root)
+                try io.stdout().write(f"locked {count} registry package(s) in luc.lock\n")
+            let offline = command == "sync" and own.length == 1 and own[0] == "--offline"
+            if command == "sync" and own.length != 0 and not offline: error(usage_error, "usage: luc sync [--offline]")
+            let count = try packages.sync(project.root, offline)
+            try project_file.generate(project.root, project.root)
+            try io.stdout().write(f"synced {count} registry package(s) into .luc/deps\n")
+            return 0
         if command == "add":
             return try add_command(&project, own)
         if command == "remove":

@@ -1,0 +1,374 @@
+## Anonymous registry packages: resolve, lock and sync from the static files the
+## registry publishes for every release.
+##   <origin>/<owner>/<name>/versions          version SP sha256 SP commit
+##   <origin>/<owner>/<name>/<version>.prisma  that release's package.prisma
+##   <origin>/<owner>/<name>/<version>.pack    history-free Git pack of the source
+## No account, credential or signature is involved. luc.lock pins every package to the
+## SHA-256 of its pack, and a download whose digest differs is refused.
+import c
+import files
+import git
+import memory
+import os
+import paths
+import strings
+import pkg
+import prism
+import luc.checkout as checkout
+import luc.project_file as project_file
+import luc.registry_http as registry_http
+
+pub let invalid = pkg.invalid
+pub let lock_name = "luc.lock"
+pub let max_packages: usize = 256
+let max_pack: usize = 67108864
+let max_listing: usize = 4194304
+
+## The registry to use; LUC_REGISTRY overrides it with loopback HTTP for tests.
+pub func origin() -> str:
+    return os.env((c.str)"LUC_REGISTRY") else registry_http.production_origin
+
+pub struct Locked:
+    pub var name: str
+    pub var owner: str
+    pub var version: str
+    pub var sha256: str
+    pub var commit: str
+
+## Owns every string of a resolved or decoded graph.
+pub struct Graph:
+    var arena: u8[]
+    var used: usize
+    pub var packages: Locked[]
+    pub var count: usize
+
+    pub mutating func close():
+        if self.arena.length > 0: free(self.arena) in memory.heap
+        if self.packages.length > 0: free(self.packages) in memory.heap
+        self = Graph()
+
+    mutating func keep(text: str) -> str!:
+        if self.used + text.length > self.arena.length: error(invalid, "dependency graph text exceeds its bound")
+        let start = self.used
+        for i in 0..<text.length: self.arena[start + i] = text.bytes[i]
+        self.used += text.length
+        return (str)self.arena[start..<self.used]
+
+    func find(name: str) -> usize?:
+        for i in 0..<self.count:
+            if self.packages[i].name == name: return i
+        return none
+
+func new_graph() -> Graph!:
+    var graph: Graph
+    errdefer graph.close()
+    graph.arena = try alloc u8[1048576] in memory.heap
+    graph.packages = try alloc Locked[max_packages] in memory.heap
+    return graph
+
+## GET one public file. Anything but 200 is an error naming what was asked for.
+func fetch(target: str, output: u8[]) -> usize!:
+    let response = try registry_http.request(origin(), "GET", target, "", "", b"", output)
+    if response.status == 404: error(invalid, "the registry has no such package or version")
+    if response.status != 200: error(invalid, "the registry request failed")
+    return response.count
+
+func field(line: str, index: usize) -> str:
+    var start: usize
+    var seen: usize
+    for i in 0..<line.length + 1:
+        if i != line.length and line.bytes[i] != ' ': continue
+        if seen == index: return (str)line.bytes[start..<i]
+        seen += 1
+        start = i + 1
+    return ""
+
+func newer(left: pkg.Version, right: pkg.Version) -> bool:
+    if left.major != right.major: return left.major > right.major
+    if left.minor != right.minor: return left.minor > right.minor
+    return left.patch > right.patch
+
+## `^1.2.3` accepts the same major from 1.2.3 up; `^0.2.3` the same minor; `^0.0.3` and
+## a bare version accept exactly that version.
+func satisfies(version: pkg.Version, requirement: str) -> bool!:
+    let caret = requirement.length > 0 and requirement.bytes[0] == '^'
+    let wanted = try pkg.parse_version((str)requirement.bytes[1..] if caret else requirement)
+    let same = version.major == wanted.major and version.minor == wanted.minor and version.patch == wanted.patch
+    if not caret: return same
+    if same: return true
+    if not newer(version, wanted): return false
+    if wanted.major > 0: return version.major == wanted.major
+    if wanted.minor > 0: return version.major == 0 and version.minor == wanted.minor
+    return false
+
+## The `versions` line of the newest release that satisfies `requirement`.
+func select(listing: str, requirement: str) -> str!:
+    var best = ""
+    var best_version: pkg.Version
+    var start: usize
+    for end in 0..<listing.length:
+        if listing.bytes[end] != '\n': continue
+        let line = (str)listing.bytes[start..<end]
+        start = end + 1
+        let version = pkg.parse_version(field(line, 0)) catch: continue
+        if not try satisfies(version, requirement): continue
+        if best.length == 0 or newer(version, best_version):
+            best = line
+            best_version = version
+    if best.length == 0: error(invalid, "no released version satisfies the requirement")
+    return best
+
+## The newest released version of a package, for `luc add owner/name`.
+pub func latest(owner: str, name: str, output: u8[]) -> str!:
+    let listing = try alloc u8[max_listing] in memory.heap
+    defer free(listing) in memory.heap
+    var target: u8[256]
+    let size = try fetch(try format(target, f"/{owner}/{name}/versions"), listing)
+    var best = ""
+    var best_version: pkg.Version
+    var start: usize
+    for end in 0..<size:
+        if listing[end] != '\n': continue
+        let text = field((str)listing[start..<end], 0)
+        start = end + 1
+        let version = pkg.parse_version(text) catch: continue
+        if best.length == 0 or newer(version, best_version):
+            best = text
+            best_version = version
+    if best.length == 0: error(invalid, "the package has no released version")
+    return try format(output, f"{best}")
+
+## Select one release for a requirement and walk its own dependencies.
+func resolve_registry(graph: Graph*, owner: str, name: str, requirement: str, depth: usize) -> !:
+    if depth > 64: error(invalid, "dependencies nest too deeply")
+    if let existing = graph.find(name):
+        let chosen = graph.packages[existing]
+        if chosen.owner != owner: error(invalid, "two dependencies share a package name but not an owner")
+        if not try satisfies(try pkg.parse_version(chosen.version), requirement):
+            error(invalid, "two dependencies need incompatible versions of one package")
+        return
+    if graph.count >= max_packages: error(invalid, "too many packages in the dependency graph")
+    let listing = try alloc u8[max_listing] in memory.heap
+    defer free(listing) in memory.heap
+    var target: u8[256]
+    let size = try fetch(try format(target, f"/{owner}/{name}/versions"), listing)
+    let line = try select((str)listing[..<size], requirement)
+    let version = try graph.keep(field(line, 0))
+    graph.packages[graph.count] = Locked(name = try graph.keep(name), owner = try graph.keep(owner), version = version,
+        sha256 = try graph.keep(field(line, 1)), commit = try graph.keep(field(line, 2)))
+    graph.count += 1
+    var document: u8[65536]
+    let length = try fetch(try format(target, f"/{owner}/{name}/{version}.prisma"), document)
+    var definition = try pkg.decode_package(document[..<length])
+    defer definition.close()
+    if definition.owner != owner or definition.name != name or definition.version != version:
+        error(invalid, "the registry served a definition for a different package")
+    # A released package's `path` is its author's local override; consumers use the registry.
+    for i in 0..<definition.dependency_count:
+        let item = try definition.dependency_at(i)
+        try resolve_registry(graph, item.owner, item.name, item.version, depth + 1)
+
+## Walk a local package: path dependencies are followed on disk, the rest resolved.
+func resolve_local(graph: Graph*, directory: str, depth: usize) -> !:
+    if depth > 32: error(invalid, "path dependencies nest too deeply or form a cycle")
+    var definition = try project_file.read(directory)
+    defer definition.close()
+    for i in 0..<definition.dependency_count:
+        let item = try definition.dependency_at(i)
+        if item.path.length == 0:
+            try resolve_registry(graph, item.owner, item.name, item.version, 0)
+            continue
+        let location = try paths.join(directory, item.path)
+        defer strings.release(location)
+        try resolve_local(graph, location, depth + 1)
+
+func write_lock(root: str, graph: Graph*) -> !:
+    let buffer = try alloc u8[1048576] in memory.heap
+    defer free(buffer) in memory.heap
+    var used: usize
+    var line: u8[512]
+    let head = try format(line, f"#prisma 4.0\ndef lock \"luc\" {{\n    str origin = \"{origin()}\"\n")
+    for i in 0..<head.length: buffer[used + i] = head.bytes[i]
+    used += head.length
+    for index in 0..<graph.count:
+        let item = graph.packages[index]
+        let entry = try format(line, f"    def package \"{item.name}\" {{\n        str owner = \"{item.owner}\"\n        str version = \"{item.version}\"\n        str sha256 = \"{item.sha256}\"\n        str commit = \"{item.commit}\"\n    }}\n")
+        if used + entry.length + 2 > buffer.length: error(invalid, "luc.lock exceeds its bound")
+        for i in 0..<entry.length: buffer[used + i] = entry.bytes[i]
+        used += entry.length
+    buffer[used] = '}'
+    buffer[used + 1] = '\n'
+    used += 2
+    let path = try paths.join(root, lock_name)
+    defer strings.release(path)
+    let terminated = try strings.copy(path)
+    defer strings.release(terminated)
+    try files.write_atomic((c.str)terminated, buffer[..<used])
+
+## `luc lock`: resolve the whole graph against the registry and write luc.lock.
+pub func lock(root: str) -> usize!:
+    var graph = try new_graph()
+    defer graph.close()
+    try resolve_local(&graph, root, 0)
+    try write_lock(root, &graph)
+    return graph.count
+
+func hex_valid(text: str, length: usize) -> bool:
+    if text.length != length: return false
+    for byte in text.bytes:
+        if not ((byte >= '0' and byte <= '9') or (byte >= 'a' and byte <= 'f')): return false
+    return true
+
+## Copies the property into the graph before the Prism value is released.
+func text_of(graph: Graph*, document: prism.Document*, path: str, name: str) -> str!:
+    let value = try document.get(path, name)
+    defer value.release()
+    return try graph.keep(try value.value().text_at())
+
+pub func read_lock(root: str) -> Graph!:
+    let path = try paths.join(root, lock_name)
+    defer strings.release(path)
+    let terminated = try strings.copy(path)
+    defer strings.release(terminated)
+    if not files.exists((c.str)terminated): error(invalid, "no luc.lock here; run 'luc lock' first")
+    let reference = try prism.Document.load(path)
+    defer reference.release()
+    let document = reference.value()
+    var graph = try new_graph()
+    errdefer graph.close()
+    for index in 0..<document.element_count():
+        let element = try document.path_at(index)
+        if try document.type_at(element) != "package": continue
+        if graph.count >= max_packages: error(invalid, "luc.lock names too many packages")
+        var last: usize
+        for i in 0..<element.length:
+            if element.bytes[i] == '/': last = i
+        let item = Locked(name = try graph.keep((str)element.bytes[last + 1..]),
+            owner = try text_of(&graph, document, element, "owner"),
+            version = try text_of(&graph, document, element, "version"),
+            sha256 = try text_of(&graph, document, element, "sha256"),
+            commit = try text_of(&graph, document, element, "commit"))
+        discard(try pkg.parse_version(item.version))
+        if not hex_valid(item.sha256, 64) or not hex_valid(item.commit, 40): error(invalid, "luc.lock has a malformed digest or commit")
+        graph.packages[graph.count] = item
+        graph.count += 1
+    return graph
+
+func ensure_directory(path: str) -> !:
+    let terminated = try strings.copy(path)
+    defer strings.release(terminated)
+    if not files.exists((c.str)terminated): try files.create_directory((c.str)terminated)
+
+## ~/.luce/cache/<owner>/<name>, created as needed. LUC_CACHE overrides the root.
+func cache_directory(owner: str, name: str) -> str!:
+    var root: str
+    if let chosen = os.env((c.str)"LUC_CACHE"):
+        root = try strings.copy(chosen)
+    else:
+        let home = os.env((c.str)"HOME") else error(invalid, "HOME is not set; set LUC_CACHE")
+        let base = try paths.join(home, ".luce")
+        defer strings.release(base)
+        try ensure_directory(base)
+        root = try paths.join(base, "cache")
+    defer strings.release(root)
+    try ensure_directory(root)
+    let group = try paths.join(root, owner)
+    defer strings.release(group)
+    try ensure_directory(group)
+    let directory = try paths.join(group, name)
+    errdefer strings.release(directory)
+    try ensure_directory(directory)
+    return directory
+
+func digest_matches(bytes: const u8[], expected: str) -> bool!:
+    var digest: u8[32]
+    discard(try pkg.source_digest(bytes, digest))
+    let digits = "0123456789abcdef"
+    for i in 0..<(usize)32:
+        if expected.bytes[i * 2] != digits.bytes[(usize)(digest[i] >> 4)]: return false
+        if expected.bytes[i * 2 + 1] != digits.bytes[(usize)(digest[i] & 15)]: return false
+    return true
+
+## The verified pack of one locked package: from the cache, else downloaded into it.
+## With `offline`, a package missing from the cache is an error and nothing is fetched.
+func verified_pack(item: Locked, offline: bool, output: u8[]) -> usize!:
+    let directory = try cache_directory(item.owner, item.name)
+    defer strings.release(directory)
+    var name: u8[96]
+    let cached = try paths.join(directory, try format(name, f"{item.version}.pack"))
+    defer strings.release(cached)
+    let terminated = try strings.copy(cached)
+    defer strings.release(terminated)
+    if files.exists((c.str)terminated):
+        let bytes = try files.read_limit((c.str)terminated, max_pack)
+        defer free(bytes) in memory.heap
+        if try digest_matches(bytes, item.sha256):
+            for i in 0..<bytes.length: output[i] = bytes[i]
+            return bytes.length
+        if offline: error(invalid, "a cached package does not match luc.lock")
+    elif offline:
+        error(invalid, "a locked package is not in the cache; run 'luc sync' online once")
+    var target: u8[256]
+    let size = try fetch(try format(target, f"/{item.owner}/{item.name}/{item.version}.pack"), output)
+    if not try digest_matches(output[..<size], item.sha256):
+        error(invalid, "a downloaded package does not match the SHA-256 in luc.lock")
+    try files.write_atomic((c.str)terminated, output[..<size])
+    return size
+
+## True when this package, or a path dependency of it, needs a registry package.
+func needs_registry(directory: str, depth: usize) -> bool!:
+    if depth > 32: return false
+    var definition = try project_file.read(directory)
+    defer definition.close()
+    for i in 0..<definition.dependency_count:
+        let item = try definition.dependency_at(i)
+        if item.path.length == 0: return true
+        let location = try paths.join(directory, item.path)
+        defer strings.release(location)
+        if try project_file.exists_in(location) and try needs_registry(location, depth + 1): return true
+    return false
+
+## Before a build: lock if nothing is locked yet, then make .luc/deps match the lock.
+## A project with only path dependencies never touches the network.
+pub func prepare(root: str) -> !:
+    if not try needs_registry(root, 0): return
+    let path = try paths.join(root, lock_name)
+    defer strings.release(path)
+    let terminated = try strings.copy(path)
+    defer strings.release(terminated)
+    if not files.exists((c.str)terminated): discard(try lock(root))
+    discard(try sync(root))
+
+## `luc sync`: make .luc/deps match luc.lock exactly, from the cache or the registry.
+pub func sync(root: str, offline: bool = false) -> usize!:
+    var graph = try read_lock(root)
+    defer graph.close()
+    let hidden = try paths.join(root, ".luc")
+    defer strings.release(hidden)
+    try ensure_directory(hidden)
+    let parent = try paths.join(hidden, "deps")
+    defer strings.release(parent)
+    try ensure_directory(parent)
+    let bytes = try alloc u8[max_pack] in memory.heap
+    defer free(bytes) in memory.heap
+    for index in 0..<graph.count:
+        let item = graph.packages[index]
+        let destination = try paths.join(parent, item.name)
+        defer strings.release(destination)
+        var marker_name: u8[96]
+        let marker = try paths.join(destination, try format(marker_name, f".luc-{item.sha256}"))
+        defer strings.release(marker)
+        let marker_z = try strings.copy(marker)
+        defer strings.release(marker_z)
+        if files.exists((c.str)marker_z): continue
+        let size = try verified_pack(item, offline, bytes)
+        var pack = try git.decode_pack(bytes[..<size])
+        defer pack.close()
+        var commit: u8[20]
+        try git.decode_id(item.commit, commit)
+        let destination_z = try strings.copy(destination)
+        defer strings.release(destination_z)
+        if files.exists((c.str)destination_z): try files.remove_tree((c.str)destination_z)
+        try checkout.materialize(&pack, commit, destination, history = false)
+        try files.write((c.str)marker_z, b"")
+    return graph.count

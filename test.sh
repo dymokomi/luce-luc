@@ -85,4 +85,6 @@ export LUCE_BASE="$base"
 ( cd "$work" && "$luc" clean ) > /dev/null || { echo "FAIL: clean"; exit 1; }
 [ ! -d "$work/build" ] || { echo "FAIL: clean should remove build/"; exit 1; }
 rm -rf "$work"
+# registry packages: anonymous add/lock/sync against static release files
+python3 tests/packages.py "$luc"
 echo "ok luc: new/init, add/remove, task DAG, clean, update, cross-platform tasks, and a project-local cache"

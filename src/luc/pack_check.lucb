@@ -21,7 +21,9 @@ func require_hex(pack: git.Pack*, text: str, kind: str, budget: usize*) -> !:
     try git.decode_id(text, id)
     try require(pack, id, kind, budget)
 
-pub func validate(pack: git.Pack*, requested: const u8[]) -> !:
+## A registry release pack holds one commit and its tree, without history; pass
+## `history = false` so the commit's parents are not required.
+pub func validate(pack: git.Pack*, requested: const u8[], history: bool = true) -> !:
     var budget: usize = 16777216
     try require(pack, requested, "commit", &budget)
     for i in 0..<pack.items.length:
@@ -41,7 +43,8 @@ pub func validate(pack: git.Pack*, requested: const u8[]) -> !:
         elif item.kind == "commit":
             let commit = try git.decode_commit(item.payload)
             try require_hex(pack, commit.tree, "tree", &budget)
-            for j in 0..<commit.parent_count: try require_hex(pack, try commit.parent(j), "commit", &budget)
+            if history:
+                for j in 0..<commit.parent_count: try require_hex(pack, try commit.parent(j), "commit", &budget)
         elif item.kind == "tag":
             let tag = try git.decode_tag(item.payload)
             try require_hex(pack, tag.object, tag.kind, &budget)

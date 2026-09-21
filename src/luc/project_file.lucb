@@ -49,10 +49,23 @@ struct Output:
         try self.put(value)
         try self.put("\"\n")
 
-func render(definition: pkg.Definition*, output: Output*) -> !:
+## Where `luc sync` unpacks a locked registry package inside the project at `root`.
+pub func dependency_directory(root: str, name: str) -> str!:
+    let hidden = try paths.join(root, ".luc")
+    defer strings.release(hidden)
+    let parent = try paths.join(hidden, "deps")
+    defer strings.release(parent)
+    return try paths.join(parent, name)
+
+## `registry` marks a package that came from the registry: its own `path` overrides
+## are its author's and are ignored, so every dependency resolves under `root`.
+func render(definition: pkg.Definition*, output: Output*, root: str, registry: bool) -> !:
     try output.put(header)
     try output.put("[package]\n")
-    try output.pair("name", definition.name)
+    # The compilers want identifiers: luce-json is package and dependency key luce_json.
+    let identifier = try module_name(definition.name)
+    defer strings.release(identifier)
+    try output.pair("name", identifier)
     try output.pair("language", definition.language)
     try output.pair("source", definition.source)
     if definition.export_count > 0:
@@ -63,11 +76,16 @@ func render(definition: pkg.Definition*, output: Output*) -> !:
     var opened = false
     for i in 0..<definition.dependency_count:
         let item = try definition.dependency_at(i)
-        if item.path.length == 0:
-            error(invalid, "a dependency without a path needs registry fetch, which luc does not do yet")
         if not opened: try output.put("\n[dependencies]\n")
         opened = true
-        try output.pair(item.name, item.path)
+        let key = try module_name(item.name)
+        defer strings.release(key)
+        if item.path.length > 0 and not registry:
+            try output.pair(key, item.path)
+            continue
+        let location = try dependency_directory(root, item.name)
+        defer strings.release(location)
+        try output.pair(key, location)
 
 func same(path: c.str, content: const u8[]) -> bool:
     if not files.exists(path): return false
@@ -80,14 +98,14 @@ func same(path: c.str, content: const u8[]) -> bool:
 
 ## Write luce.toml for this package and, recursively, for every path dependency that has
 ## its own package.prisma. Unchanged files are left alone so build caches stay warm.
-pub func generate(directory: str, depth: usize = 0) -> !:
+pub func generate(directory: str, root: str, registry: bool = false, depth: usize = 0) -> !:
     if depth > max_depth: error(invalid, "path dependencies nest too deeply or form a cycle")
     var definition = try read(directory)
     defer definition.close()
     let buffer = try alloc u8[max_generated] in memory.heap
     defer free(buffer) in memory.heap
     var output = Output(bytes = buffer)
-    try render(&definition, &output)
+    try render(&definition, &output, root, registry)
     let target = try paths.join(directory, generated_name)
     defer strings.release(target)
     let terminated = try strings.copy(target)
@@ -96,9 +114,10 @@ pub func generate(directory: str, depth: usize = 0) -> !:
         try files.write((c.str)terminated, buffer[..<output.used])
     for i in 0..<definition.dependency_count:
         let item = try definition.dependency_at(i)
-        let location = try paths.join(directory, item.path)
+        let on_disk = item.path.length > 0 and not registry
+        let location = try paths.join(directory, item.path) if on_disk else try dependency_directory(root, item.name)
         defer strings.release(location)
-        if try exists_in(location): try generate(location, depth + 1)
+        if try exists_in(location): try generate(location, root, not on_disk, depth + 1)
 
 func save(document: prism.Document*, directory: str) -> !:
     let encoded = try document.encode(prism.Encoding.text)
@@ -142,6 +161,23 @@ pub func add_dependency(directory: str, location: str) -> str!:
     try set_text(document, path, "path", location)
     try save(document, directory)
     return try strings.copy(dependency.name)
+
+## Add or replace a dependency on a released registry package.
+pub func add_registry_dependency(directory: str, owner: str, name: str, requirement: str) -> !:
+    var current = try read(directory)
+    defer current.close()
+    let file = try paths.join(directory, file_name)
+    defer strings.release(file)
+    let reference = try prism.Document.load(file)
+    defer reference.release()
+    let document = reference.value()
+    var buffer: u8[256]
+    let path = try element(current.name, name, buffer)
+    if document.contains(path): try document.remove(path)
+    try document.add(path, "dependency")
+    try set_text(document, path, "owner", owner)
+    try set_text(document, path, "version", requirement)
+    try save(document, directory)
 
 pub func remove_dependency(directory: str, name: str) -> bool!:
     var current = try read(directory)

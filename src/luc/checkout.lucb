@@ -56,8 +56,8 @@ func cleanup(stage: str, entries: Entry[], made: usize*):
         strings.release(path)
     discard(files.remove_directory((c.str)stage) catch: recover ())
 
-pub func materialize(pack: git.Pack*, requested: const u8[], destination: str) -> !:
-    try pack_check.validate(pack, requested)
+pub func materialize(pack: git.Pack*, requested: const u8[], destination: str, history: bool = true) -> !:
+    try pack_check.validate(pack, requested, history)
     var budget: usize = 16777216
     let commit = try git.decode_commit((try lookup(pack, requested, &budget)).payload)
     var tree_id: u8[20]
