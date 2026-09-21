@@ -97,9 +97,11 @@ struct Project:
         let suffix = ".luc" if self.language == "luce" else ".lucb"
         let main_name = try join_name("main", suffix)
         defer strings.release(main_name)
-        let module_name = try join_name(self.name, suffix)
+        let identifier = try project_file.module_name(self.name)
+        defer strings.release(identifier)
+        let module_name = try join_name(identifier, suffix)
         defer strings.release(module_name)
-        let module_directory = try paths.join("src", self.name)
+        let module_directory = try paths.join("src", identifier)
         defer strings.release(module_directory)
         let module = try paths.join(module_directory, module_name)
         defer strings.release(module)
@@ -871,9 +873,12 @@ func scaffold(target: str, name: str, language: str, is_package: bool) -> !:
     try write_file(try paths.join(target, project_file.file_name), try project_file.scaffold(name, default_owner, language, is_package, definition))
     try write_file(try paths.join(target, ".gitignore"), "build/\n.luc/\nluce.toml\n")
     if is_package:
-        let module_dir = try paths.join(source, name)
+        # A package may be named luce-json; its module is the identifier luce_json.
+        let module = try project_file.module_name(name)
+        defer strings.release(module)
+        let module_dir = try paths.join(source, module)
         try ensure_dir(module_dir)
-        try write_file(try paths.join(module_dir, try join_name(name, suffix)), try library_source(name, language))
+        try write_file(try paths.join(module_dir, try join_name(module, suffix)), try library_source(module, language))
     else:
         try write_file(try paths.join(source, try join_name("main", suffix)), try program_source(name, language))
 

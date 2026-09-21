@@ -24,6 +24,10 @@ rm -rf "$scaff"; mkdir -p "$scaff"
 [ "$( cd "$scaff/demo" && "$luc" run )" = "hello from demo" ] || { echo "FAIL: scaffolded app run"; exit 1; }
 ( cd "$scaff" && "$luc" new mylib --package ) > /dev/null || { echo "FAIL: new package"; exit 1; }
 [ -f "$scaff/mylib/src/mylib/mylib.lucb" ] || { echo "FAIL: new package layout"; exit 1; }
+# a hyphenated package name scaffolds an identifier module, and checks
+( cd "$scaff" && "$luc" new my-kit --package ) > /dev/null || { echo "FAIL: new hyphenated package"; exit 1; }
+[ -f "$scaff/my-kit/src/my_kit/my_kit.lucb" ] && grep -q 'module = "my_kit.my_kit"' "$scaff/my-kit/package.prisma" || { echo "FAIL: hyphenated package layout"; exit 1; }
+( cd "$scaff/my-kit" && "$luc" check ) || { echo "FAIL: hyphenated package check"; exit 1; }
 ( cd "$scaff/mylib" && "$luc" check ) || { echo "FAIL: package check"; exit 1; }
 ( cd "$scaff/demo" && "$luc" init ) 2>/dev/null && { echo "FAIL: init over an existing manifest should refuse"; exit 1; } || true
 # dependencies: an app depends on the scaffolded local package and imports its export

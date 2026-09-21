@@ -158,9 +158,19 @@ pub func remove_dependency(directory: str, name: str) -> bool!:
     try save(document, directory)
     return true
 
+## Module identifier for a package name: hyphens become underscores.
+pub func module_name(name: str) -> str!:
+    let copy = try strings.copy(name)
+    let bytes = (u8[])copy.bytes
+    for i in 0..<bytes.length:
+        if bytes[i] == '-': bytes[i] = '_'
+    return copy
+
 ## Text of a new package.prisma for `luc init` and `luc new`.
 pub func scaffold(name: str, owner: str, language: str, is_package: bool, output: u8[]) -> str!:
     let suffix = ".luc" if language == "luce" else ".lucb"
     if is_package:
-        return try format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str language = \"{language}\"\n    def export \"{name}\" {{\n        str module = \"{name}.{name}\"\n    }}\n}}\n")
+        let module = try module_name(name)
+        defer strings.release(module)
+        return try format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str language = \"{language}\"\n    def export \"{module}\" {{\n        str module = \"{module}.{module}\"\n    }}\n}}\n")
     return try format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str language = \"{language}\"\n    str entry = \"src/main{suffix}\"\n}}\n")
