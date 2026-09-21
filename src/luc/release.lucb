@@ -108,6 +108,10 @@ func configure(root: str, origin: str, owner: str, name: str) -> !:
     try must(root, ["config", "--local", "--add", helper, "!luc git-credential"], "could not configure Git credentials")
     var path_buffer: u8[400]
     try must(root, ["config", "--local", try format(path_buffer, f"credential.{origin}.useHttpPath"), "true"], "could not configure Git credentials")
+    # Send a push as one request with a known length. Above Git's default 1 MiB buffer it
+    # would switch to a probe request followed by chunked transfer.
+    var buffer_key: u8[400]
+    try must(root, ["config", "--local", try format(buffer_key, f"http.{origin}.postBuffer"), "67108864"], "could not configure Git transfer")
 
 pub func publish(root: str, origin: str, session: str, notes: str) -> i32!:
     if strings.trim(notes).length == 0:
