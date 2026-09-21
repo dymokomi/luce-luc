@@ -315,6 +315,31 @@ func verified_pack(item: Locked, offline: bool, output: u8[]) -> usize!:
     try files.write_atomic((c.str)terminated, output[..<size])
     return size
 
+## Download one released package and unpack it into `destination`, which must not
+## exist. `requirement` is a version, a caret requirement, or empty for the newest.
+## The pack is checked against the SHA-256 the registry lists for that version.
+pub func download(owner: str, name: str, requirement: str, destination: str, version_output: u8[]) -> str!:
+    var graph = try new_graph()
+    defer graph.close()
+    let listing = try alloc u8[max_listing] in memory.heap
+    defer free(listing) in memory.heap
+    var target: u8[256]
+    let size = try fetch(try format(target, f"/{owner}/{name}/versions"), listing)
+    var newest: u8[64]
+    let line = try select((str)listing[..<size], requirement if requirement.length > 0 else try latest(owner, name, newest))
+    let item = Locked(name = try graph.keep(name), owner = try graph.keep(owner), version = try graph.keep(field(line, 0)),
+        sha256 = try graph.keep(field(line, 1)), commit = try graph.keep(field(line, 2)))
+    if not hex_valid(item.sha256, 64) or not hex_valid(item.commit, 40): error(invalid, "the registry listing is malformed")
+    let bytes = try alloc u8[max_pack] in memory.heap
+    defer free(bytes) in memory.heap
+    let length = try verified_pack(item, false, bytes)
+    var pack = try git.decode_pack(bytes[..<length])
+    defer pack.close()
+    var commit: u8[20]
+    try git.decode_id(item.commit, commit)
+    try checkout.materialize(&pack, commit, destination, history = false)
+    return try format(version_output, f"{item.version}")
+
 ## True when this package, or a path dependency of it, needs a registry package.
 func needs_registry(directory: str, depth: usize) -> bool!:
     if depth > 32: return false

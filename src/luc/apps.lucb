@@ -1,0 +1,191 @@
+## Applications: `luc install owner/name` fetches the source, builds it, and installs
+## what the package's install script asks for into ~/.luce/apps/<name>/<version>/.
+##
+## The script is high-level Luce run with `luce run --sandbox`, so it has no file,
+## network or process access. It receives `<os> <arch> <name> <version>` and prints a
+## plan, one instruction a line:
+##     copy <path-in-package> <path-in-install-directory>
+##     link <command-name> <path-in-install-directory>
+## luc validates every path and does the copying. A package without a script gets
+## the default: its built executable as bin/<name>, linked as <name>.
+import c
+import files
+import memory
+import os
+import paths
+import process
+import strings
+import pkg
+
+pub let invalid = pkg.invalid
+let max_plan_lines: usize = 1024
+
+func ensure_directory(path: str) -> !:
+    let terminated = try strings.copy(path)
+    defer strings.release(terminated)
+    if not files.exists((c.str)terminated): try files.create_directory((c.str)terminated)
+
+func exists(path: str) -> bool!:
+    let terminated = try strings.copy(path)
+    defer strings.release(terminated)
+    return files.exists((c.str)terminated)
+
+## ~/.luce (or LUC_HOME), created as needed.
+pub func home() -> str!:
+    if let chosen = os.env((c.str)"LUC_HOME"):
+        try ensure_directory(chosen)
+        return try strings.copy(chosen)
+    let user = os.env((c.str)"HOME") else error(invalid, "HOME is not set; set LUC_HOME")
+    let directory = try paths.join(user, ".luce")
+    errdefer strings.release(directory)
+    try ensure_directory(directory)
+    return directory
+
+pub func child(parent: str, name: str) -> str!:
+    let directory = try paths.join(parent, name)
+    errdefer strings.release(directory)
+    try ensure_directory(directory)
+    return directory
+
+## Relative, `/`-separated, no empty, `.` or `..` segment, backslash, colon or control byte.
+func path_valid(value: str) -> bool:
+    if value.length == 0 or value.length > 1024: return false
+    var start: usize
+    for end in 0..<value.length + 1:
+        if end != value.length:
+            let byte = value.bytes[end]
+            if byte < 0x20 or byte == 0x7f or byte == '\\' or byte == ':': return false
+            if byte != '/': continue
+        let part = (str)value.bytes[start..<end]
+        if part.length == 0 or part == "." or part == "..": return false
+        start = end + 1
+    return true
+
+func command_valid(value: str) -> bool:
+    if value.length == 0 or value.length > 64: return false
+    for i in 0..<value.length:
+        let byte = value.bytes[i]
+        let alnum = (byte >= 'a' and byte <= 'z') or (byte >= '0' and byte <= '9')
+        if not alnum and (i == 0 or (byte != '_' and byte != '-')): return false
+    return true
+
+## Copy a regular file or a whole directory tree. Symlinks and special files are refused,
+## so nothing in a package can make the copy reach outside it.
+func copy_tree(source: str, destination: str, budget: usize*) -> !:
+    if *budget == 0: error(invalid, "an install copies too many files")
+    *budget -= 1
+    let origin = try strings.copy(source)
+    defer strings.release(origin)
+    let target = try strings.copy(destination)
+    defer strings.release(target)
+    let info = try files.metadata((c.str)origin, follow_symlinks = false)
+    if info.kind == files.FileKind.regular:
+        discard(try files.copy_file((c.str)origin, (c.str)target, permissions = info.permissions & 0o777))
+        return
+    if info.kind != files.FileKind.directory: error(invalid, "an install may copy only regular files and directories")
+    try files.create_directory((c.str)target)
+    let names = try files.list((c.str)origin)
+    defer files.release_list(names)
+    for name in names:
+        let inner_source = try paths.join(source, name)
+        defer strings.release(inner_source)
+        let inner_destination = try paths.join(destination, name)
+        defer strings.release(inner_destination)
+        try copy_tree(inner_source, inner_destination, budget)
+
+## Create the parent directories of a relative path below `root`.
+func ensure_parents(root: str, relative: str) -> !:
+    var current = try strings.copy(root)
+    defer strings.release(current)
+    var start: usize
+    for end in 0..<relative.length:
+        if relative.bytes[end] != '/': continue
+        let next = try paths.join(current, (str)relative.bytes[start..<end])
+        strings.release(current)
+        current = next
+        try ensure_directory(current)
+        start = end + 1
+
+func word(line: str, index: usize) -> str:
+    var start: usize
+    var seen: usize
+    for i in 0..<line.length + 1:
+        if i != line.length and line.bytes[i] != ' ': continue
+        if i == start:
+            start = i + 1
+            continue
+        if seen == index: return (str)line.bytes[start..<i]
+        seen += 1
+        start = i + 1
+    return ""
+
+func release_arguments(arguments: c.str[], filled: usize*):
+    for i in 0..<*filled: strings.release((str)arguments[i])
+
+## Run the package's install script in the sandbox and return its plan. The caller
+## releases it with process.release.
+pub func scripted_plan(luce: str, package_root: str, script: str, name: str, version: str) -> str!:
+    let program = try strings.copy(luce)
+    defer strings.release(program)
+    let script_path = try paths.join(package_root, script)
+    defer strings.release(script_path)
+    let system = "macos" if os.macos else ("linux" if os.linux else "windows")
+    let machine = "arm64" if os.arm64 else "x86_64"
+    let words = ["run", "--sandbox", package_root, script_path, "--", system, machine, name, version]
+    let argv = try alloc c.str[words.length] in memory.heap
+    defer free(argv) in memory.heap
+    var filled: usize
+    defer release_arguments(argv, &filled)
+    while filled < words.length:
+        argv[filled] = (c.str)try strings.copy(words[filled])
+        filled += 1
+    let (status, out, err) = try process.run((c.str)program, argv)
+    defer process.release(err)
+    if status != 0:
+        process.release(out)
+        error(invalid, "the install script failed or the sandbox is unavailable on this system")
+    return out
+
+## Apply a plan: copies into `staging`, then the command links it declares into `links`
+## (one `name<TAB>relative-target` line each), which the caller turns into ~/.luce/bin entries.
+pub func apply(plan: str, package_root: str, staging: str, links: u8[], links_used: usize*) -> !:
+    var budget: usize = 20000
+    var count: usize
+    var start: usize
+    for end in 0..<plan.length + 1:
+        if end != plan.length and plan.bytes[end] != '\n': continue
+        let line = strings.trim((str)plan.bytes[start..<end])
+        start = end + 1
+        if line.length == 0 or line.bytes[0] == '#': continue
+        count += 1
+        if count > max_plan_lines: error(invalid, "the install plan is too long")
+        let verb = word(line, 0)
+        let first = word(line, 1)
+        let second = word(line, 2)
+        if word(line, 3).length != 0 or second.length == 0: error(invalid, "an install plan line needs exactly two arguments")
+        if verb == "copy":
+            if not path_valid(first) or not path_valid(second): error(invalid, "an install plan path must be relative and stay inside its directory")
+            let source = try paths.join(package_root, first)
+            defer strings.release(source)
+            let destination = try paths.join(staging, second)
+            defer strings.release(destination)
+            if try exists(destination): error(invalid, "an install plan writes the same path twice")
+            try ensure_parents(staging, second)
+            try copy_tree(source, destination, &budget)
+        elif verb == "link":
+            if not command_valid(first) or not path_valid(second): error(invalid, "an install plan link needs a command name and a relative path")
+            let needed = first.length + second.length + 2
+            if *links_used + needed > links.length: error(invalid, "the install plan declares too many links")
+            for byte in first.bytes:
+                links[*links_used] = byte
+                *links_used += 1
+            links[*links_used] = '\t'
+            *links_used += 1
+            for byte in second.bytes:
+                links[*links_used] = byte
+                *links_used += 1
+            links[*links_used] = '\n'
+            *links_used += 1
+        else:
+            error(invalid, "an install plan line must start with copy or link")
+    if count == 0: error(invalid, "the install plan is empty")

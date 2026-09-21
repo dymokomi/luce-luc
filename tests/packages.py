@@ -28,6 +28,32 @@ def git(repo, *args, input=None):
                           capture_output=True, timeout=60).stdout
 
 
+def release_app(site, work, name, version, files, install=None):
+    """Publish an application: an entry, optional resources and an optional install script."""
+    repo = work / f'{name}-{version}'
+    (repo / 'src').mkdir(parents=True)
+    script = '    str install = "install.luc"\n' if install is not None else ''
+    definition = (f'#prisma 4.0\ndef package "{name}" {{\n    str owner = "acme"\n    str version = "{version}"\n'
+                  f'    str language = "luce-base"\n    str entry = "src/main.lucb"\n{script}}}\n')
+    (repo / 'package.prisma').write_text(definition)
+    (repo / 'src' / 'main.lucb').write_text(f'pub func main(arguments: str[]) -> i32:\n    print("{name} {version} runs")\n    return 0\n')
+    if install is not None: (repo / 'install.luc').write_text(install)
+    for relative, content in files.items():
+        (repo / relative).parent.mkdir(parents=True, exist_ok=True)
+        (repo / relative).write_text(content)
+    git(repo, 'init', '-q', '-b', 'main')
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', f'{name} {version}')
+    commit = git(repo, 'rev-parse', 'HEAD').decode().strip()
+    pack = git(repo, 'pack-objects', '--stdout', input=git(repo, 'rev-list', '--objects', 'HEAD'))
+    target = site / 'acme' / name
+    target.mkdir(parents=True, exist_ok=True)
+    (target / f'{version}.pack').write_bytes(pack)
+    (target / f'{version}.prisma').write_text(definition)
+    with (target / 'versions').open('a') as listing:
+        listing.write(f'{version} {hashlib.sha256(pack).hexdigest()} {commit}\n')
+
+
 def release(site, work, name, version, module_source, dependencies=''):
     """Publish one history-free release exactly as the registry does on a tag push."""
     repo = work / f'{name}-{version}'
@@ -49,6 +75,58 @@ def release(site, work, name, version, module_source, dependencies=''):
     (target / f'{version}.prisma').write_text(definition)
     with (target / 'versions').open('a') as listing:
         listing.write(f'{version} {hashlib.sha256(pack).hexdigest()} {commit}\n')
+
+
+SCRIPT = '''pub func main(arguments: list[str]) -> int!:
+    let name = arguments[2]
+    print(f"copy build/{name} bin/{name}")
+    print("copy themes share/themes")
+    print(f"link {name} bin/{name}")
+    print(f"link {name}-{arguments[0]} bin/{name}")
+    return 0
+'''
+
+
+def applications(site, work, root, online):
+    """install builds and places what the sandboxed script asks for; uninstall removes exactly that."""
+    home = root / 'luce-home'
+    env = dict(online, LUC_HOME=str(home))
+    sandbox = 'LUCE' in os.environ
+
+    def luc_run(*args, success=True):
+        result = subprocess.run([luc, *args], cwd=root, env=env, capture_output=True, text=True, timeout=600)
+        assert (result.returncode == 0) == success, (args, result.stdout, result.stderr)
+        return result.stdout + result.stderr
+
+    release_app(site, work, 'plain-clock', '1.0.0', {})
+    assert 'installed acme/plain-clock 1.0.0' in luc_run('install', 'acme/plain-clock')
+    assert subprocess.check_output([str(home / 'bin/plain-clock')], text=True).strip() == 'plain-clock 1.0.0 runs'
+    assert 'already installed' in luc_run('install', 'acme/plain-clock')
+    assert 'library' in luc_run('install', 'acme/greeter', success=False)
+    if sandbox:
+        release_app(site, work, 'clock', '2.1.0', {'themes/dark.theme': 'dark\n', 'themes/nested/light.theme': 'light\n'}, SCRIPT)
+        assert 'installed acme/clock 2.1.0' in luc_run('install', 'acme/clock@2.1.0')
+        placed = home / 'apps/clock/2.1.0'
+        assert (placed / 'share/themes/nested/light.theme').read_text() == 'light\n'
+        assert subprocess.check_output([str(home / 'bin/clock')], text=True).strip() == 'clock 2.1.0 runs'
+        system = 'macos' if sys.platform == 'darwin' else 'linux'
+        assert (home / f'bin/clock-{system}').is_symlink()
+        assert luc_run('list').split() == ['clock', '2.1.0', 'plain-clock', '1.0.0']
+        # A script is confined and its plan is validated: neither can reach outside.
+        for number, hostile in enumerate(('print("copy ../../etc/passwd bin/x")', 'print("copy /etc/passwd bin/x")',
+                                          'print("copy themes ../../escape")', 'print("run rm -rf /")',
+                                          'import files\n    print("copy themes share")')):
+            name = f'hostile{number}'
+            release_app(site, work, name, '1.0.0', {'themes/a': 'a\n'},
+                        f'pub func main(arguments: list[str]) -> int!:\n    {hostile}\n    return 0\n')
+            luc_run('install', f'acme/{name}', success=False)
+            assert not (home / 'apps' / name / '1.0.0').exists() and not (home / 'bin/x').exists()
+        assert 'uninstalled clock' in luc_run('uninstall', 'clock')
+        assert not (home / 'apps/clock').exists() and not (home / 'bin/clock').exists() and not (home / f'bin/clock-{system}').exists()
+    assert (home / 'bin/plain-clock').is_symlink()
+    assert 'uninstalled plain-clock' in luc_run('uninstall', 'plain-clock')
+    assert not (home / 'bin/plain-clock').exists() and 'not installed' in luc_run('uninstall', 'plain-clock', success=False)
+    print('PASS application install/list/uninstall' + (', sandboxed install script and hostile plans' if sandbox else ' (no LUCE: scripted install skipped)'), flush=True)
 
 
 def main():
@@ -102,6 +180,7 @@ def main():
         cached.unlink()
         subprocess.run(['rm', '-rf', str(app / '.luc')], check=True)
         assert 'does not match the SHA-256' in run('sync', success=False)
+        applications(site, work, root, online)
         server.shutdown()
     print('PASS anonymous add/lock/sync, caret selection, transitive graph, offline rebuild and SHA-256 refusal', flush=True)
 

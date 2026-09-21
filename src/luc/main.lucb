@@ -35,6 +35,7 @@ import luc.pull_requests as pull_requests
 import luc.checkout as checkout
 import luc.project_file as project_file
 import luc.packages as packages
+import luc.apps as apps
 import git
 import crypto_native
 
@@ -130,8 +131,8 @@ struct Project:
 ## Find the nearest package.prisma from the current directory upward, load it, and
 ## regenerate the luce.toml the compilers read. Absent one, the project is an anonymous
 ## luce-base app rooted at the current directory.
-func load_project(prepare: bool = true) -> Project!:
-    let start = try os.cwd()
+func load_project(prepare: bool = true, directory_hint: str = "") -> Project!:
+    let start = try strings.copy(directory_hint) if directory_hint.length > 0 else try os.cwd()
     defer strings.release(start)
     var project = Project(root = try strings.copy(start), name = try strings.copy("app"),
         language = try strings.copy("luce-base"), entry = try strings.copy(""))
@@ -511,6 +512,147 @@ func checkout_release_command(own: str[]) -> i32!:
     if own[4].length == 0: error(usage_error, "empty checkout destination")
     try checkout.materialize(&pack, commit, own[4])
     try io.stdout().write("checked out release verified against supplied key (origin ownership and freshness not verified)\n")
+    return 0
+
+# mark: Applications ===========================================================================
+
+## `luc install <owner>/<name>[@<version>]`: fetch, build and install an application.
+func install_command(own: str[]) -> i32!:
+    if own.length != 1: error(usage_error, "usage: luc install <owner>/<name>[@<version>]")
+    let (coordinate, requirement) = strings.split_once(own[0], "@") else (own[0], "")
+    let (owner, name) = strings.split_once(coordinate, "/") else error(usage_error, "usage: luc install <owner>/<name>[@<version>]")
+    let home = try apps.home()
+    defer strings.release(home)
+    let scratch = try apps.child(home, "build")
+    defer strings.release(scratch)
+    let work = try paths.join(scratch, name)
+    defer strings.release(work)
+    let work_z = try strings.copy(work)
+    defer strings.release(work_z)
+    if files.exists((c.str)work_z): try files.remove_tree((c.str)work_z)
+    defer discard(files.remove_tree((c.str)work_z) catch: recover ())
+    var version_buffer: u8[64]
+    let version = try packages.download(owner, name, requirement, work, version_buffer)
+
+    let installed = try apps.child(home, "apps")
+    defer strings.release(installed)
+    let application = try apps.child(installed, name)
+    defer strings.release(application)
+    let placed = try paths.join(application, version)
+    defer strings.release(placed)
+    let placed_z = try strings.copy(placed)
+    defer strings.release(placed_z)
+    if files.exists((c.str)placed_z):
+        try io.stdout().write(f"{coordinate} {version} is already installed\n")
+        return 0
+
+    var definition = try project_file.read(work)
+    defer definition.close()
+    if not definition.is_application(): error(usage_error, "that package is a library; use 'luc add' inside a project")
+    var project = try load_project(directory_hint = work)
+    defer project.close()
+    var no_extra: str[]
+    let status = try build(&project, true, no_extra)
+    if status != 0: error(usage_error, "the application did not build")
+
+    var plan_buffer: u8[256]
+    var plan = try format(plan_buffer, f"copy build/{project.name} bin/{name}\nlink {name} bin/{name}\n")
+    var scripted = ""
+    defer if_release(scripted)
+    if definition.install.length > 0:
+        scripted = try apps.scripted_plan(os.env((c.str)"LUCE") else "luce", work, definition.install, name, version)
+        plan = scripted
+
+    let staging = try paths.join(application, ".staging")
+    defer strings.release(staging)
+    let staging_z = try strings.copy(staging)
+    defer strings.release(staging_z)
+    if files.exists((c.str)staging_z): try files.remove_tree((c.str)staging_z)
+    try files.create_directory((c.str)staging_z)
+    errdefer discard(files.remove_tree((c.str)staging_z) catch: recover ())
+    var links: u8[16384]
+    var links_used: usize
+    try apps.apply(plan, work, staging, links[0..], &links_used)
+    let record = try paths.join(staging, ".luc-links")
+    defer strings.release(record)
+    let record_z = try strings.copy(record)
+    defer strings.release(record_z)
+    try files.write((c.str)record_z, links[..<links_used])
+    try files.rename((c.str)staging_z, (c.str)placed_z, replace = false)
+
+    let commands = try apps.child(home, "bin")
+    defer strings.release(commands)
+    var start: usize
+    for end in 0..<links_used:
+        if links[end] != '\n': continue
+        let (command, relative) = strings.split_once((str)links[start..<end], "\t") else continue
+        start = end + 1
+        let target = try paths.join(placed, relative)
+        defer strings.release(target)
+        let target_z = try strings.copy(target)
+        defer strings.release(target_z)
+        if not files.exists((c.str)target_z): error(usage_error, "the install plan links a file it did not copy")
+        let link = try paths.join(commands, command)
+        defer strings.release(link)
+        let link_z = try strings.copy(link)
+        defer strings.release(link_z)
+        discard(files.remove_file((c.str)link_z) catch: recover ())
+        try files.create_symlink((c.str)target_z, (c.str)link_z)
+        try io.stdout().write(f"  {command} -> {target}\n")
+    try io.stdout().write(f"installed {coordinate} {version}; add {commands} to PATH if it is not there\n")
+    return 0
+
+func if_release(text: str):
+    if text.length > 0: process.release(text)
+
+## `luc uninstall <name>`: remove an application and the commands it linked. Runs no package code.
+func uninstall_command(own: str[]) -> i32!:
+    if own.length != 1: error(usage_error, "usage: luc uninstall <name>")
+    let name = own[0]
+    for byte in name.bytes:
+        if byte == '/' or byte == '.' or byte == 0: error(usage_error, "usage: luc uninstall <name>")
+    let home = try apps.home()
+    defer strings.release(home)
+    let installed = try apps.child(home, "apps")
+    defer strings.release(installed)
+    let application = try paths.join(installed, name)
+    defer strings.release(application)
+    let application_z = try strings.copy(application)
+    defer strings.release(application_z)
+    if not files.exists((c.str)application_z):
+        try io.stderr().write(f"luc: {name} is not installed\n")
+        return 1
+    let commands = try apps.child(home, "bin")
+    defer strings.release(commands)
+    let entries = try files.list((c.str)try strings.copy(commands))
+    defer files.release_list(entries)
+    for entry in entries:
+        let link = try paths.join(commands, entry)
+        defer strings.release(link)
+        let link_z = try strings.copy(link)
+        defer strings.release(link_z)
+        let target = files.read_symlink((c.str)link_z) catch: continue
+        if strings.starts_with(target, application) and target.length > application.length and target.bytes[application.length] == '/':
+            try files.remove_file((c.str)link_z)
+    try files.remove_tree((c.str)application_z)
+    try io.stdout().write(f"uninstalled {name}\n")
+    return 0
+
+## `luc list`: installed applications and their versions.
+func list_command() -> i32!:
+    let home = try apps.home()
+    defer strings.release(home)
+    let installed = try apps.child(home, "apps")
+    defer strings.release(installed)
+    let names = try files.list((c.str)try strings.copy(installed))
+    defer files.release_list(names)
+    for name in names:
+        let application = try paths.join(installed, name)
+        defer strings.release(application)
+        let versions = try files.list((c.str)try strings.copy(application))
+        defer files.release_list(versions)
+        for version in versions:
+            if not strings.starts_with(version, "."): try io.stdout().write(f"{name} {version}\n")
     return 0
 
 func add_command(project: Project*, own: str[]) -> i32!:
@@ -1027,6 +1169,12 @@ pub func main(arguments: c.str[]) -> i32!:
         let (own, passthrough) = try partition(arguments, 2)
         defer release_string_array(own)
         defer release_string_array(passthrough)
+        if command == "install":
+            return try install_command(own)
+        if command == "uninstall":
+            return try uninstall_command(own)
+        if command == "list":
+            return try list_command()
         if command == "new" or command == "init":
             return try scaffold_command(command, own)
         if command == "update" or command == "upgrade":
