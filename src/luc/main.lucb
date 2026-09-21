@@ -35,6 +35,7 @@ import luc.pull_requests as pull_requests
 import luc.checkout as checkout
 import luc.project_file as project_file
 import luc.packages as packages
+import luc.registry_http as registry_http
 import luc.apps as apps
 import git
 import crypto_native
@@ -643,7 +644,10 @@ func account_file() -> str!:
     defer strings.release(home)
     return try paths.join(home, "account")
 
-func remember_account(account: str) -> !:
+## Only the real registry's account is remembered: a test or a loopback registry must
+## never change who `luc login` logs in as.
+func remember_account(origin: str, account: str) -> !:
+    if origin != registry_http.production_origin: return
     let path = try account_file()
     defer strings.release(path)
     let terminated = try strings.copy(path)
@@ -1222,7 +1226,7 @@ pub func main(arguments: c.str[]) -> i32!:
             if command == "register":
                 if rest.length != 1: error(usage_error, "usage: luc register <account>")
                 let status = try credentials.register(origin, rest[0])
-                if status == 0: try remember_account(rest[0])
+                if status == 0: try remember_account(origin, rest[0])
                 return status
             if command == "login":
                 if rest.length > 2: error(usage_error, "usage: luc login [<account>] [<new-vault>]")
@@ -1233,7 +1237,7 @@ pub func main(arguments: c.str[]) -> i32!:
                 # An explicit vault path keeps the password-encrypted vault; plain `luc login`
                 # asks for one password and saves a private session file.
                 let status = try credentials.login(origin, account, rest[1]) if rest.length == 2 else try credentials.login_session(origin, account, fallback)
-                if status == 0: try remember_account(account)
+                if status == 0: try remember_account(origin, account)
                 return status
             if command == "repo-create":
                 if rest.length != 1: error(usage_error, "usage: luc repo-create <name>")
