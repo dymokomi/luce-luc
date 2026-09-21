@@ -636,7 +636,7 @@ func install_command(own: str[]) -> i32!:
 func default_vault() -> str!:
     let home = try apps.home()
     defer strings.release(home)
-    return try paths.join(home, "session.vault")
+    return try paths.join(home, "session")
 
 func account_file() -> str!:
     let home = try apps.home()
@@ -1230,13 +1230,9 @@ pub func main(arguments: c.str[]) -> i32!:
                 defer strings.release(remembered)
                 let account = rest[0] if rest.length > 0 else remembered
                 if account.length == 0: error(usage_error, "usage: luc login <account>   (the account is remembered afterwards)")
-                let target = rest[1] if rest.length == 2 else fallback
-                # A saved session is replaced: logging in again is the normal way to renew it.
-                if rest.length < 2:
-                    let existing = try strings.copy(target)
-                    defer strings.release(existing)
-                    discard(files.remove_file((c.str)existing) catch: recover ())
-                let status = try credentials.login(origin, account, target)
+                # An explicit vault path keeps the password-encrypted vault; plain `luc login`
+                # asks for one password and saves a private session file.
+                let status = try credentials.login(origin, account, rest[1]) if rest.length == 2 else try credentials.login_session(origin, account, fallback)
                 if status == 0: try remember_account(account)
                 return status
             if command == "repo-create":
