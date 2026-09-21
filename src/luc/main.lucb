@@ -632,6 +632,12 @@ func install_command(own: str[]) -> i32!:
     try io.stdout().write(f"installed {coordinate} {version}; add {commands} to PATH if it is not there\n")
     return 0
 
+## ~/.luce/session.vault, where `luc login` saves the session unless told otherwise.
+func default_vault() -> str!:
+    let home = try apps.home()
+    defer strings.release(home)
+    return try paths.join(home, "session.vault")
+
 func if_release(text: str):
     if text.length > 0: process.release(text)
 
@@ -1164,23 +1170,36 @@ pub func main(arguments: c.str[]) -> i32!:
             if arguments.length != 9 or (str)arguments[4] != "--vault" or (str)arguments[6] != "--key-vault" or (str)arguments[8] != "--passwords-stdin":
                 error(usage_error, "usage: luc key-enroll|key-check <origin> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin")
             return try credentials.key_enroll((str)arguments[2], (str)arguments[3], (str)arguments[5], (str)arguments[7], check_only = command == "key-check")
-        if command == "login":
-            if arguments.length != 6 or (str)arguments[5] != "--passwords-stdin":
-                error(usage_error, "usage: luc login <origin> <account> <new-vault> --passwords-stdin")
-            return try credentials.login((str)arguments[2], (str)arguments[3], (str)arguments[4])
-        if command == "register":
-            if arguments.length != 5 or (str)arguments[4] != "--secrets-stdin":
-                error(usage_error, "usage: luc register <origin> <account> --secrets-stdin")
-            return try credentials.register((str)arguments[2], (str)arguments[3])
-        if command == "repo-create":
-            if arguments.length != 7 or (str)arguments[4] != "--vault" or (str)arguments[6] != "--password-stdin":
-                error(usage_error, "usage: luc repo-create <origin> <name> --vault <path> --password-stdin")
-            return try credentials.create_repository((str)arguments[2], (str)arguments[3], (str)arguments[5])
-        if command == "git-token":
-            if arguments.length != 8 or (str)arguments[5] != "--vault" or (str)arguments[7] != "--password-stdin":
-                error(usage_error, "usage: luc git-token <origin> <repository> <read|write> --vault <session-vault> --password-stdin")
-            return try credentials.issue_git_token((str)arguments[2], (str)arguments[3],
-                (str)arguments[4], (str)arguments[6])
+        # Secrets are prompted for at a terminal and read from a pipe otherwise, so the
+        # old --*-stdin flags are accepted and ignored. The session vault defaults to
+        # ~/.luce/session.vault.
+        if command == "login" or command == "register" or command == "repo-create" or command == "git-token":
+            var words: str[]
+            defer release_string_array(words)
+            var vault = ""
+            var index: usize = 2
+            while index < arguments.length:
+                let word = (str)arguments[index]
+                index += 1
+                if word == "--secrets-stdin" or word == "--passwords-stdin" or word == "--password-stdin": continue
+                if word == "--vault" and index < arguments.length:
+                    vault = (str)arguments[index]
+                    index += 1
+                    continue
+                words = try append(words, word)
+            let fallback = try default_vault()
+            defer strings.release(fallback)
+            if command == "register":
+                if words.length != 2: error(usage_error, "usage: luc register <origin> <account>")
+                return try credentials.register(words[0], words[1])
+            if command == "login":
+                if words.length != 2 and words.length != 3: error(usage_error, "usage: luc login <origin> <account> [<new-vault>]")
+                return try credentials.login(words[0], words[1], words[2] if words.length == 3 else fallback)
+            if command == "repo-create":
+                if words.length != 2: error(usage_error, "usage: luc repo-create <origin> <name> [--vault <path>]")
+                return try credentials.create_repository(words[0], words[1], vault if vault.length > 0 else fallback)
+            if words.length != 3: error(usage_error, "usage: luc git-token <origin> <repository> <read|write> [--vault <path>]")
+            return try credentials.issue_git_token(words[0], words[1], words[2], vault if vault.length > 0 else fallback)
         if command == "pr-create":
             if arguments.length != 11 or (str)arguments[8] != "--vault" or (str)arguments[10] != "--password-stdin":
                 error(usage_error, "usage: luc pr-create <origin> <owner/repository> <base> <head> <title> <body> --vault <session-vault> --password-stdin")
