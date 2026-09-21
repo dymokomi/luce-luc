@@ -33,11 +33,15 @@ import luc.graph_sync as graph_sync
 import luc.credentials as credentials
 import luc.pull_requests as pull_requests
 import luc.checkout as checkout
+import luc.project_file as project_file
 import git
 import crypto_native
 
 ## The luc version, kept in step with VERSION.
 pub let luc_version: str = "0.14.0"
+
+## The only registry account for now; `luc init` writes it as the package owner.
+let default_owner = "dymokomi"
 
 ## A command-line or manifest problem the user can fix.
 pub let usage_error: ErrorCode = ErrorCode.package(1)
@@ -108,7 +112,7 @@ struct Project:
             strings.release(terminated)
             if exists: return candidate
             strings.release(candidate)
-        error(usage_error, "no entry source found (expected src/main or src/<name>/<name>); set entry in luce.toml")
+        error(usage_error, "no entry source found (expected src/main or src/<name>/<name>); set entry in package.prisma")
 
     func find_task(name: str) -> Task?:
         var index: usize = 0
@@ -120,8 +124,9 @@ struct Project:
 
 # mark: Loading luce.toml ======================================================================
 
-## Find the nearest luce.toml from the current directory upward and load it. Absent one, the
-## project is an anonymous luce-base app rooted at the current directory.
+## Find the nearest package.prisma from the current directory upward, load it, and
+## regenerate the luce.toml the compilers read. Absent one, the project is an anonymous
+## luce-base app rooted at the current directory.
 func load_project() -> Project!:
     let start = try os.cwd()
     defer strings.release(start)
@@ -131,21 +136,32 @@ func load_project() -> Project!:
     project.tasks = try alloc Task[128]
     var directory = start
     while true:
-        let manifest = try paths.join(directory, "luce.toml")
-        defer strings.release(manifest)
-        let terminated = try strings.copy(manifest)
-        defer strings.release(terminated)
-        if files.exists((c.str)terminated):
+        if try project_file.exists_in(directory):
             strings.release(project.root)
             project.root = try strings.copy(directory)
-            let text = try files.read((c.str)terminated)
-            defer free(text) in memory.heap
-            try parse_manifest(&project, (str)text)
+            try apply_definition(&project)
+            try project_file.generate(project.root)
             return project
         let parent = paths.directory(directory)
         if parent == directory or parent.length == 0:
             return project
         directory = parent
+
+func apply_definition(project: Project*) -> !:
+    var definition = try project_file.read(project.root)
+    defer definition.close()
+    try replace_text(&project.name, definition.name)
+    try replace_text(&project.language, definition.language)
+    try replace_text(&project.entry, definition.entry)
+    for i in 0..<definition.task_count:
+        let declared = try definition.task_at(i)
+        let slot = try task_slot(project, declared.name)
+        try replace_text(&project.tasks[slot].command, declared.command)
+        try replace_text(&project.tasks[slot].description, declared.description)
+        var depends: str[]
+        for j in 0..<declared.depend_count:
+            depends = try append(depends, try strings.copy(declared.depends[j]))
+        project.tasks[slot].depends = depends
 
 ## Parse the little of luce.toml luc needs: [package] name/language/entry and [tasks]
 ## name = "command" pairs. Values are quoted strings; comments and blank lines are ignored.
@@ -633,44 +649,33 @@ func install_command(project: Project*, own: str[]) -> i32!:
 ## match; the value is the path, relative to this manifest, to that package's directory.
 func add_command(project: Project*, own: str[]) -> i32!:
     let manifest = try require_manifest(project)
-    defer strings.release(manifest)
-    var positional: str[]
-    defer release_string_array(positional)
+    strings.release(manifest)
+    var location = ""
     for word in own:
-        if not strings.starts_with(word, "--"):
-            positional = try append(positional, word)
-    if positional.length == 0:
-        error(usage_error, "luc add needs a path: luc add <path-to-package> [as <name>]")
-    let dep_path = positional[positional.length - 1]
-    let dep_manifest = try paths.join(dep_path, "luce.toml")
-    defer strings.release(dep_manifest)
-    let dep_filename = try strings.copy(dep_manifest)
-    defer strings.release(dep_filename)
-    if not files.exists((c.str)dep_filename):
-        error(usage_error, try format(message_buffer[0..], f"no luce.toml at {dep_path}"))
-    let actual = try package_name_at(dep_manifest)
-    defer strings.release(actual)
-    if positional.length >= 2 and positional[0] != actual:
-        error(usage_error, try format(message_buffer[0..], f"the package at {dep_path} is named '{actual}', not '{positional[0]}'"))
-    try upsert_dependency(manifest, actual, dep_path)
-    try io.stdout().write(f"added dependency {actual} = \"{dep_path}\"\n")
+        if not strings.starts_with(word, "--"): location = word
+    if location.length == 0:
+        error(usage_error, "luc add needs a path: luc add <path-to-package>")
+    let name = try project_file.add_dependency(project.root, location)
+    defer strings.release(name)
+    try project_file.generate(project.root)
+    try io.stdout().write(f"added dependency {name} from {location}\n")
     return 0
 
-## `luc remove <name>` drops a dependency from luce.toml.
+## `luc remove <name>` drops a dependency from package.prisma.
 func remove_command(project: Project*, own: str[]) -> i32!:
     let manifest = try require_manifest(project)
-    defer strings.release(manifest)
-    var positional: str[]
-    defer release_string_array(positional)
+    strings.release(manifest)
+    var name = ""
     for word in own:
         if not strings.starts_with(word, "--"):
-            positional = try append(positional, word)
-    if positional.length == 0:
+            name = word
+            break
+    if name.length == 0:
         error(usage_error, "luc remove needs a name: luc remove <name>")
-    let name = positional[0]
-    if not try remove_dependency(manifest, name):
+    if not try project_file.remove_dependency(project.root, name):
         try io.stderr().write(f"luc: no dependency named '{name}'\n")
         return 1
+    try project_file.generate(project.root)
     try io.stdout().write(f"removed dependency {name}\n")
     return 0
 
@@ -692,15 +697,11 @@ func clean_command(project: Project*, own: str[]) -> i32!:
     try io.stdout().write(f"removed {target}\n")
     return 0
 
-## This project's luce.toml, or a usage error when there is no project here.
+## This project's generated luce.toml, or a usage error when there is no project here.
 func require_manifest(project: Project*) -> str!:
-    let manifest = try paths.join(project.root, "luce.toml")
-    errdefer strings.release(manifest)
-    let filename = try strings.copy(manifest)
-    defer strings.release(filename)
-    if not files.exists((c.str)filename):
-        error(usage_error, "not in a Luce project (no luce.toml found); run 'luc init' first")
-    return manifest
+    if not try project_file.exists_in(project.root):
+        error(usage_error, "not in a Luce project (no package.prisma found); run 'luc init' first")
+    return try paths.join(project.root, "luce.toml")
 
 func package_name_at(manifest: str) -> str!:
     var probe = Project(root = try strings.copy(""), name = try strings.copy(""),
@@ -853,8 +854,8 @@ func scaffold_command(command: str, own: str[]) -> i32!:
             error(usage_error, "luc new needs a path: luc new <dir>")
         target = chosen
     let name = paths.base(target)
-    if files.exists((c.str)try strings.copy(try paths.join(target, "luce.toml"))):
-        error(usage_error, "a luce.toml already exists here; refusing to overwrite it")
+    if try project_file.exists_in(target):
+        error(usage_error, "a package.prisma already exists here; refusing to overwrite it")
     try scaffold(target, name, language, is_package)
     let kind = "package" if is_package else "application"
     try io.stdout().write(f"created {language} {kind} '{name}' in {target}\n")
@@ -866,8 +867,9 @@ func scaffold(target: str, name: str, language: str, is_package: bool) -> !:
     let source = try paths.join(target, "src")
     try ensure_dir(source)
     let suffix = ".luc" if language == "luce" else ".lucb"
-    try write_file(try paths.join(target, "luce.toml"), try manifest_source(name, language, is_package))
-    try write_file(try paths.join(target, ".gitignore"), "build/\n.luc/\n")
+    var definition: u8[1024]
+    try write_file(try paths.join(target, project_file.file_name), try project_file.scaffold(name, default_owner, language, is_package, definition))
+    try write_file(try paths.join(target, ".gitignore"), "build/\n.luc/\nluce.toml\n")
     if is_package:
         let module_dir = try paths.join(source, name)
         try ensure_dir(module_dir)
@@ -889,12 +891,6 @@ func write_file(path: str, content: str) -> !:
 func join_name(stem: str, suffix: str) -> str!:
     var buffer: u8[128]
     return try strings.copy(try format(buffer[0..], f"{stem}{suffix}"))
-
-func manifest_source(name: str, language: str, is_package: bool) -> str!:
-    var buffer: u8[1024]
-    if is_package:
-        return try strings.copy(try format(buffer[0..], f"[package]\nname = \"{name}\"\nlanguage = \"{language}\"\n\n[exports]\n{name} = \"{name}.{name}\"\n"))
-    return try strings.copy(try format(buffer[0..], f"[package]\nname = \"{name}\"\nlanguage = \"{language}\"\n"))
 
 func program_source(name: str, language: str) -> str!:
     var buffer: u8[512]

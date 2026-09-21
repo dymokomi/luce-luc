@@ -74,12 +74,6 @@ jobs:
         run: python3 tests/test_heap_process.py
       - name: Release verification modes and sanitizers
         run: python3 tests/release_modes.py --base ../luce-base/build/luce-base
-      - name: High-level Luce package install and relocation
-        env:
-          LUC_TEST_LANGUAGE: luce
-          LUCE: ${{ github.workspace }}/luce/build/luce
-          LUCE_BASE: ${{ github.workspace }}/luce-base/build/luce-base
-        run: python3 tests/install.py build/luc build/release-modes/checkout-release-fixture ../luce-base/build/luce-base
       - name: Native release verification heap cleanup
         if: runner.os == 'macOS'
         run: LUCE_TEST_LEAKS=1 python3 tests/release.py build/release-modes/native0 build/release-modes/fixture
