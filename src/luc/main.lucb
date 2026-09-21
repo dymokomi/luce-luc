@@ -133,7 +133,9 @@ struct Project:
 ## Find the nearest package.prisma from the current directory upward, load it, and
 ## regenerate the luce.toml the compilers read. Absent one, the project is an anonymous
 ## luce-base app rooted at the current directory.
-func load_project(prepare: bool = true, directory_hint: str = "") -> Project!:
+## `registry` loads a package that was downloaded from the registry, so every dependency,
+## including ones its author overrides with a local path, comes from the registry.
+func load_project(prepare: bool = true, directory_hint: str = "", registry: bool = false) -> Project!:
     let start = try strings.copy(directory_hint) if directory_hint.length > 0 else try os.cwd()
     defer strings.release(start)
     var project = Project(root = try strings.copy(start), name = try strings.copy("app"),
@@ -146,8 +148,8 @@ func load_project(prepare: bool = true, directory_hint: str = "") -> Project!:
             strings.release(project.root)
             project.root = try strings.copy(directory)
             try apply_definition(&project)
-            if prepare: try packages.prepare(project.root)
-            try project_file.generate(project.root, project.root)
+            if prepare: try packages.prepare(project.root, registry)
+            try project_file.generate(project.root, project.root, registry)
             return project
         let parent = paths.directory(directory)
         if parent == directory or parent.length == 0:
@@ -557,7 +559,7 @@ func install_command(own: str[]) -> i32!:
     var definition = try project_file.read(work)
     defer definition.close()
     if not definition.is_application(): error(usage_error, "that package is a library; use 'luc add' inside a project")
-    var project = try load_project(directory_hint = work)
+    var project = try load_project(directory_hint = work, registry = true)
     defer project.close()
     var no_extra: str[]
     let status = try build(&project, true, no_extra)

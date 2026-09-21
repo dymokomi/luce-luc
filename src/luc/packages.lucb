@@ -169,13 +169,15 @@ func resolve_registry(graph: Graph*, owner: str, name: str, requirement: str, de
         try resolve_registry(graph, item.owner, item.name, item.version, depth + 1)
 
 ## Walk a local package: path dependencies are followed on disk, the rest resolved.
-func resolve_local(graph: Graph*, directory: str, depth: usize) -> !:
+## `registry` marks a package that itself came from the registry: its `path` overrides are
+## its author's local checkouts and are ignored.
+func resolve_local(graph: Graph*, directory: str, depth: usize, registry: bool = false) -> !:
     if depth > 32: error(invalid, "path dependencies nest too deeply or form a cycle")
     var definition = try project_file.read(directory)
     defer definition.close()
     for i in 0..<definition.dependency_count:
         let item = try definition.dependency_at(i)
-        if item.path.length == 0:
+        if item.path.length == 0 or registry:
             try resolve_registry(graph, item.owner, item.name, item.version, 0)
             continue
         let location = try paths.join(directory, item.path)
@@ -206,10 +208,10 @@ func write_lock(root: str, graph: Graph*) -> !:
     try files.write_atomic((c.str)terminated, buffer[..<used])
 
 ## `luc lock`: resolve the whole graph against the registry and write luc.lock.
-pub func lock(root: str) -> usize!:
+pub func lock(root: str, registry: bool = false) -> usize!:
     var graph = try new_graph()
     defer graph.close()
-    try resolve_local(&graph, root, 0)
+    try resolve_local(&graph, root, 0, registry)
     try write_lock(root, &graph)
     return graph.count
 
@@ -341,13 +343,13 @@ pub func download(owner: str, name: str, requirement: str, destination: str, ver
     return try format(version_output, f"{item.version}")
 
 ## True when this package, or a path dependency of it, needs a registry package.
-func needs_registry(directory: str, depth: usize) -> bool!:
+func needs_registry(directory: str, depth: usize, registry: bool = false) -> bool!:
     if depth > 32: return false
     var definition = try project_file.read(directory)
     defer definition.close()
     for i in 0..<definition.dependency_count:
         let item = try definition.dependency_at(i)
-        if item.path.length == 0: return true
+        if item.path.length == 0 or registry: return true
         let location = try paths.join(directory, item.path)
         defer strings.release(location)
         if try project_file.exists_in(location) and try needs_registry(location, depth + 1): return true
@@ -355,13 +357,13 @@ func needs_registry(directory: str, depth: usize) -> bool!:
 
 ## Before a build: lock if nothing is locked yet, then make .luc/deps match the lock.
 ## A project with only path dependencies never touches the network.
-pub func prepare(root: str) -> !:
-    if not try needs_registry(root, 0): return
+pub func prepare(root: str, registry: bool = false) -> !:
+    if not try needs_registry(root, 0, registry): return
     let path = try paths.join(root, lock_name)
     defer strings.release(path)
     let terminated = try strings.copy(path)
     defer strings.release(terminated)
-    if not files.exists((c.str)terminated): discard(try lock(root))
+    if not files.exists((c.str)terminated): discard(try lock(root, registry))
     discard(try sync(root))
 
 ## `luc sync`: make .luc/deps match luc.lock exactly, from the cache or the registry.
