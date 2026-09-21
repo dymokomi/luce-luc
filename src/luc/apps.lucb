@@ -4,8 +4,8 @@
 ## The script is high-level Luce run with `luce run --sandbox`, so it has no file,
 ## network or process access. It receives `<os> <arch> <name> <version>` and prints a
 ## plan, one instruction a line:
-##     copy <path-in-package> <path-in-install-directory>
-##     link <command-name> <path-in-install-directory>
+##     copy <path-in-package> -> <path-in-install-directory>
+##     link <command-name> -> <path-in-install-directory>
 ## luc validates every path and does the copying. A package without a script gets
 ## the default: its built executable as bin/<name>, linked as <name>.
 import c
@@ -106,18 +106,11 @@ func ensure_parents(root: str, relative: str) -> !:
         try ensure_directory(current)
         start = end + 1
 
-func word(line: str, index: usize) -> str:
-    var start: usize
-    var seen: usize
-    for i in 0..<line.length + 1:
-        if i != line.length and line.bytes[i] != ' ': continue
-        if i == start:
-            start = i + 1
-            continue
-        if seen == index: return (str)line.bytes[start..<i]
-        seen += 1
-        start = i + 1
-    return ""
+## Split `verb left -> right`. Paths may contain spaces, so only the arrow separates them.
+func instruction(line: str) -> (str, str, str)!:
+    let (verb, rest) = strings.split_once(line, " ") else error(invalid, "an install plan line is `copy A -> B` or `link NAME -> B`")
+    let (left, right) = strings.split_once(rest, " -> ") else error(invalid, "an install plan line is `copy A -> B` or `link NAME -> B`")
+    return (verb, strings.trim(left), strings.trim(right))
 
 func release_arguments(arguments: c.str[], filled: usize*):
     for i in 0..<*filled: strings.release((str)arguments[i])
@@ -159,10 +152,7 @@ pub func apply(plan: str, package_root: str, staging: str, links: u8[], links_us
         if line.length == 0 or line.bytes[0] == '#': continue
         count += 1
         if count > max_plan_lines: error(invalid, "the install plan is too long")
-        let verb = word(line, 0)
-        let first = word(line, 1)
-        let second = word(line, 2)
-        if word(line, 3).length != 0 or second.length == 0: error(invalid, "an install plan line needs exactly two arguments")
+        let (verb, first, second) = try instruction(line)
         if verb == "copy":
             if not path_valid(first) or not path_valid(second): error(invalid, "an install plan path must be relative and stay inside its directory")
             let source = try paths.join(package_root, first)
@@ -189,3 +179,76 @@ pub func apply(plan: str, package_root: str, staging: str, links: u8[], links_us
         else:
             error(invalid, "an install plan line must start with copy or link")
     if count == 0: error(invalid, "the install plan is empty")
+
+# mark: Desktop bundles ========================================================================
+
+func write_text(path: str, text: str) -> !:
+    let terminated = try strings.copy(path)
+    defer strings.release(terminated)
+    try files.write((c.str)terminated, text.bytes)
+
+func copy_into(source: str, directory: str, name: str, permissions: u32) -> !:
+    let destination = try paths.join(directory, name)
+    defer strings.release(destination)
+    let origin = try strings.copy(source)
+    defer strings.release(origin)
+    let target = try strings.copy(destination)
+    defer strings.release(target)
+    discard(try files.copy_file((c.str)origin, (c.str)target, permissions = permissions))
+
+func fresh_directory(path: str) -> !:
+    let terminated = try strings.copy(path)
+    defer strings.release(terminated)
+    if files.exists((c.str)terminated): try files.remove_tree((c.str)terminated)
+    try files.create_directory((c.str)terminated)
+
+## The bundle directory name inside build/: "Name.app" on macOS, "Name.AppDir" on Linux,
+## empty where luc makes no bundle.
+pub func bundle_name(definition: pkg.Definition*, output: u8[]) -> str!:
+    if os.macos: return try format(output, f"{definition.application.name}.app")
+    if os.linux: return try format(output, f"{definition.application.name}.AppDir")
+    return ""
+
+## Wrap the built executable build/<name> as a desktop application, so it opens as an
+## application rather than in a terminal. Returns without doing anything on other systems.
+pub func bundle(root: str, definition: pkg.Definition*) -> !:
+    var name_buffer: u8[96]
+    let directory_name = try bundle_name(definition, name_buffer)
+    if directory_name.length == 0: return
+    let build = try paths.join(root, "build")
+    defer strings.release(build)
+    let executable = try paths.join(build, definition.name)
+    defer strings.release(executable)
+    let bundle_root = try paths.join(build, directory_name)
+    defer strings.release(bundle_root)
+    try fresh_directory(bundle_root)
+    var icon_name = ""
+    if definition.application.icon.length > 0: icon_name = paths.base(definition.application.icon)
+    let icon_source = try paths.join(root, definition.application.icon)
+    defer strings.release(icon_source)
+    let text = try alloc u8[8192] in memory.heap
+    defer free(text) in memory.heap
+    if os.macos:
+        let contents = try child(bundle_root, "Contents")
+        defer strings.release(contents)
+        let binaries = try child(contents, "MacOS")
+        defer strings.release(binaries)
+        let resources = try child(contents, "Resources")
+        defer strings.release(resources)
+        try copy_into(executable, binaries, definition.name, 0o755)
+        if icon_name.length > 0: try copy_into(icon_source, resources, icon_name, 0o644)
+        let plist = try paths.join(contents, "Info.plist")
+        defer strings.release(plist)
+        let icon_entry = try format(text[4096..], f"    <key>CFBundleIconFile</key>\n    <string>{icon_name}</string>\n") if icon_name.length > 0 else ""
+        try write_text(plist, try format(text[..<4096], f"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n    <key>CFBundleName</key>\n    <string>{definition.application.name}</string>\n    <key>CFBundleDisplayName</key>\n    <string>{definition.application.name}</string>\n    <key>CFBundleIdentifier</key>\n    <string>{definition.application.identifier}</string>\n    <key>CFBundleExecutable</key>\n    <string>{definition.name}</string>\n    <key>CFBundleVersion</key>\n    <string>{definition.version}</string>\n    <key>CFBundleShortVersionString</key>\n    <string>{definition.version}</string>\n    <key>CFBundlePackageType</key>\n    <string>APPL</string>\n    <key>CFBundleInfoDictionaryVersion</key>\n    <string>6.0</string>\n{icon_entry}    <key>NSHighResolutionCapable</key>\n    <true/>\n    <key>NSPrincipalClass</key>\n    <string>NSApplication</string>\n</dict>\n</plist>\n"))
+        return
+    # Linux AppDir: AppRun is the executable, with a desktop entry and the icon beside it.
+    try copy_into(executable, bundle_root, "AppRun", 0o755)
+    if icon_name.length > 0: try copy_into(icon_source, bundle_root, icon_name, 0o644)
+    var entry_name: u8[96]
+    let desktop = try paths.join(bundle_root, try format(entry_name, f"{definition.name}.desktop"))
+    defer strings.release(desktop)
+    var stem = icon_name
+    for i in 0..<icon_name.length:
+        if icon_name.bytes[i] == '.': stem = (str)icon_name.bytes[..<i]
+    try write_text(desktop, try format(text[..<4096], f"[Desktop Entry]\nType=Application\nName={definition.application.name}\nExec=AppRun\nIcon={stem}\nTerminal=false\nX-Luce-Identifier={definition.application.identifier}\nX-Luce-Version={definition.version}\n"))

@@ -303,7 +303,13 @@ func build(project: Project*, release: bool, extra: str[]) -> i32!:
         arguments = try append(arguments, "--release")
     let combined = try concat(arguments, extra)
     defer release_string_array(combined)
-    return try spawn(try project.compiler(), combined)
+    let status = try spawn(try project.compiler(), combined)
+    if status != 0 or not try project_file.exists_in(project.root): return status
+    # A declared application is also wrapped as Name.app / Name.AppDir beside the executable.
+    var definition = try project_file.read(project.root)
+    defer definition.close()
+    if definition.is_bundled(): try apps.bundle(project.root, &definition)
+    return status
 
 func ensure_build(project: Project*) -> !:
     let directory = try paths.join(project.root, "build")
@@ -555,8 +561,14 @@ func install_command(own: str[]) -> i32!:
     let status = try build(&project, true, no_extra)
     if status != 0: error(usage_error, "the application did not build")
 
-    var plan_buffer: u8[256]
-    var plan = try format(plan_buffer, f"copy build/{project.name} bin/{name}\nlink {name} bin/{name}\n")
+    var plan_buffer: u8[1024]
+    var bundle_buffer: u8[96]
+    let bundled = try apps.bundle_name(&definition, bundle_buffer) if definition.is_bundled() else ""
+    var plan = try format(plan_buffer, f"copy build/{project.name} -> bin/{name}\nlink {name} -> bin/{name}\n")
+    if bundled.length > 0 and os.macos:
+        plan = try format(plan_buffer, f"copy build/{bundled} -> {bundled}\nlink {name} -> {bundled}/Contents/MacOS/{project.name}\n")
+    elif bundled.length > 0:
+        plan = try format(plan_buffer, f"copy build/{bundled} -> {bundled}\nlink {name} -> {bundled}/AppRun\n")
     var scripted = ""
     defer if_release(scripted)
     if definition.install.length > 0:
@@ -599,6 +611,24 @@ func install_command(own: str[]) -> i32!:
         discard(files.remove_file((c.str)link_z) catch: recover ())
         try files.create_symlink((c.str)target_z, (c.str)link_z)
         try io.stdout().write(f"  {command} -> {target}\n")
+    if bundled.length > 0 and os.macos:
+        let placed_bundle = try paths.join(placed, bundled)
+        defer strings.release(placed_bundle)
+        let placed_bundle_z = try strings.copy(placed_bundle)
+        defer strings.release(placed_bundle_z)
+        if files.exists((c.str)placed_bundle_z):
+            let user = os.env((c.str)"HOME") else ""
+            let shelf = try paths.join(user, "Applications")
+            defer strings.release(shelf)
+            if os.env((c.str)"LUC_HOME") == none and user.length > 0:
+                discard(apps.child(user, "Applications") catch: recover "")
+                let shortcut = try paths.join(shelf, bundled)
+                defer strings.release(shortcut)
+                let shortcut_z = try strings.copy(shortcut)
+                defer strings.release(shortcut_z)
+                discard(files.remove_file((c.str)shortcut_z) catch: recover ())
+                files.create_symlink((c.str)placed_bundle_z, (c.str)shortcut_z) catch: recover ()
+                try io.stdout().write(f"  {shortcut} -> {placed_bundle}\n")
     try io.stdout().write(f"installed {coordinate} {version}; add {commands} to PATH if it is not there\n")
     return 0
 
@@ -634,6 +664,24 @@ func uninstall_command(own: str[]) -> i32!:
         let target = files.read_symlink((c.str)link_z) catch: continue
         if strings.starts_with(target, application) and target.length > application.length and target.bytes[application.length] == '/':
             try files.remove_file((c.str)link_z)
+    # On macOS an installed bundle is also linked from ~/Applications.
+    if os.macos and os.env((c.str)"LUC_HOME") == none:
+        if let user = os.env((c.str)"HOME"):
+            let shelf = try paths.join(user, "Applications")
+            defer strings.release(shelf)
+            let shelf_z = try strings.copy(shelf)
+            defer strings.release(shelf_z)
+            if files.exists((c.str)shelf_z):
+                let shortcuts = try files.list((c.str)shelf_z)
+                defer files.release_list(shortcuts)
+                for entry in shortcuts:
+                    let shortcut = try paths.join(shelf, entry)
+                    defer strings.release(shortcut)
+                    let shortcut_z = try strings.copy(shortcut)
+                    defer strings.release(shortcut_z)
+                    let target = files.read_symlink((c.str)shortcut_z) catch: continue
+                    if strings.starts_with(target, application) and target.length > application.length and target.bytes[application.length] == '/':
+                        try files.remove_file((c.str)shortcut_z)
     try files.remove_tree((c.str)application_z)
     try io.stdout().write(f"uninstalled {name}\n")
     return 0

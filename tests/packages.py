@@ -28,13 +28,13 @@ def git(repo, *args, input=None):
                           capture_output=True, timeout=60).stdout
 
 
-def release_app(site, work, name, version, files, install=None):
+def release_app(site, work, name, version, files, install=None, application=''):
     """Publish an application: an entry, optional resources and an optional install script."""
     repo = work / f'{name}-{version}'
     (repo / 'src').mkdir(parents=True)
     script = '    str install = "install.luc"\n' if install is not None else ''
     definition = (f'#prisma 4.0\ndef package "{name}" {{\n    str owner = "acme"\n    str version = "{version}"\n'
-                  f'    str language = "luce-base"\n    str entry = "src/main.lucb"\n{script}}}\n')
+                  f'    str language = "luce-base"\n    str entry = "src/main.lucb"\n{script}{application}}}\n')
     (repo / 'package.prisma').write_text(definition)
     (repo / 'src' / 'main.lucb').write_text(f'pub func main(arguments: str[]) -> i32:\n    print("{name} {version} runs")\n    return 0\n')
     if install is not None: (repo / 'install.luc').write_text(install)
@@ -79,10 +79,10 @@ def release(site, work, name, version, module_source, dependencies=''):
 
 SCRIPT = '''pub func main(arguments: list[str]) -> int!:
     let name = arguments[2]
-    print(f"copy build/{name} bin/{name}")
-    print("copy themes share/themes")
-    print(f"link {name} bin/{name}")
-    print(f"link {name}-{arguments[0]} bin/{name}")
+    print(f"copy build/{name} -> bin/{name}")
+    print("copy themes -> share/my themes")
+    print(f"link {name} -> bin/{name}")
+    print(f"link {name}-{arguments[0]} -> bin/{name}")
     return 0
 '''
 
@@ -102,20 +102,41 @@ def applications(site, work, root, online):
     assert 'installed acme/plain-clock 1.0.0' in luc_run('install', 'acme/plain-clock')
     assert subprocess.check_output([str(home / 'bin/plain-clock')], text=True).strip() == 'plain-clock 1.0.0 runs'
     assert 'already installed' in luc_run('install', 'acme/plain-clock')
+
+    # A declared application is bundled for the desktop and installed as that bundle.
+    release_app(site, work, 'desk-clock', '3.0.0', {'assets/clock.icns': 'icon-bytes'}, application=(
+        '    def application "bundle" {\n        str name = "Desk Clock"\n        str identifier = "com.example.desk-clock"\n'
+        '        str icon = "assets/clock.icns"\n    }\n'))
+    assert 'installed acme/desk-clock 3.0.0' in luc_run('install', 'acme/desk-clock')
+    placed = home / 'apps/desk-clock/3.0.0'
+    if sys.platform == 'darwin':
+        bundle = placed / 'Desk Clock.app/Contents'
+        plist = (bundle / 'Info.plist').read_text()
+        assert '<string>com.example.desk-clock</string>' in plist and '<string>Desk Clock</string>' in plist
+        assert '<string>3.0.0</string>' in plist and '<string>clock.icns</string>' in plist and '<string>APPL</string>' in plist
+        assert (bundle / 'Resources/clock.icns').read_text() == 'icon-bytes'
+        subprocess.run(['plutil', '-lint', str(bundle / 'Info.plist')], check=True, capture_output=True)
+        assert subprocess.check_output([str(bundle / 'MacOS/desk-clock')], text=True).strip() == 'desk-clock 3.0.0 runs'
+    else:
+        entry = (placed / 'Desk Clock.AppDir/desk-clock.desktop').read_text()
+        assert 'Name=Desk Clock' in entry and 'Terminal=false' in entry and 'Icon=clock' in entry
+        assert subprocess.check_output([str(placed / 'Desk Clock.AppDir/AppRun')], text=True).strip() == 'desk-clock 3.0.0 runs'
+    assert subprocess.check_output([str(home / 'bin/desk-clock')], text=True).strip() == 'desk-clock 3.0.0 runs'
+    assert 'uninstalled desk-clock' in luc_run('uninstall', 'desk-clock')
     assert 'library' in luc_run('install', 'acme/greeter', success=False)
     if sandbox:
         release_app(site, work, 'clock', '2.1.0', {'themes/dark.theme': 'dark\n', 'themes/nested/light.theme': 'light\n'}, SCRIPT)
         assert 'installed acme/clock 2.1.0' in luc_run('install', 'acme/clock@2.1.0')
         placed = home / 'apps/clock/2.1.0'
-        assert (placed / 'share/themes/nested/light.theme').read_text() == 'light\n'
+        assert (placed / 'share/my themes/nested/light.theme').read_text() == 'light\n'
         assert subprocess.check_output([str(home / 'bin/clock')], text=True).strip() == 'clock 2.1.0 runs'
         system = 'macos' if sys.platform == 'darwin' else 'linux'
         assert (home / f'bin/clock-{system}').is_symlink()
         assert luc_run('list').split() == ['clock', '2.1.0', 'plain-clock', '1.0.0']
         # A script is confined and its plan is validated: neither can reach outside.
-        for number, hostile in enumerate(('print("copy ../../etc/passwd bin/x")', 'print("copy /etc/passwd bin/x")',
-                                          'print("copy themes ../../escape")', 'print("run rm -rf /")',
-                                          'import files\n    print("copy themes share")')):
+        for number, hostile in enumerate(('print("copy ../../etc/passwd -> bin/x")', 'print("copy /etc/passwd -> bin/x")',
+                                          'print("copy themes -> ../../escape")', 'print("run rm -rf / -> x")',
+                                          'print("copy themes bin/x")', 'import files\n    print("copy themes -> share")')):
             name = f'hostile{number}'
             release_app(site, work, name, '1.0.0', {'themes/a': 'a\n'},
                         f'pub func main(arguments: list[str]) -> int!:\n    {hostile}\n    return 0\n')
