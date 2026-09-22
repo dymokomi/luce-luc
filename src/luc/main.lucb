@@ -34,8 +34,8 @@ import luc.release as releasing
 import git
 import crypto_native
 
-## The luc version, kept in step with VERSION.
-pub let luc_version: str = "0.17.0"
+## The luc version, kept in step with package.prisma.
+pub let luc_version: str = "0.17.1"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"
