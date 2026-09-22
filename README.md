@@ -35,7 +35,6 @@ def package "hello" {
 
 `luc init` does the same as `luc new` in the current directory. Every project file
 is described in [luce-pkg/docs/PACKAGE_PRISMA.md](https://github.com/dymokomi/luce-pkg/blob/main/docs/PACKAGE_PRISMA.md).
-`luc` generates the `luce.toml` the compilers read; you never edit it.
 
 ## Building and running
 

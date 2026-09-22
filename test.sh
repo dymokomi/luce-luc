@@ -9,7 +9,7 @@ base=${LUCE_BASE_COMPILER:-../luce-base/build/luce-base}
 case "$base" in /*) ;; *) base=$PWD/$base ;; esac   # absolute, so LUCE_BASE survives the cd into a scaffolded project
 LUCE_BASE_COMPILER="$base" ./build.sh > /dev/null
 luc="$PWD/build/luc"
-[ "$("$luc" --version)" = "luc 0.16.1" ] || { echo "FAIL: version"; exit 1; }
+[ "$("$luc" --version)" = "luc 0.17.0" ] || { echo "FAIL: version"; exit 1; }
 # update/upgrade name the official installers (dry-run so nothing is installed)
 [ "$("$luc" update --dry-run | head -1)" = "curl -fsSL https://luce-base.luciaos.com/install.sh | sh" ] || { echo "FAIL: update --dry-run"; exit 1; }
 [ "$("$luc" upgrade --dry-run | tail -1)" = "curl -fsSL https://luce.luciaos.com/install.sh | sh" ] || { echo "FAIL: upgrade alias"; exit 1; }
@@ -32,11 +32,11 @@ rm -rf "$scaff"; mkdir -p "$scaff"
 ( cd "$scaff" && "$luc" new app1 ) > /dev/null || { echo "FAIL: new app1"; exit 1; }
 ( cd "$scaff/app1" && "$luc" add ../mylib ) > /dev/null || { echo "FAIL: add"; exit 1; }
 grep -q 'def dependency "mylib"' "$scaff/app1/package.prisma" || { echo "FAIL: dependency not written"; cat "$scaff/app1/package.prisma"; exit 1; }
-grep -q '^mylib = "../mylib"' "$scaff/app1/luce.toml" || { echo "FAIL: luce.toml not regenerated"; cat "$scaff/app1/luce.toml"; exit 1; }
+[ ! -e "$scaff/app1/luce.toml" ] || { echo "FAIL: luce.toml must not be generated"; exit 1; }
 printf 'import mylib\npub func main(arguments: str[]) -> i32:\n    print(mylib.greeting())\n    return 0\n' > "$scaff/app1/src/main.lucb"
 [ "$( cd "$scaff/app1" && "$luc" run )" = "hello from mylib" ] || { echo "FAIL: dependency import/run"; exit 1; }
 ( cd "$scaff/app1" && "$luc" remove mylib ) > /dev/null || { echo "FAIL: remove"; exit 1; }
-grep -q 'mylib' "$scaff/app1/package.prisma" "$scaff/app1/luce.toml" && { echo "FAIL: dependency not removed"; exit 1; } || true
+grep -q 'mylib' "$scaff/app1/package.prisma" && { echo "FAIL: dependency not removed"; exit 1; } || true
 rm -rf "$scaff"
 work="build/luctest"
 rm -rf "$work"; mkdir -p "$work/src"

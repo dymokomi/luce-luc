@@ -380,7 +380,7 @@ pub func sync(root: str, offline: bool = false) -> usize!:
     defer free(bytes) in memory.heap
     for index in 0..<graph.count:
         let item = graph.packages[index]
-        let destination = try paths.join(parent, item.name)
+        let destination = try project_file.dependency_directory(root, item.name)
         defer strings.release(destination)
         var marker_name: u8[96]
         let marker = try paths.join(destination, try format(marker_name, f".luc-{item.sha256}"))

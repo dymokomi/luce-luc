@@ -4,8 +4,8 @@
 #
 #   DESCRIPTION:
 #       One command for a Luce project: build, run, test, check and format it through the Luce
-#       compiler, and run the named workflows in its luce.toml `[tasks]`. luc finds the project
-#       by walking up to the nearest luce.toml, picks the compiler from the package language
+#       compiler, and run the named workflows in its package.prisma tasks. luc finds the project
+#       by walking up to the nearest package.prisma, picks the compiler from the package language
 #       (luce-base or luce, overridable with LUCE_BASE / LUCE), and forwards the compiler's own
 #       output and exit code. This is the MVP surface; scaffolding, dependencies, task
 #       dependency graphs and workspaces follow (see README).
@@ -35,7 +35,7 @@ import git
 import crypto_native
 
 ## The luc version, kept in step with VERSION.
-pub let luc_version: str = "0.16.1"
+pub let luc_version: str = "0.17.0"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"
@@ -56,7 +56,7 @@ struct Task:
     var description: str
     var depends: str[]
 
-## A loaded luce.toml: where it is, the package identity, the chosen entry, and its tasks.
+## A loaded project: where it is, the package identity, the chosen entry, and its tasks.
 struct Project:
     var root: str
     var name: str
@@ -121,10 +121,10 @@ struct Project:
             index += 1
         return none
 
-# mark: Loading luce.toml ======================================================================
+# mark: Loading the project ====================================================================
 
 ## Find the nearest package.prisma from the current directory upward, load it, and
-## regenerate the luce.toml the compilers read. Absent one, the project is an anonymous
+## remove any stale luce.toml. Absent one, the project is an anonymous
 ## luce-base app rooted at the current directory.
 ## `registry` loads a package that was downloaded from the registry, so every dependency,
 ## including ones its author overrides with a local path, comes from the registry.
@@ -230,7 +230,7 @@ func task_slot(project: Project*, name: str) -> usize!:
             return index
         index += 1
     if project.task_count >= project.tasks.length:
-        error(usage_error, "too many tasks in luce.toml")
+        error(usage_error, "too many tasks in package.prisma")
     let owned_name = try strings.copy(name)
     errdefer strings.release(owned_name)
     let command = try strings.copy("")
@@ -405,7 +405,7 @@ func two(first: str, second: str) -> str[]!:
 
 func list_tasks(project: Project*) -> !:
     if project.task_count == 0:
-        try io.stdout().write("no tasks are defined in luce.toml\n")
+        try io.stdout().write("no tasks are defined in package.prisma\n")
         return
     try io.stdout().write("tasks:\n")
     var index: usize = 0
@@ -580,7 +580,7 @@ func info_command() -> i32!:
     defer graph.close()
     for i in 0..<graph.count:
         try out.write(f"locked\t{graph.packages[i].name}\t{graph.packages[i].version}\n")
-    for generated in ["build", ".luc", "luce.toml"]:
+    for generated in ["build", ".luc"]:
         try out.write(f"generated\t{generated}\n")
     return 0
 
@@ -713,11 +713,11 @@ func clean_command(project: Project*, own: str[]) -> i32!:
     try io.stdout().write(f"removed {target}\n")
     return 0
 
-## This project's generated luce.toml, or a usage error when there is no project here.
+## This project's package.prisma, or a usage error when there is no project here.
 func require_manifest(project: Project*) -> str!:
     if not try project_file.exists_in(project.root):
         error(usage_error, "not in a Luce project (no package.prisma found); run 'luc init' first")
-    return try paths.join(project.root, "luce.toml")
+    return try paths.join(project.root, project_file.file_name)
 
 func package_name_at(manifest: str) -> str!:
     var probe = Project(root = try strings.copy(""), name = try strings.copy(""),
@@ -889,7 +889,7 @@ func scaffold(target: str, name: str, language: str, kind: str) -> !:
     let suffix = ".luc" if language == "luce" else ".lucb"
     var definition: u8[2048]
     try write_file(try paths.join(target, project_file.file_name), try project_file.scaffold(name, default_owner, language, kind, definition))
-    try write_file(try paths.join(target, ".gitignore"), "build/\n.luc/\nluce.toml\n")
+    try write_file(try paths.join(target, ".gitignore"), "build/\n.luc/\n")
     if kind == "package":
         # A package may be named luce-json; its module is the identifier luce_json.
         let module = try project_file.module_name(name)
