@@ -23,15 +23,8 @@ import strings
 import memory
 import pkg
 import luc.remote as remote
-import luc.release_upload as release_upload
-import luc.release_download as release_download
 import luc.pack_check as pack_check
-import luc.catalog as catalog
-import luc.graph_lock as graph_lock
-import luc.locked_release as locked_release
-import luc.graph_sync as graph_sync
 import luc.credentials as credentials
-import luc.pull_requests as pull_requests
 import luc.checkout as checkout
 import luc.project_file as project_file
 import luc.packages as packages
@@ -42,7 +35,7 @@ import git
 import crypto_native
 
 ## The luc version, kept in step with VERSION.
-pub let luc_version: str = "0.15.3"
+pub let luc_version: str = "0.16.0"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"
@@ -425,104 +418,6 @@ func list_tasks(project: Project*) -> !:
         index += 1
 
 # mark: Dependencies ==========================================================================
-
-func read_release_file(path: str, limit: usize) -> u8[]!:
-    let filename = try strings.copy(path)
-    defer strings.release(filename)
-    return try files.read_limit((c.str)filename, limit)
-
-## os.cwd returns an allocator-owned buffer, not a strings.copy allocation.
-## Capture it in a short-lived arena and return a normal owned string.
-func owned_cwd() -> str!:
-    var scratch = try memory.Arena.over(memory.heap, 8192)
-    defer scratch.destroy()
-    with scratch:
-        let directory = try os.cwd()
-        with memory.heap:
-            return try strings.copy(directory)
-
-func read_project_lock() -> u8[]!:
-    let start = try owned_cwd()
-    defer strings.release(start)
-    var directory = start
-    while true:
-        let manifest = try paths.join(directory, "luce.toml")
-        defer strings.release(manifest)
-        if files.exists((c.str)manifest):
-            let filename = try paths.join(directory, "luc.lock")
-            defer strings.release(filename)
-            return try files.read_limit((c.str)filename, 1048576)
-        let parent = paths.directory(directory)
-        if parent == directory or parent.length == 0:
-            error(usage_error, "not in a Luce project (no luce.toml found)")
-        directory = parent
-
-## Bind a verified release and the exact key that verified it to the project lock.
-func require_locked_release(release: pkg.Release, publisher_key_digest: const u8[]) -> u8!:
-    let contents = try read_project_lock()
-    defer free(contents) in memory.heap
-    var lock = try pkg.decode_lock((str)contents)
-    defer lock.close()
-    return try locked_release.require(&lock, release, publisher_key_digest)
-
-## Verify exact local release bytes against an explicitly supplied trusted public key.
-## This does not establish key ownership or authorize installation.
-func verify_release_command(own: str[], passthrough: str[]) -> i32!:
-    let locked = own.length == 5 and own[4] == "--locked"
-    if (own.length != 4 and not locked) or passthrough.length != 0:
-        error(usage_error, "usage: luc verify-release <metadata> <signature> <trusted-key> <source> [--locked]")
-    let wire = try read_release_file(own[0], pkg.max_release_metadata)
-    defer free(wire) in memory.heap
-    let signature = try read_release_file(own[1], 3309)
-    defer free(signature) in memory.heap
-    let key = try read_release_file(own[2], 1952)
-    defer free(key) in memory.heap
-    let source = try read_release_file(own[3], 67108864)
-    defer free(source) in memory.heap
-    let release = try pkg.decode_release(wire)
-    if not try pkg.verify_release(release, key, signature, source):
-        error(usage_error, "release signature or source digest verification failed")
-    if locked:
-        var key_digest: u8[32]
-        discard(try crypto_native.digest(key, key_digest, "sha256"))
-        let schema = try require_locked_release(release, key_digest)
-        if schema == 3: try io.stdout().write("release matches graph-complete luc.lock v3 including publisher key\n")
-        elif schema == 2: try io.stdout().write("release matches luc.lock v2 including commit and toolchain pins\n")
-        else: try io.stdout().write("release matches luc.lock (commit and toolchain are not pinned by lock v1)\n")
-    try io.stdout().write(f"verified {release.package}@{release.version} against supplied key (origin ownership not verified)\n")
-    return 0
-
-## Verify and materialize the same retained source bytes: never reopen a path
-## between signature verification and checkout. Trust in the key is caller-supplied.
-func checkout_release_command(own: str[]) -> i32!:
-    let locked = own.length == 6 and own[5] == "--locked"
-    if own.length != 5 and not locked:
-        error(usage_error, "usage: luc checkout-release <metadata> <signature> <trusted-key> <pack> <new-directory> [--locked]")
-    let wire = try read_release_file(own[0], pkg.max_release_metadata)
-    defer free(wire) in memory.heap
-    let signature = try read_release_file(own[1], 3309)
-    defer free(signature) in memory.heap
-    let key = try read_release_file(own[2], 1952)
-    defer free(key) in memory.heap
-    let source = try read_release_file(own[3], 67108864)
-    defer free(source) in memory.heap
-    let release = try pkg.decode_release(wire)
-    if not try pkg.verify_release(release, key, signature, source):
-        error(usage_error, "release signature or source digest verification failed")
-    if locked:
-        var key_digest: u8[32]
-        discard(try crypto_native.digest(key, key_digest, "sha256"))
-        discard(try require_locked_release(release, key_digest))
-    var commit: u8[20]
-    try git.decode_id(release.commit, commit)
-    var pack = try git.decode_pack(source)
-    defer pack.close()
-    for byte in own[4].bytes:
-        if byte == 0: error(usage_error, "invalid checkout destination")
-    if own[4].length == 0: error(usage_error, "empty checkout destination")
-    try checkout.materialize(&pack, commit, own[4])
-    try io.stdout().write("checked out release verified against supplied key (origin ownership and freshness not verified)\n")
-    return 0
 
 # mark: Applications ===========================================================================
 
@@ -1080,67 +975,6 @@ func has(words: str[], flag: str) -> bool:
             return true
     return false
 
-func require_new_publish_artifact(destination: str) -> !:
-    if destination.length == 0 or destination.length > 4096: error(usage_error, "invalid artifact destination")
-    for byte in destination.bytes:
-        if byte == 0: error(usage_error, "invalid artifact destination")
-    let basename = paths.base(destination)
-    if basename.length == 0 or basename == "." or basename == "..": error(usage_error, "invalid artifact filename")
-    let filename = try strings.copy(destination)
-    defer strings.release(filename)
-    var exists = true
-    discard(files.metadata((c.str)filename, follow_symlinks = false) catch failure:
-        if failure.code != files.missing: error(failure.code, failure.message)
-        exists = false
-        recover files.Metadata())
-    if exists: error(usage_error, "artifact destination already exists")
-
-## Publish one exact commit already advertised by the registry. Metadata is
-## derived from that remote graph's root luce.toml, never the working tree.
-func publish_command(origin: str, package: str, version: str, commit: str,
-                     toolchain: str, artifact: str, session_vault: str,
-                     key_vault: str) -> i32!:
-    try release_download.validate_request(origin, package, version)
-    discard(try pkg.parse_version(toolchain))
-    var requested: u8[20]
-    try git.decode_id(commit, requested)
-    try require_new_publish_artifact(artifact)
-    var split: usize = 0
-    while split < package.length and package.bytes[split] != '/': split += 1
-    if split == 0 or split == package.length: error(usage_error, "invalid package identity")
-    let account = (str)package.bytes[..<split]
-    var incoming: u8[2051]
-    defer crypto_native.wipe(incoming)
-    let (session_password, key_password) = try credentials.password_pair(incoming)
-    var session = try credentials.load_password(session_vault, session_password, origin, account)
-    defer session.close()
-    var seed = try credentials.signing_seed_password(key_vault, key_password, origin, account)
-    defer seed.close()
-    var url_buffer: u8[384]
-    let url = try format(url_buffer, f"{origin}/git/{package}")
-    let source_storage = try alloc u8[67108864] in memory.heap
-    defer free(source_storage) in memory.heap
-    let source_size = try remote.fetch_into(url, commit, try session.bytes(), source_storage)
-    let source = source_storage[..<source_size]
-    var pack = try git.decode_pack(source)
-    defer pack.close()
-    let manifest_bytes = try pack_check.root_manifest(&pack, requested)
-    var manifest = try pkg.decode_manifest((str)manifest_bytes)
-    defer manifest.close()
-    var dependencies: pkg.Dependency[128]
-    for i in 0..<manifest.dependency_count: dependencies[i] = try manifest.dependency_at(i)
-    var digest: u8[32]
-    discard(try pkg.source_digest(source, digest))
-    let release = pkg.Release(origin = origin, package = package, version = version,
-        commit = commit, source_digest = digest, compiler = manifest.language,
-        toolchain = toolchain)
-    var metadata: u8[24576]
-    let metadata_size = try pkg.encode_release_v2(release, manifest.name,
-        dependencies[..<manifest.dependency_count], manifest.dependency_count, metadata)
-    discard(try release_upload.sign_seed(metadata[..<metadata_size], source,
-        artifact, try seed.bytes()))
-    return try release_upload.upload_session(origin, artifact, try session.bytes())
-
 pub func main(arguments: c.str[]) -> i32!:
     with memory.heap:
         if arguments.length < 2:
@@ -1153,56 +987,12 @@ pub func main(arguments: c.str[]) -> i32!:
         if command == "--help" or command == "help":
             try usage(io.stdout())
             return 0
-        if command == "verify-release":
-            # Fixed argument storage avoids the legacy command builder's allocations.
-            if arguments.length < 6 or arguments.length > 7:
-                error(usage_error, "usage: luc verify-release <metadata> <signature> <trusted-key> <source> [--locked]")
-            var words: str[5]
-            for index in 2..<arguments.length:
-                words[index - 2] = (str)arguments[index]
-            var no_passthrough: str[]
-            return try verify_release_command(words[..<arguments.length - 2], no_passthrough)
         if command == "remote-refs":
             if arguments.length == 6 and (str)arguments[3] == "--vault" and (str)arguments[5] == "--password-stdin":
                 if ((str)arguments[4]).length == 0: error(usage_error, "vault path is required")
                 return try remote.refs((str)arguments[2], (str)arguments[4])
             if arguments.length != 3: error(usage_error, "usage: luc remote-refs <registry-git-url>")
             return try remote.refs((str)arguments[2])
-        if command == "auth-store":
-            if arguments.length != 6 or (str)arguments[5] != "--secrets-stdin":
-                error(usage_error, "usage: luc auth-store <origin> <account> <new-vault> --secrets-stdin")
-            return try credentials.store((str)arguments[2], (str)arguments[3], (str)arguments[4])
-        if command == "release-download":
-            let locked = arguments.length == 12 and (str)arguments[11] == "--locked"
-            if (arguments.length != 11 and not locked) or (str)arguments[6] != "--trusted-key" or (str)arguments[8] != "--vault" or (str)arguments[10] != "--password-stdin":
-                error(usage_error, "usage: luc release-download <origin> <owner/package> <version> <new-directory> --trusted-key <key> --vault <session> --password-stdin [--locked]")
-            let destination = (str)arguments[5]
-            if destination.length == 0: error(usage_error, "empty checkout destination")
-            for byte in destination.bytes:
-                if byte == 0: error(usage_error, "invalid checkout destination")
-            var downloaded = try release_download.fetch((str)arguments[2], (str)arguments[3], (str)arguments[4], (str)arguments[7], (str)arguments[9])
-            defer downloaded.close()
-            let release = try pkg.decode_release(downloaded.metadata[..<downloaded.metadata_size])
-            if locked: discard(try require_locked_release(release, downloaded.publisher_key_digest))
-            var commit: u8[20]
-            try git.decode_id(release.commit, commit)
-            var pack = try git.decode_pack(downloaded.source[..<downloaded.source_size])
-            defer pack.close()
-            try checkout.materialize(&pack, commit, destination)
-            try io.stdout().write("Downloaded and checked out release verified against supplied trusted key.\n")
-            return 0
-        if command == "versions":
-            if arguments.length != 7 or (str)arguments[4] != "--vault" or (str)arguments[6] != "--password-stdin":
-                error(usage_error, "usage: luc versions <origin> <owner/package> --vault <session> --password-stdin")
-            return try catalog.show((str)arguments[2], (str)arguments[3], (str)arguments[5])
-        if command == "resolve":
-            if arguments.length != 8 or (str)arguments[5] != "--vault" or (str)arguments[7] != "--password-stdin":
-                error(usage_error, "usage: luc resolve <origin> <owner/package> <version|^version> --vault <session> --password-stdin")
-            return try catalog.resolve((str)arguments[2], (str)arguments[3], (str)arguments[4], (str)arguments[6])
-        if command == "release-upload" or command == "release-check":
-            if arguments.length != 7 or (str)arguments[4] != "--vault" or (str)arguments[6] != "--password-stdin":
-                error(usage_error, "usage: luc release-upload|release-check <origin> <artifact> --vault <session> --password-stdin")
-            return try release_upload.upload((str)arguments[2], (str)arguments[3], (str)arguments[5], check_only = command == "release-check")
         if command == "git-credential":
             if arguments.length != 3: return 0
             let session = try default_vault()
@@ -1226,22 +1016,6 @@ pub func main(arguments: c.str[]) -> i32!:
             let session = try default_vault()
             defer strings.release(session)
             return try releasing.publish(project.root, packages.origin(), session, notes)
-        if command == "release-sign":
-            if arguments.length != 8 or (str)arguments[5] != "--key-vault" or (str)arguments[7] != "--password-stdin":
-                error(usage_error, "usage: luc release-sign <metadata> <pack> <new-upload> --key-vault <key-vault> --password-stdin")
-            return try release_upload.sign((str)arguments[2], (str)arguments[3], (str)arguments[4], (str)arguments[6])
-        if command == "key-create":
-            if arguments.length != 6 or (str)arguments[5] != "--password-stdin":
-                error(usage_error, "usage: luc key-create <origin> <account> <new-key-vault> --password-stdin")
-            return try credentials.key_create((str)arguments[2], (str)arguments[3], (str)arguments[4])
-        if command == "key-export":
-            if arguments.length != 8 or (str)arguments[5] != "--key-vault" or (str)arguments[7] != "--password-stdin":
-                error(usage_error, "usage: luc key-export <origin> <account> <new-public-key> --key-vault <key-vault> --password-stdin")
-            return try credentials.key_export((str)arguments[2], (str)arguments[3], (str)arguments[4], (str)arguments[6])
-        if command == "key-enroll" or command == "key-check":
-            if arguments.length != 9 or (str)arguments[4] != "--vault" or (str)arguments[6] != "--key-vault" or (str)arguments[8] != "--passwords-stdin":
-                error(usage_error, "usage: luc key-enroll|key-check <origin> <account> --vault <session-vault> --key-vault <key-vault> --passwords-stdin")
-            return try credentials.key_enroll((str)arguments[2], (str)arguments[3], (str)arguments[5], (str)arguments[7], check_only = command == "key-check")
         # Secrets are prompted for at a terminal and read from a pipe otherwise, so the
         # old --*-stdin flags are accepted and ignored. The session vault defaults to
         # ~/.luce/session.vault.
@@ -1274,14 +1048,12 @@ pub func main(arguments: c.str[]) -> i32!:
                 if status == 0: try remember_account(origin, rest[0])
                 return status
             if command == "login":
-                if rest.length > 2: error(usage_error, "usage: luc login [<account>] [<new-vault>]")
+                if rest.length > 1: error(usage_error, "usage: luc login [<account>]")
                 let remembered = try remembered_account()
                 defer strings.release(remembered)
                 let account = rest[0] if rest.length > 0 else remembered
                 if account.length == 0: error(usage_error, "usage: luc login <account>   (the account is remembered afterwards)")
-                # An explicit vault path keeps the password-encrypted vault; plain `luc login`
-                # asks for one password and saves a private session file.
-                let status = try credentials.login(origin, account, rest[1]) if rest.length == 2 else try credentials.login_session(origin, account, fallback)
+                let status = try credentials.login_session(origin, account, fallback)
                 if status == 0: try remember_account(origin, account)
                 return status
             if command == "repo-create":
@@ -1289,30 +1061,6 @@ pub func main(arguments: c.str[]) -> i32!:
                 return try credentials.create_repository(origin, rest[0], vault if vault.length > 0 else fallback)
             if rest.length != 2: error(usage_error, "usage: luc git-token <repository> <read|write>")
             return try credentials.issue_git_token(origin, rest[0], rest[1], vault if vault.length > 0 else fallback)
-        if command == "pr-create":
-            if arguments.length != 11 or (str)arguments[8] != "--vault" or (str)arguments[10] != "--password-stdin":
-                error(usage_error, "usage: luc pr-create <origin> <owner/repository> <base> <head> <title> <body> --vault <session-vault> --password-stdin")
-            return try pull_requests.create((str)arguments[2], (str)arguments[3], (str)arguments[4],
-                (str)arguments[5], (str)arguments[6], (str)arguments[7], (str)arguments[9])
-        if command == "pr-list":
-            if arguments.length != 7 or (str)arguments[4] != "--vault" or (str)arguments[6] != "--password-stdin":
-                error(usage_error, "usage: luc pr-list <origin> <owner/repository> --vault <session-vault> --password-stdin")
-            return try pull_requests.list((str)arguments[2], (str)arguments[3], (str)arguments[5])
-        if command == "pr-show":
-            if arguments.length != 8 or (str)arguments[5] != "--vault" or (str)arguments[7] != "--password-stdin":
-                error(usage_error, "usage: luc pr-show <origin> <owner/repository> <number> --vault <session-vault> --password-stdin")
-            return try pull_requests.show((str)arguments[2], (str)arguments[3], (str)arguments[4], (str)arguments[6])
-        if command == "pr-state":
-            if arguments.length != 9 or (str)arguments[6] != "--vault" or (str)arguments[8] != "--password-stdin":
-                error(usage_error, "usage: luc pr-state <origin> <owner/repository> <number> <open|closed|merged> --vault <session-vault> --password-stdin")
-            return try pull_requests.state((str)arguments[2], (str)arguments[3], (str)arguments[4],
-                (str)arguments[5], (str)arguments[7])
-        if command == "checkout-release":
-            if arguments.length < 7 or arguments.length > 8:
-                error(usage_error, "usage: luc checkout-release <metadata> <signature> <trusted-key> <pack> <new-directory> [--locked]")
-            var words: str[6]
-            for index in 2..<arguments.length: words[index - 2] = (str)arguments[index]
-            return try checkout_release_command(words[..<arguments.length - 2])
         if command == "remote-fetch":
             if arguments.length == 8 and (str)arguments[5] == "--vault" and (str)arguments[7] == "--password-stdin":
                 if ((str)arguments[6]).length == 0: error(usage_error, "vault path is required")

@@ -5,7 +5,6 @@ language = "luce-base"
 source = "src"
 
 [dependencies]
-luce_auth = "../luce-auth"
 luce_crypto = "../luce-crypto"
 luce_git = "../luce-git"
 luce_http_client = "../luce-http-client"

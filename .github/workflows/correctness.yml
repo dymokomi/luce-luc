@@ -33,8 +33,8 @@ jobs:
           path: luce-luc
       - name: Check out pinned package dependencies
         run: |
-          for dependency in PKG CRYPTO GIT HTTP_CLIENT TLS COMPRESS AUTH PRISM; do
-            case "$dependency" in PKG) repo=luce-pkg ;; CRYPTO) repo=luce-crypto ;; GIT) repo=luce-git ;; HTTP_CLIENT) repo=luce-http-client ;; TLS) repo=luce-tls ;; COMPRESS) repo=luce-compress ;; AUTH) repo=luce-auth ;; PRISM) repo=luce-prism ;; esac
+          for dependency in PKG CRYPTO GIT HTTP_CLIENT TLS COMPRESS PRISM; do
+            case "$dependency" in PKG) repo=luce-pkg ;; CRYPTO) repo=luce-crypto ;; GIT) repo=luce-git ;; HTTP_CLIENT) repo=luce-http-client ;; TLS) repo=luce-tls ;; COMPRESS) repo=luce-compress ;; PRISM) repo=luce-prism ;; esac
             revision=$(cat "bootstrap/$dependency")
             [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || exit 1
             git init "../$repo"
@@ -74,6 +74,3 @@ jobs:
         run: python3 tests/test_heap_process.py
       - name: Release verification modes and sanitizers
         run: python3 tests/release_modes.py --base ../luce-base/build/luce-base
-      - name: Native release verification heap cleanup
-        if: runner.os == 'macOS'
-        run: LUCE_TEST_LEAKS=1 python3 tests/release.py build/release-modes/native0 build/release-modes/fixture
