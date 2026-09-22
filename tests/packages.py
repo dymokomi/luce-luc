@@ -33,8 +33,9 @@ def release_app(site, work, name, version, files, install=None, application=''):
     repo = work / f'{name}-{version}'
     (repo / 'src').mkdir(parents=True)
     script = '    str install = "install.luc"\n' if install is not None else ''
+    kind = 'application' if application else 'tool'
     definition = (f'#prisma 4.0\ndef package "{name}" {{\n    str owner = "acme"\n    str version = "{version}"\n'
-                  f'    str language = "luce-base"\n    str entry = "src/main.lucb"\n{script}{application}}}\n')
+                  f'    str kind = "{kind}"\n    str language = "luce-base"\n    str entry = "src/main.lucb"\n{script}{application}}}\n')
     (repo / 'package.prisma').write_text(definition)
     (repo / 'src' / 'main.lucb').write_text(f'pub func main(arguments: str[]) -> i32:\n    print("{name} {version} runs")\n    return 0\n')
     if install is not None: (repo / 'install.luc').write_text(install)
@@ -60,7 +61,7 @@ def release(site, work, name, version, module_source, dependencies=''):
     module = name.replace('-', '_')
     (repo / 'src' / module).mkdir(parents=True)
     definition = (f'#prisma 4.0\ndef package "{name}" {{\n    str owner = "acme"\n    str version = "{version}"\n'
-                  f'    str language = "luce-base"\n    def export "{module}" {{\n        str module = "{module}.{module}"\n    }}\n'
+                  f'    str kind = "package"\n    str language = "luce-base"\n    def export "{module}" {{\n        str module = "{module}.{module}"\n    }}\n'
                   f'{dependencies}}}\n')
     (repo / 'package.prisma').write_text(definition)
     (repo / 'src' / module / f'{module}.lucb').write_text(module_source)
@@ -90,7 +91,8 @@ SCRIPT = '''pub func main(arguments: list[str]) -> int!:
 def applications(site, work, root, online):
     """install builds and places what the sandboxed script asks for; uninstall removes exactly that."""
     home = root / 'luce-home'
-    env = dict(online, LUC_HOME=str(home))
+    shelf = root / 'desktop-applications'
+    env = dict(online, LUC_HOME=str(home), LUC_APPLICATIONS=str(shelf))
     sandbox = 'LUCE' in os.environ
 
     def luc_run(*args, success=True):
@@ -98,6 +100,11 @@ def applications(site, work, root, online):
         assert (result.returncode == 0) == success, (args, result.stdout, result.stderr)
         return result.stdout + result.stderr
 
+    for flag, kind in (('--package', 'package'), ('--tool', 'tool'), ('--application', 'application')):
+        luc_run('new', f'made-{kind}', flag)
+        made = (root / f'made-{kind}' / 'package.prisma').read_text()
+        assert f'str kind = "{kind}"' in made
+        assert ('def application "bundle"' in made and 'def dependency "luce-ui"' in made and 'com.dymokomi.made-application' in made) == (kind == 'application')
     release_app(site, work, 'plain-clock', '1.0.0', {})
     assert 'installed acme/plain-clock 1.0.0' in luc_run('install', 'acme/plain-clock')
     assert subprocess.check_output([str(home / 'bin/plain-clock')], text=True).strip() == 'plain-clock 1.0.0 runs'
@@ -122,8 +129,18 @@ def applications(site, work, root, online):
         assert 'Name=Desk Clock' in entry and 'Terminal=false' in entry and 'Icon=clock' in entry
         assert subprocess.check_output([str(placed / 'Desk Clock.AppDir/AppRun')], text=True).strip() == 'desk-clock 3.0.0 runs'
     assert subprocess.check_output([str(home / 'bin/desk-clock')], text=True).strip() == 'desk-clock 3.0.0 runs'
+    # The desktop finds it: a real copy of the bundle on macOS, a desktop entry on Linux.
+    if sys.platform == 'darwin':
+        exposed = shelf / 'Desk Clock.app'
+        assert exposed.is_dir() and not exposed.is_symlink()
+        assert subprocess.check_output([str(exposed / 'Contents/MacOS/desk-clock')], text=True).strip() == 'desk-clock 3.0.0 runs'
+    else:
+        exposed = shelf / 'desk-clock.desktop'
+        assert 'Name=Desk Clock' in exposed.read_text() and str(placed) in exposed.read_text()
+    (shelf / 'Unrelated.app').mkdir()
     assert 'uninstalled desk-clock' in luc_run('uninstall', 'desk-clock')
-    assert 'library' in luc_run('install', 'acme/greeter', success=False)
+    assert not exposed.exists() and (shelf / 'Unrelated.app').is_dir(), 'uninstall removes exactly what install placed'
+    assert 'is a package' in luc_run('install', 'acme/greeter', success=False)
     if sandbox:
         release_app(site, work, 'clock', '2.1.0', {'themes/dark.theme': 'dark\n', 'themes/nested/light.theme': 'light\n'}, SCRIPT)
         assert 'installed acme/clock 2.1.0' in luc_run('install', 'acme/clock@2.1.0')

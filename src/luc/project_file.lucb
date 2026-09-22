@@ -224,11 +224,28 @@ pub func module_name(name: str) -> str!:
         if bytes[i] == '-': bytes[i] = '_'
     return copy
 
-## Text of a new package.prisma for `luc init` and `luc new`.
-pub func scaffold(name: str, owner: str, language: str, is_package: bool, output: u8[]) -> str!:
+## Text of a new package.prisma for `luc init` and `luc new`. `kind` is package,
+## application or tool; an application is a luce-ui window with its desktop bundle.
+pub func scaffold(name: str, owner: str, language: str, kind: str, output: u8[]) -> str!:
     let suffix = ".luc" if language == "luce" else ".lucb"
-    if is_package:
-        let module = try module_name(name)
-        defer strings.release(module)
-        return try format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str language = \"{language}\"\n    def export \"{module}\" {{\n        str module = \"{module}.{module}\"\n    }}\n}}\n")
-    return try format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str language = \"{language}\"\n    str entry = \"src/main{suffix}\"\n}}\n")
+    let module = try module_name(name)
+    defer strings.release(module)
+    if kind == "package":
+        return try format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str kind = \"package\"\n    str language = \"{language}\"\n    def export \"{module}\" {{\n        str module = \"{module}.{module}\"\n    }}\n}}\n")
+    if kind == "tool":
+        return try format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str kind = \"tool\"\n    str language = \"{language}\"\n    str entry = \"src/main{suffix}\"\n}}\n")
+    # The display name is the package name with a capital; the identifier is reverse-DNS.
+    var display: u8[64]
+    var length: usize
+    for byte in name.bytes:
+        if length >= display.length: break
+        display[length] = byte - 32 if length == 0 and byte >= 'a' and byte <= 'z' else byte
+        length += 1
+    var label: u8[64]
+    var label_length: usize
+    for byte in name.bytes:
+        if label_length >= label.length: break
+        if byte == '_': continue
+        label[label_length] = byte
+        label_length += 1
+    return try format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str kind = \"application\"\n    str language = \"luce\"\n    str entry = \"src/main.luc\"\n    def application \"bundle\" {{\n        str name = \"{(str)display[..<length]}\"\n        str identifier = \"com.{owner}.{(str)label[..<label_length]}\"\n    }}\n    def dependency \"luce-ui\" {{\n        str owner = \"dymokomi\"\n        str version = \"^0.1.0\"\n    }}\n}}\n")

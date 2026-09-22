@@ -252,3 +252,61 @@ pub func bundle(root: str, definition: pkg.Definition*) -> !:
     for i in 0..<icon_name.length:
         if icon_name.bytes[i] == '.': stem = (str)icon_name.bytes[..<i]
     try write_text(desktop, try format(text[..<4096], f"[Desktop Entry]\nType=Application\nName={definition.application.name}\nExec=AppRun\nIcon={stem}\nTerminal=false\nX-Luce-Identifier={definition.application.identifier}\nX-Luce-Version={definition.version}\n"))
+
+# mark: Where the system looks for applications ===============================================
+
+## The directory the desktop finds applications in: ~/Applications on macOS and
+## ~/.local/share/applications on Linux. LUC_APPLICATIONS overrides it. Empty elsewhere.
+pub func shelf() -> str!:
+    if let chosen = os.env((c.str)"LUC_APPLICATIONS"):
+        try ensure_directory(chosen)
+        return try strings.copy(chosen)
+    let user = os.env((c.str)"HOME") else return try strings.copy("")
+    if os.macos: return try child(user, "Applications")
+    if not os.linux: return try strings.copy("")
+    let dot_local = try child(user, ".local")
+    defer strings.release(dot_local)
+    let share = try child(dot_local, "share")
+    defer strings.release(share)
+    return try child(share, "applications")
+
+## Put an installed application where the desktop finds it and return what was created,
+## for uninstall to remove. macOS gets a real copy of Name.app, which Spotlight and
+## Launchpad index; Linux gets a desktop entry that points at the installed AppDir.
+pub func expose(definition: pkg.Definition*, placed_bundle: str) -> str!:
+    let directory = try shelf()
+    defer strings.release(directory)
+    if directory.length == 0: return try strings.copy("")
+    if os.macos:
+        var name: u8[96]
+        let target = try paths.join(directory, try format(name, f"{definition.application.name}.app"))
+        errdefer strings.release(target)
+        let target_z = try strings.copy(target)
+        defer strings.release(target_z)
+        if files.exists((c.str)target_z): try files.remove_tree((c.str)target_z)
+        var budget: usize = 20000
+        try copy_tree(placed_bundle, target, &budget)
+        return target
+    var name: u8[96]
+    let target = try paths.join(directory, try format(name, f"{definition.name}.desktop"))
+    errdefer strings.release(target)
+    var icon = ""
+    if definition.application.icon.length > 0: icon = paths.base(definition.application.icon)
+    let text = try alloc u8[4096] in memory.heap
+    defer free(text) in memory.heap
+    try write_text(target, try format(text, f"[Desktop Entry]\nType=Application\nName={definition.application.name}\nExec=\"{placed_bundle}/AppRun\"\nIcon={placed_bundle}/{icon}\nTerminal=false\nX-Luce-Identifier={definition.application.identifier}\nX-Luce-Version={definition.version}\n"))
+    return target
+
+## Remove something expose() created. Only entries directly inside the shelf are touched.
+pub func unexpose(path: str) -> !:
+    let directory = try shelf()
+    defer strings.release(directory)
+    if directory.length == 0 or path.length <= directory.length + 1 or not strings.starts_with(path, directory) or path.bytes[directory.length] != '/': return
+    for byte in path.bytes[directory.length + 1..]:
+        if byte == '/': return
+    let terminated = try strings.copy(path)
+    defer strings.release(terminated)
+    if not files.exists((c.str)terminated): return
+    let info = try files.metadata((c.str)terminated, follow_symlinks = false)
+    if info.kind == files.FileKind.directory: try files.remove_tree((c.str)terminated)
+    else: try files.remove_file((c.str)terminated)

@@ -42,7 +42,7 @@ import git
 import crypto_native
 
 ## The luc version, kept in step with VERSION.
-pub let luc_version: str = "0.14.0"
+pub let luc_version: str = "0.15.0"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"
@@ -558,7 +558,7 @@ func install_command(own: str[]) -> i32!:
 
     var definition = try project_file.read(work)
     defer definition.close()
-    if not definition.is_application(): error(usage_error, "that package is a library; use 'luc add' inside a project")
+    if definition.is_package(): error(usage_error, "that is a package, a library to build on; use 'luc add' inside a project")
     var project = try load_project(directory_hint = work, registry = true)
     defer project.close()
     var no_extra: str[]
@@ -615,24 +615,20 @@ func install_command(own: str[]) -> i32!:
         discard(files.remove_file((c.str)link_z) catch: recover ())
         try files.create_symlink((c.str)target_z, (c.str)link_z)
         try io.stdout().write(f"  {command} -> {target}\n")
-    if bundled.length > 0 and os.macos:
+    # An application also goes where the desktop looks for applications. What was created
+    # there is recorded beside the install so uninstall removes exactly that.
+    if bundled.length > 0:
         let placed_bundle = try paths.join(placed, bundled)
         defer strings.release(placed_bundle)
-        let placed_bundle_z = try strings.copy(placed_bundle)
-        defer strings.release(placed_bundle_z)
-        if files.exists((c.str)placed_bundle_z):
-            let user = os.env((c.str)"HOME") else ""
-            let shelf = try paths.join(user, "Applications")
-            defer strings.release(shelf)
-            if os.env((c.str)"LUC_HOME") == none and user.length > 0:
-                discard(apps.child(user, "Applications") catch: recover "")
-                let shortcut = try paths.join(shelf, bundled)
-                defer strings.release(shortcut)
-                let shortcut_z = try strings.copy(shortcut)
-                defer strings.release(shortcut_z)
-                discard(files.remove_file((c.str)shortcut_z) catch: recover ())
-                files.create_symlink((c.str)placed_bundle_z, (c.str)shortcut_z) catch: recover ()
-                try io.stdout().write(f"  {shortcut} -> {placed_bundle}\n")
+        let exposed = try apps.expose(&definition, placed_bundle)
+        defer strings.release(exposed)
+        if exposed.length > 0:
+            let note = try paths.join(placed, ".luc-exposed")
+            defer strings.release(note)
+            let note_z = try strings.copy(note)
+            defer strings.release(note_z)
+            try files.write((c.str)note_z, exposed.bytes)
+            try io.stdout().write(f"  {exposed}\n")
     try io.stdout().write(f"installed {coordinate} {version}; add {commands} to PATH if it is not there\n")
     return 0
 
@@ -700,24 +696,20 @@ func uninstall_command(own: str[]) -> i32!:
         let target = files.read_symlink((c.str)link_z) catch: continue
         if strings.starts_with(target, application) and target.length > application.length and target.bytes[application.length] == '/':
             try files.remove_file((c.str)link_z)
-    # On macOS an installed bundle is also linked from ~/Applications.
-    if os.macos and os.env((c.str)"LUC_HOME") == none:
-        if let user = os.env((c.str)"HOME"):
-            let shelf = try paths.join(user, "Applications")
-            defer strings.release(shelf)
-            let shelf_z = try strings.copy(shelf)
-            defer strings.release(shelf_z)
-            if files.exists((c.str)shelf_z):
-                let shortcuts = try files.list((c.str)shelf_z)
-                defer files.release_list(shortcuts)
-                for entry in shortcuts:
-                    let shortcut = try paths.join(shelf, entry)
-                    defer strings.release(shortcut)
-                    let shortcut_z = try strings.copy(shortcut)
-                    defer strings.release(shortcut_z)
-                    let target = files.read_symlink((c.str)shortcut_z) catch: continue
-                    if strings.starts_with(target, application) and target.length > application.length and target.bytes[application.length] == '/':
-                        try files.remove_file((c.str)shortcut_z)
+    # Remove what each installed version placed where the desktop looks for applications.
+    let versions = try files.list((c.str)application_z)
+    defer files.release_list(versions)
+    for version in versions:
+        let inner = try paths.join(application, version)
+        defer strings.release(inner)
+        let note = try paths.join(inner, ".luc-exposed")
+        defer strings.release(note)
+        let note_z = try strings.copy(note)
+        defer strings.release(note_z)
+        if not files.exists((c.str)note_z): continue
+        let recorded = try files.read_limit((c.str)note_z, 4096)
+        defer free(recorded) in memory.heap
+        try apps.unexpose(strings.trim((str)recorded))
     try files.remove_tree((c.str)application_z)
     try io.stdout().write(f"uninstalled {name}\n")
     return 0
@@ -946,8 +938,13 @@ func run_shell(command: str) -> i32!:
 ## `luc new <path>` creates a project in a new directory; `luc init` in the current one.
 ## Flags: --package (a library) or --app (default); --luce or --luce-base (default).
 func scaffold_command(command: str, own: str[]) -> i32!:
-    let is_package = has(own, "--package") or has(own, "--lib")
-    let language = "luce" if has(own, "--luce") else "luce-base"
+    # One of three kinds: a package (library), an application (desktop window) or a tool
+    # (terminal program, the default). --lib is the older spelling of --package.
+    var kind = "tool"
+    if has(own, "--package") or has(own, "--lib"): kind = "package"
+    elif has(own, "--application") or has(own, "--app"): kind = "application"
+    elif has(own, "--tool"): kind = "tool"
+    let language = "luce" if has(own, "--luce") or kind == "application" else "luce-base"
     var target = try os.cwd()
     if command == "new":
         var chosen = ""
@@ -955,32 +952,34 @@ func scaffold_command(command: str, own: str[]) -> i32!:
             if not strings.starts_with(word, "--"):
                 chosen = word
         if chosen.length == 0:
-            error(usage_error, "luc new needs a path: luc new <dir>")
+            error(usage_error, "usage: luc new <dir> [--package | --application | --tool] [--luce]")
         target = chosen
     let name = paths.base(target)
     if try project_file.exists_in(target):
         error(usage_error, "a package.prisma already exists here; refusing to overwrite it")
-    try scaffold(target, name, language, is_package)
-    let kind = "package" if is_package else "application"
+    try scaffold(target, name, language, kind)
     try io.stdout().write(f"created {language} {kind} '{name}' in {target}\n")
     return 0
 
 ## Write the project's directories and starter files.
-func scaffold(target: str, name: str, language: str, is_package: bool) -> !:
+func scaffold(target: str, name: str, language: str, kind: str) -> !:
     try ensure_dir(target)
     let source = try paths.join(target, "src")
     try ensure_dir(source)
     let suffix = ".luc" if language == "luce" else ".lucb"
-    var definition: u8[1024]
-    try write_file(try paths.join(target, project_file.file_name), try project_file.scaffold(name, default_owner, language, is_package, definition))
+    var definition: u8[2048]
+    try write_file(try paths.join(target, project_file.file_name), try project_file.scaffold(name, default_owner, language, kind, definition))
     try write_file(try paths.join(target, ".gitignore"), "build/\n.luc/\nluce.toml\n")
-    if is_package:
+    if kind == "package":
         # A package may be named luce-json; its module is the identifier luce_json.
         let module = try project_file.module_name(name)
         defer strings.release(module)
         let module_dir = try paths.join(source, module)
         try ensure_dir(module_dir)
         try write_file(try paths.join(module_dir, try join_name(module, suffix)), try library_source(module, language))
+    elif kind == "application":
+        var window: u8[1024]
+        try write_file(try paths.join(source, "main.luc"), try format(window, f"from ui import Application, Button, Text, VStack\n\npub func main(arguments: list[str]) -> int!:\n    let button = Button(\"Continue\")\n    let content = VStack([Text(\"Hello from {name}\"), button], padding = 24.0)\n    let app = Application(content, title = \"{name}\")\n    app.run()\n    return 0\n"))
     else:
         try write_file(try paths.join(source, try join_name("main", suffix)), try program_source(name, language))
 

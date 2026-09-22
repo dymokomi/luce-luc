@@ -1,7 +1,8 @@
 #prisma 4.0
 def package "luc" {
     str owner = "dymokomi"
-    str version = "0.14.0"
+    str version = "0.15.0"
+    str kind = "tool"
     str language = "luce-base"
     str description = "The unified project tool for the Luce languages — one command to build, run, test and format a project and to run the workflows declared in its luce.toml. Written in Luce Base."
     str readme = "README.md"
