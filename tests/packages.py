@@ -104,7 +104,7 @@ def applications(site, work, root, online):
         luc_run('new', f'made-{kind}', flag)
         made = (root / f'made-{kind}' / 'package.prisma').read_text()
         assert f'str kind = "{kind}"' in made
-        assert ('def application "bundle"' in made and 'def dependency "luce-ui"' in made and 'com.dymokomi.made-application' in made) == (kind == 'application')
+        assert ('def application "bundle"' in made and 'def dependency "luce-ui"' in made and 'com.dymokomi.made-application' in made and 'str name = "Made Application"' in made) == (kind == 'application')
     release_app(site, work, 'plain-clock', '1.0.0', {})
     assert 'installed acme/plain-clock 1.0.0' in luc_run('install', 'acme/plain-clock')
     assert subprocess.check_output([str(home / 'bin/plain-clock')], text=True).strip() == 'plain-clock 1.0.0 runs'

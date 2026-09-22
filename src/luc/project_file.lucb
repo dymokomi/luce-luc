@@ -234,12 +234,18 @@ pub func scaffold(name: str, owner: str, language: str, kind: str, output: u8[])
         return try format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str kind = \"package\"\n    str language = \"{language}\"\n    def export \"{module}\" {{\n        str module = \"{module}.{module}\"\n    }}\n}}\n")
     if kind == "tool":
         return try format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str kind = \"tool\"\n    str language = \"{language}\"\n    str entry = \"src/main{suffix}\"\n}}\n")
-    # The display name is the package name with a capital; the identifier is reverse-DNS.
+    # The display name is the package name in words: my-editor -> "My Editor".
     var display: u8[64]
     var length: usize
+    var word_start = true
     for byte in name.bytes:
         if length >= display.length: break
-        display[length] = byte - 32 if length == 0 and byte >= 'a' and byte <= 'z' else byte
+        if byte == '-' or byte == '_':
+            display[length] = ' '
+            word_start = true
+        else:
+            display[length] = byte - 32 if word_start and byte >= 'a' and byte <= 'z' else byte
+            word_start = false
         length += 1
     var label: u8[64]
     var label_length: usize

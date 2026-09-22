@@ -42,7 +42,7 @@ import git
 import crypto_native
 
 ## The luc version, kept in step with VERSION.
-pub let luc_version: str = "0.15.2"
+pub let luc_version: str = "0.15.3"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"
@@ -663,6 +663,31 @@ func remembered_account() -> str!:
     let bytes = try files.read_limit((c.str)terminated, 128)
     defer free(bytes) in memory.heap
     return try strings.copy(strings.trim((str)bytes))
+
+## `luc info`: the project as other tools see it, one `key<TAB>value` per line. Written
+## for luced, which asks luc about a project rather than reading package.prisma itself.
+## Keys: root, name, owner, version, kind, language, entry, source, dependency (repeated:
+## name TAB owner TAB version TAB path-or-empty), locked (repeated: name TAB version),
+## generated (repeated: a path luc writes and the editor should hide).
+func info_command() -> i32!:
+    var project = try load_project(prepare = false)
+    defer project.close()
+    if not try project_file.exists_in(project.root): error(usage_error, "not in a Luce project (no package.prisma found)")
+    var definition = try project_file.read(project.root)
+    defer definition.close()
+    var out = io.stdout()
+    try out.write(f"root\t{project.root}\nname\t{definition.name}\nowner\t{definition.owner}\nversion\t{definition.version}\nkind\t{definition.kind}\nlanguage\t{definition.language}\nentry\t{definition.entry}\nsource\t{definition.source}\n")
+    for i in 0..<definition.dependency_count:
+        let item = try definition.dependency_at(i)
+        try out.write(f"dependency\t{item.name}\t{item.owner}\t{item.version}\t{item.path}\n")
+    var graph = packages.read_lock(project.root) catch:
+        recover packages.Graph()
+    defer graph.close()
+    for i in 0..<graph.count:
+        try out.write(f"locked\t{graph.packages[i].name}\t{graph.packages[i].version}\n")
+    for generated in ["build", ".luc", "luce.toml"]:
+        try out.write(f"generated\t{generated}\n")
+    return 0
 
 func if_release(text: str):
     if text.length > 0: process.release(text)
@@ -1300,6 +1325,8 @@ pub func main(arguments: c.str[]) -> i32!:
         let (own, passthrough) = try partition(arguments, 2)
         defer release_string_array(own)
         defer release_string_array(passthrough)
+        if command == "info":
+            return try info_command()
         if command == "install":
             return try install_command(own)
         if command == "uninstall":
