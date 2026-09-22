@@ -2,14 +2,12 @@
 
 The project tool for [Luce](https://luce.luciaos.com) and Luce Base. One command
 creates, builds, runs, tests and formats a project, fetches its dependencies from
-[pkg.luciaos.com](https://pkg.luciaos.com), installs applications, and publishes
-releases. It is installed with the Luce compiler.
+[pkg.luciaos.com](https://pkg.luciaos.com), and installs applications. It is installed with the Luce compiler.
 
 ```sh
 luc new hello --tool && cd hello    # a terminal program
 luc run                             # build it and run it
 luc add dymokomi/luce-json          # use a package from the registry
-luc publish -m "First release"      # ship a version (needs an account)
 ```
 
 ## Projects
@@ -86,46 +84,16 @@ other program.
 An application may ship an `install.luc` that runs in the Luce sandbox and prints
 extra `copy` and `link` steps; the format is in the package.prisma document above.
 
-## Publishing
-
-Publishing needs an account on the registry, which is by invitation for now.
-
-```sh
-luc register dymokomi     # once, with the invitation code
-luc login                 # once; the session is kept in ~/.luce/session
-luc publish -m "What changed in this version"
-```
-
-`luc publish` creates the registry repository if needed, sets up a `pkg` Git
-remote, pushes your branch, tags `v<version>` from `package.prisma` with your notes,
-and pushes the tag. The registry publishes the release from that tag. To ship an
-update: change the code, raise `version`, commit, publish again.
-
-Plain Git works on the same remote without a password (`git push pkg`), because
-`luc` acts as Git's credential helper for the registry.
-
 ## Configuration
 
 | Variable | Meaning |
 | --- | --- |
 | `LUCE_BASE`, `LUCE` | the compilers to use instead of the ones on your PATH |
-| `LUC_HOME` | where sessions, installs and commands live (default `~/.luce`) |
+| `LUC_HOME` | where installs and commands live (default `~/.luce`) |
 | `LUC_CACHE` | the download cache (default `~/.luce/cache`) |
 | `LUC_REGISTRY` | another registry, for testing (default `https://pkg.luciaos.com`) |
 
 `luc update` reinstalls the latest `luce`, `luce-base` and `luc` from luciaos.com.
-
-## Lower-level commands
-
-These exist for tests and for repairing things by hand. Ordinary use never needs them.
-
-| Command | Does |
-| --- | --- |
-| `luc repo-create name` | creates a registry repository without publishing |
-| `luc git-token name write` | prints a five-minute password for stock Git |
-| `luc git-credential get` | the Git credential helper `publish` configures |
-| `luc remote-refs <url>`, `luc remote-fetch <url> <commit> <pack>` | list or fetch a registry repository directly |
-| `luc checkout-pack <pack> <commit> <dir>` | unpacks a downloaded pack |
 
 ## License
 

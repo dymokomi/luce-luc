@@ -42,7 +42,7 @@ import git
 import crypto_native
 
 ## The luc version, kept in step with VERSION.
-pub let luc_version: str = "0.15.1"
+pub let luc_version: str = "0.15.2"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"
@@ -1380,11 +1380,7 @@ func usage(out: io.Writer) -> !:
     try out.write("  install owner/name[@version]   download, build and install a tool or application\n")
     try out.write("  list                   what is installed\n")
     try out.write("  uninstall <name>       remove it\n\n")
-    try out.write("Publishing (needs an account)\n")
-    try out.write("  register <account>     redeem an invitation\n")
-    try out.write("  login                  save a session\n")
-    try out.write("  publish -m \"notes\"     release the version in package.prisma\n\n")
     try out.write("Other\n")
     try out.write("  update                 reinstall the latest luce, luce-base and luc\n")
     try out.write("  --version, help\n")
-    try out.write("  repo-create, git-token, git-credential, remote-refs, remote-fetch, checkout-pack: see README\n")
+
