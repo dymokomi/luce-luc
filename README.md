@@ -75,10 +75,20 @@ account.
 | `luc list` | shows what is installed |
 | `luc uninstall name` | removes it, including whatever was placed for the desktop |
 
-Everything installs under `~/.luce/apps/<name>/<version>/`, with commands linked
-into `~/.luce/bin` (put it on your PATH). An application is also copied to
-`~/Applications` on macOS, or given a desktop entry on Linux, so it opens like any
-other program.
+An application installs where the system keeps applications and opens like any other
+program:
+
+| System | The application | Found by |
+| --- | --- | --- |
+| macOS | `/Applications/Name.app` (`~/Applications` when you cannot write to `/Applications`) | Finder, Launchpad, Spotlight |
+| Linux | `~/.local/share/luce/apps/Name.AppDir` | a desktop entry in `~/.local/share/applications` |
+| Windows | `%LOCALAPPDATA%\Programs\Name` | a Start Menu shortcut |
+
+A tool installs under `~/.luce/apps/<name>/<version>/`, which for an application only
+records what was placed. Either way its command is linked into `~/.luce/bin`, which the
+Luce installer puts on your PATH. luc never replaces an application of the same name that
+it did not install. Installing builds from source, so luc reports each step: fetching,
+compiling (with a running time), and where the result went.
 
 An application may ship an `install.luc` that runs in the Luce sandbox and prints
 extra `copy` and `link` steps; the format is in the package.prisma document above.
@@ -88,6 +98,8 @@ extra `copy` and `link` steps; the format is in the package.prisma document abov
 | Variable | Meaning |
 | --- | --- |
 | `LUCE_BASE`, `LUCE` | the compilers to use instead of the ones on your PATH |
+| `LUC_APPLICATIONS` | where applications install instead of the system's place |
+| `LUC_START_MENU` | Windows: where the Start Menu shortcut goes |
 | `LUC_HOME` | where installs and commands live (default `~/.luce`) |
 | `LUC_CACHE` | the download cache (default `~/.luce/cache`) |
 | `LUC_REGISTRY` | another registry, for testing (default `https://pkg.luciaos.com`) |

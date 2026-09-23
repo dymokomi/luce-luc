@@ -8,6 +8,7 @@ import hashlib
 import http.server
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -116,30 +117,42 @@ def applications(site, work, root, online):
         '        str icon = "assets/clock.icns"\n    }\n'))
     assert 'installed acme/desk-clock 3.0.0' in luc_run('install', 'acme/desk-clock')
     placed = home / 'apps/desk-clock/3.0.0'
+    # The bundle is installed where the system keeps applications, not under ~/.luce, which
+    # keeps only the record of what was placed.
+    assert not any(path.suffix in ('.app', '.AppDir') for path in placed.iterdir())
     if sys.platform == 'darwin':
-        bundle = placed / 'Desk Clock.app/Contents'
+        exposed = shelf / 'Desk Clock.app'
+        assert exposed.is_dir() and not exposed.is_symlink()
+        bundle = exposed / 'Contents'
         plist = (bundle / 'Info.plist').read_text()
         assert '<string>com.example.desk-clock</string>' in plist and '<string>Desk Clock</string>' in plist
         assert '<string>3.0.0</string>' in plist and '<string>clock.icns</string>' in plist and '<string>APPL</string>' in plist
         assert (bundle / 'Resources/clock.icns').read_text() == 'icon-bytes'
         subprocess.run(['plutil', '-lint', str(bundle / 'Info.plist')], check=True, capture_output=True)
         assert subprocess.check_output([str(bundle / 'MacOS/desk-clock')], text=True).strip() == 'desk-clock 3.0.0 runs'
+        placed_paths = [exposed]
     else:
-        entry = (placed / 'Desk Clock.AppDir/desk-clock.desktop').read_text()
-        assert 'Name=Desk Clock' in entry and 'Terminal=false' in entry and 'Icon=clock' in entry
-        assert subprocess.check_output([str(placed / 'Desk Clock.AppDir/AppRun')], text=True).strip() == 'desk-clock 3.0.0 runs'
+        appdir = shelf / 'luce/apps/Desk Clock.AppDir'
+        assert 'Name=Desk Clock' in (appdir / 'desk-clock.desktop').read_text()
+        assert subprocess.check_output([str(appdir / 'AppRun')], text=True).strip() == 'desk-clock 3.0.0 runs'
+        exposed = shelf / 'applications/desk-clock.desktop'
+        entry = exposed.read_text()
+        assert 'Name=Desk Clock' in entry and 'Terminal=false' in entry and str(appdir) in entry
+        placed_paths = [appdir, exposed]
+    assert (placed / '.luc-placed').read_text().splitlines() == [str(path) for path in placed_paths]
     assert subprocess.check_output([str(home / 'bin/desk-clock')], text=True).strip() == 'desk-clock 3.0.0 runs'
-    # The desktop finds it: a real copy of the bundle on macOS, a desktop entry on Linux.
-    if sys.platform == 'darwin':
-        exposed = shelf / 'Desk Clock.app'
-        assert exposed.is_dir() and not exposed.is_symlink()
-        assert subprocess.check_output([str(exposed / 'Contents/MacOS/desk-clock')], text=True).strip() == 'desk-clock 3.0.0 runs'
-    else:
-        exposed = shelf / 'desk-clock.desktop'
-        assert 'Name=Desk Clock' in exposed.read_text() and str(placed) in exposed.read_text()
     (shelf / 'Unrelated.app').mkdir()
     assert 'uninstalled desk-clock' in luc_run('uninstall', 'desk-clock')
-    assert not exposed.exists() and (shelf / 'Unrelated.app').is_dir(), 'uninstall removes exactly what install placed'
+    assert not any(path.exists() for path in placed_paths) and (shelf / 'Unrelated.app').is_dir(), 'uninstall removes exactly what install placed'
+    assert not (home / 'bin/desk-clock').exists()
+    # Another application of the same name, which luc did not install, is never replaced.
+    if sys.platform == 'darwin':
+        foreign = shelf / 'Desk Clock.app/Contents'
+        foreign.mkdir(parents=True)
+        (foreign / 'Info.plist').write_text('<string>com.other.clock</string>')
+        assert 'will not replace it' in luc_run('install', 'acme/desk-clock', success=False)
+        assert (foreign / 'Info.plist').read_text() == '<string>com.other.clock</string>'
+        shutil.rmtree(shelf / 'Desk Clock.app')
     assert 'is a package' in luc_run('install', 'acme/greeter', success=False)
     if sandbox:
         release_app(site, work, 'clock', '2.1.0', {'themes/dark.theme': 'dark\n', 'themes/nested/light.theme': 'light\n'}, SCRIPT)
@@ -199,13 +212,13 @@ def main():
         # ^0.1.0 takes the newest 0.1.x and never 0.2.0; the author's path override is ignored.
         assert 'def package "greeter"' in lock and 'str version = "0.1.1"' in lock and '0.2.0' not in lock
         assert hashlib.sha256((site / 'acme/greeter/0.1.1.pack').read_bytes()).hexdigest() in lock
-        assert run('run').strip().endswith('hello 0.1.1')
+        assert 'hello 0.1.1' in run('run').splitlines()
         assert 'no such package' in run('add', 'acme/missing', success=False)
 
         # A fresh checkout rebuilds from the lock and the cache alone.
         for leftover in ('.luc', 'build'): subprocess.run(['rm', '-rf', str(app / leftover)], check=True)
         assert 'synced 2' in run('sync', '--offline', env=offline)
-        assert run('run', env=offline).strip().endswith('hello 0.1.1')
+        assert 'hello 0.1.1' in run('run', env=offline).splitlines()
 
         # The lock's SHA-256 is the integrity check: a changed cache or download is refused.
         cached = cache / 'acme/greeter/0.1.1.pack'

@@ -30,12 +30,13 @@ import luc.project_file as project_file
 import luc.packages as packages
 import luc.registry_http as registry_http
 import luc.apps as apps
+import luc.progress as progress
 import luc.release as releasing
 import git
 import crypto_native
 
 ## The luc version, kept in step with package.prisma.
-pub let luc_version: str = "0.17.2"
+pub let luc_version: str = "0.18.0"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"
@@ -300,7 +301,8 @@ func build(project: Project*, release: bool, extra: str[]) -> i32!:
         arguments = try append(arguments, "--release")
     let combined = try concat(arguments, extra)
     defer release_string_array(combined)
-    let status = try spawn(try project.compiler(), combined)
+    var label: u8[160]
+    let status = try progress.run(try format(label, f"compiling {project.name}"), try project.compiler(), combined)
     if status != 0 or not try project_file.exists_in(project.root): return status
     # A declared application is also wrapped as Name.app / Name.AppDir beside the executable.
     var definition = try project_file.read(project.root)
@@ -437,7 +439,9 @@ func install_command(own: str[]) -> i32!:
     if files.exists((c.str)work_z): try files.remove_tree((c.str)work_z)
     defer discard(files.remove_tree((c.str)work_z) catch: recover ())
     var version_buffer: u8[64]
+    try progress.step(f"fetching {coordinate}")
     let version = try packages.download(owner, name, requirement, work, version_buffer)
+    try progress.detail(f"version {version}")
 
     let installed = try apps.child(home, "apps")
     defer strings.release(installed)
@@ -456,6 +460,7 @@ func install_command(own: str[]) -> i32!:
     if definition.is_package(): error(usage_error, "that is a package, a library to build on; use 'luc add' inside a project")
     var project = try load_project(directory_hint = work, registry = true)
     defer project.close()
+    try progress.step(f"building {coordinate} {version} from source")
     var no_extra: str[]
     let status = try build(&project, true, no_extra)
     if status != 0: error(usage_error, "the application did not build")
@@ -464,10 +469,12 @@ func install_command(own: str[]) -> i32!:
     var bundle_buffer: u8[96]
     let bundled = try apps.bundle_name(&definition, bundle_buffer) if definition.is_bundled() else ""
     var plan = try format(plan_buffer, f"copy build/{project.name} -> bin/{name}\nlink {name} -> bin/{name}\n")
-    if bundled.length > 0 and os.macos:
-        plan = try format(plan_buffer, f"copy build/{bundled} -> {bundled}\nlink {name} -> {bundled}/Contents/MacOS/{project.name}\n")
-    elif bundled.length > 0:
-        plan = try format(plan_buffer, f"copy build/{bundled} -> {bundled}\nlink {name} -> {bundled}/AppRun\n")
+    if bundled.length > 0 and definition.install.length == 0:
+        let built_build = try paths.join(work, "build")
+        defer strings.release(built_build)
+        let built = try paths.join(built_build, bundled)
+        defer strings.release(built)
+        return try install_application(&definition, built, application, placed, home, name, coordinate, version)
     var scripted = ""
     defer if_release(scripted)
     if definition.install.length > 0:
@@ -510,21 +517,56 @@ func install_command(own: str[]) -> i32!:
         discard(files.remove_file((c.str)link_z) catch: recover ())
         try files.create_symlink((c.str)target_z, (c.str)link_z)
         try io.stdout().write(f"  {command} -> {target}\n")
-    # An application also goes where the desktop looks for applications. What was created
-    # there is recorded beside the install so uninstall removes exactly that.
-    if bundled.length > 0:
-        let placed_bundle = try paths.join(placed, bundled)
-        defer strings.release(placed_bundle)
-        let exposed = try apps.expose(&definition, placed_bundle)
-        defer strings.release(exposed)
-        if exposed.length > 0:
-            let note = try paths.join(placed, ".luc-exposed")
-            defer strings.release(note)
-            let note_z = try strings.copy(note)
-            defer strings.release(note_z)
-            try files.write((c.str)note_z, exposed.bytes)
-            try io.stdout().write(f"  {exposed}\n")
-    try io.stdout().write(f"installed {coordinate} {version}; add {commands} to PATH if it is not there\n")
+    try io.stdout().write(f"installed {coordinate} {version}\n")
+    return 0
+
+## Install a desktop application: the bundle goes where the system keeps applications
+## (apps.place), ~/.luce/apps/<name>/<version>/ records what was created, and
+## ~/.luce/bin/<name> starts it from a terminal.
+func install_application(definition: pkg.Definition*, built: str, application: str, placed: str, home: str, name: str, coordinate: str, version: str) -> i32!:
+    try progress.step(f"installing {definition.application.name}")
+    var record: u8[4096]
+    var used: usize
+    let executable = try apps.place(definition, built, record, &used)
+    defer strings.release(executable)
+    let staging = try paths.join(application, ".staging")
+    defer strings.release(staging)
+    let staging_z = try strings.copy(staging)
+    defer strings.release(staging_z)
+    if files.exists((c.str)staging_z): try files.remove_tree((c.str)staging_z)
+    try files.create_directory((c.str)staging_z)
+    errdefer discard(files.remove_tree((c.str)staging_z) catch: recover ())
+    let placed_note = try paths.join(staging, ".luc-placed")
+    defer strings.release(placed_note)
+    let placed_note_z = try strings.copy(placed_note)
+    defer strings.release(placed_note_z)
+    try files.write((c.str)placed_note_z, record[..<used])
+    var link_line: u8[1200]
+    let links_note = try paths.join(staging, ".luc-links")
+    defer strings.release(links_note)
+    let links_note_z = try strings.copy(links_note)
+    defer strings.release(links_note_z)
+    try files.write((c.str)links_note_z, (try format(link_line, f"{name}\t{executable}\n")).bytes)
+    let placed_z = try strings.copy(placed)
+    defer strings.release(placed_z)
+    try files.rename((c.str)staging_z, (c.str)placed_z, replace = false)
+    let commands = try apps.child(home, "bin")
+    defer strings.release(commands)
+    let link = try paths.join(commands, name)
+    defer strings.release(link)
+    let link_z = try strings.copy(link)
+    defer strings.release(link_z)
+    let executable_z = try strings.copy(executable)
+    defer strings.release(executable_z)
+    discard(files.remove_file((c.str)link_z) catch: recover ())
+    try files.create_symlink((c.str)executable_z, (c.str)link_z)
+    var start: usize
+    for end in 0..<used:
+        if record[end] != '\n': continue
+        try progress.detail(f"{(str)record[start..<end]}")
+        start = end + 1
+    try progress.detail(f"{name} -> {executable}")
+    try io.stdout().write(f"installed {coordinate} {version}: open {definition.application.name} from your applications, or run {name}\n")
     return 0
 
 ## ~/.luce/session.vault, where `luc login` saves the session unless told otherwise.
@@ -616,23 +658,51 @@ func uninstall_command(own: str[]) -> i32!:
         let target = files.read_symlink((c.str)link_z) catch: continue
         if strings.starts_with(target, application) and target.length > application.length and target.bytes[application.length] == '/':
             try files.remove_file((c.str)link_z)
-    # Remove what each installed version placed where the desktop looks for applications.
+    # Remove what each installed version placed outside ~/.luce and the commands it linked.
     let versions = try files.list((c.str)application_z)
     defer files.release_list(versions)
     for version in versions:
         let inner = try paths.join(application, version)
         defer strings.release(inner)
-        let note = try paths.join(inner, ".luc-exposed")
-        defer strings.release(note)
-        let note_z = try strings.copy(note)
-        defer strings.release(note_z)
-        if not files.exists((c.str)note_z): continue
-        let recorded = try files.read_limit((c.str)note_z, 4096)
-        defer free(recorded) in memory.heap
-        try apps.unexpose(strings.trim((str)recorded))
+        try remove_recorded(inner, commands)
     try files.remove_tree((c.str)application_z)
     try io.stdout().write(f"uninstalled {name}\n")
     return 0
+
+## Undo an application install recorded in `inner`: every path in .luc-placed, and each
+## command in .luc-links that is still a link.
+func remove_recorded(inner: str, commands: str) -> !:
+    let placed_note = try paths.join(inner, ".luc-placed")
+    defer strings.release(placed_note)
+    let placed_z = try strings.copy(placed_note)
+    defer strings.release(placed_z)
+    if not files.exists((c.str)placed_z): return
+    let recorded = try files.read_limit((c.str)placed_z, 4096)
+    defer free(recorded) in memory.heap
+    var start: usize
+    for end in 0..<recorded.length:
+        if recorded[end] != '\n': continue
+        try apps.unplace((str)recorded[start..<end])
+        start = end + 1
+    let links_note = try paths.join(inner, ".luc-links")
+    defer strings.release(links_note)
+    let links_z = try strings.copy(links_note)
+    defer strings.release(links_z)
+    if not files.exists((c.str)links_z): return
+    let links = try files.read_limit((c.str)links_z, 16384)
+    defer free(links) in memory.heap
+    start = 0
+    for end in 0..<links.length:
+        if links[end] != '\n': continue
+        let (command, target) = strings.split_once((str)links[start..<end], "\t") else (strings.trim((str)links[start..<end]), "")
+        discard(target)
+        start = end + 1
+        let link = try paths.join(commands, command)
+        defer strings.release(link)
+        let link_z = try strings.copy(link)
+        defer strings.release(link_z)
+        discard(files.read_symlink((c.str)link_z) catch: continue)
+        try files.remove_file((c.str)link_z)
 
 ## `luc list`: installed applications and their versions.
 func list_command() -> i32!:

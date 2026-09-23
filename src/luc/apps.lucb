@@ -35,7 +35,8 @@ pub func home() -> str!:
     if let chosen = os.env((c.str)"LUC_HOME"):
         try ensure_directory(chosen)
         return try strings.copy(chosen)
-    let user = os.env((c.str)"HOME") else error(invalid, "HOME is not set; set LUC_HOME")
+    let user = try user_home()
+    defer strings.release(user)
     let directory = try paths.join(user, ".luce")
     errdefer strings.release(directory)
     try ensure_directory(directory)
@@ -203,21 +204,22 @@ func fresh_directory(path: str) -> !:
     try files.create_directory((c.str)terminated)
 
 ## The bundle directory name inside build/: "Name.app" on macOS, "Name.AppDir" on Linux,
-## empty where luc makes no bundle.
+## and on Windows the program folder "Name" that holds name.exe.
 pub func bundle_name(definition: pkg.Definition*, output: u8[]) -> str!:
     if os.macos: return try format(output, f"{definition.application.name}.app")
     if os.linux: return try format(output, f"{definition.application.name}.AppDir")
-    return ""
+    return try format(output, f"{definition.application.name}")
 
 ## Wrap the built executable build/<name> as a desktop application, so it opens as an
-## application rather than in a terminal. Returns without doing anything on other systems.
+## application rather than in a terminal.
 pub func bundle(root: str, definition: pkg.Definition*) -> !:
     var name_buffer: u8[96]
     let directory_name = try bundle_name(definition, name_buffer)
-    if directory_name.length == 0: return
     let build = try paths.join(root, "build")
     defer strings.release(build)
-    let executable = try paths.join(build, definition.name)
+    var executable_name: u8[128]
+    let built_name = try format(executable_name, f"{definition.name}.exe") if os.windows else definition.name
+    let executable = try paths.join(build, built_name)
     defer strings.release(executable)
     let bundle_root = try paths.join(build, directory_name)
     defer strings.release(bundle_root)
@@ -242,6 +244,11 @@ pub func bundle(root: str, definition: pkg.Definition*) -> !:
         let icon_entry = try format(text[4096..], f"    <key>CFBundleIconFile</key>\n    <string>{icon_name}</string>\n") if icon_name.length > 0 else ""
         try write_text(plist, try format(text[..<4096], f"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n    <key>CFBundleName</key>\n    <string>{definition.application.name}</string>\n    <key>CFBundleDisplayName</key>\n    <string>{definition.application.name}</string>\n    <key>CFBundleIdentifier</key>\n    <string>{definition.application.identifier}</string>\n    <key>CFBundleExecutable</key>\n    <string>{definition.name}</string>\n    <key>CFBundleVersion</key>\n    <string>{definition.version}</string>\n    <key>CFBundleShortVersionString</key>\n    <string>{definition.version}</string>\n    <key>CFBundlePackageType</key>\n    <string>APPL</string>\n    <key>CFBundleInfoDictionaryVersion</key>\n    <string>6.0</string>\n{icon_entry}    <key>NSHighResolutionCapable</key>\n    <true/>\n    <key>NSPrincipalClass</key>\n    <string>NSApplication</string>\n</dict>\n</plist>\n"))
         return
+    if os.windows:
+        # the program folder: the executable and its icon, as a Start Menu shortcut expects
+        try copy_into(executable, bundle_root, built_name, 0o755)
+        if icon_name.length > 0: try copy_into(icon_source, bundle_root, icon_name, 0o644)
+        return
     # Linux AppDir: AppRun is the executable, with a desktop entry and the icon beside it.
     try copy_into(executable, bundle_root, "AppRun", 0o755)
     if icon_name.length > 0: try copy_into(icon_source, bundle_root, icon_name, 0o644)
@@ -253,60 +260,193 @@ pub func bundle(root: str, definition: pkg.Definition*) -> !:
         if icon_name.bytes[i] == '.': stem = (str)icon_name.bytes[..<i]
     try write_text(desktop, try format(text[..<4096], f"[Desktop Entry]\nType=Application\nName={definition.application.name}\nExec=AppRun\nIcon={stem}\nTerminal=false\nX-Luce-Identifier={definition.application.identifier}\nX-Luce-Version={definition.version}\n"))
 
-# mark: Where the system looks for applications ===============================================
+# mark: Where applications are installed ======================================================
 
-## The directory the desktop finds applications in: ~/Applications on macOS and
-## ~/.local/share/applications on Linux. LUC_APPLICATIONS overrides it. Empty elsewhere.
+extern func access(path: c.str, mode: i32) -> i32
+
+func writable(path: str) -> bool!:
+    let terminated = try strings.copy(path)
+    defer strings.release(terminated)
+    return files.exists((c.str)terminated) and access((c.str)terminated, 2) == 0
+
+func environment_or(name: c.str, fallback: str) -> str!:
+    if let chosen = os.env(name):
+        if chosen.length > 0: return try strings.copy(chosen)
+    return try strings.copy(fallback)
+
+## The user's home: HOME, or on Windows USERPROFILE where no HOME is set.
+func user_home() -> str!:
+    if let user = os.env((c.str)"HOME"): return try strings.copy(user)
+    if os.windows:
+        if let profile = os.env((c.str)"USERPROFILE"): return try strings.copy(profile)
+    error(invalid, "HOME is not set; set LUC_HOME")
+
+## Where installed applications live: /Applications on macOS (~/Applications when the
+## user may not write there), the XDG data directory on Linux (~/.local/share), and
+## %LOCALAPPDATA%\Programs on Windows. LUC_APPLICATIONS overrides it.
 pub func shelf() -> str!:
     if let chosen = os.env((c.str)"LUC_APPLICATIONS"):
         try ensure_directory(chosen)
         return try strings.copy(chosen)
-    let user = os.env((c.str)"HOME") else return try strings.copy("")
-    if os.macos: return try child(user, "Applications")
-    if not os.linux: return try strings.copy("")
+    let user = try user_home()
+    defer strings.release(user)
+    if os.macos:
+        if try writable("/Applications"): return try strings.copy("/Applications")
+        return try child(user, "Applications")
+    if os.windows:
+        let fallback = try paths.join(user, "AppData/Local")
+        defer strings.release(fallback)
+        let data = try environment_or((c.str)"LOCALAPPDATA", fallback)
+        defer strings.release(data)
+        return try child(data, "Programs")
     let dot_local = try child(user, ".local")
     defer strings.release(dot_local)
     let share = try child(dot_local, "share")
     defer strings.release(share)
-    return try child(share, "applications")
+    let data = try environment_or((c.str)"XDG_DATA_HOME", share)
+    defer strings.release(data)
+    try ensure_directory(data)
+    return data
 
-## Put an installed application where the desktop finds it and return what was created,
-## for uninstall to remove. macOS gets a real copy of Name.app, which Spotlight and
-## Launchpad index; Linux gets a desktop entry that points at the installed AppDir.
-pub func expose(definition: pkg.Definition*, placed_bundle: str) -> str!:
+## Where the desktop's launcher looks: the shelf itself on macOS, its `applications`
+## directory on Linux, the Start Menu's Programs on Windows (LUC_START_MENU overrides).
+func launcher() -> str!:
+    let directory = try shelf()
+    if os.macos: return directory
+    defer strings.release(directory)
+    if os.linux: return try child(directory, "applications")
+    if let chosen = os.env((c.str)"LUC_START_MENU"):
+        try ensure_directory(chosen)
+        return try strings.copy(chosen)
+    let user = try user_home()
+    defer strings.release(user)
+    let roaming = try paths.join(user, "AppData/Roaming")
+    defer strings.release(roaming)
+    let data = try environment_or((c.str)"APPDATA", roaming)
+    defer strings.release(data)
+    return try paths.join(data, "Microsoft/Windows/Start Menu/Programs")
+
+## Append `path` and a newline to a record of what an install created.
+func note(record: u8[], used: usize*, path: str) -> !:
+    if *used + path.length + 1 > record.length: error(invalid, "an install records too many paths")
+    for byte in path.bytes:
+        record[*used] = byte
+        *used += 1
+    record[*used] = '\n'
+    *used += 1
+
+## A Windows shortcut through the shell's own COM object, as installers make them.
+func shortcut(link: str, target: str, directory: str) -> !:
+    var script: u8[4096]
+    let command = try format(script, f"$s = (New-Object -ComObject WScript.Shell).CreateShortcut('{link}'); $s.TargetPath = '{target}'; $s.WorkingDirectory = '{directory}'; $s.Save()")
+    let text = try strings.copy(command)
+    defer strings.release(text)
+    let arguments: c.str[4] = ["-NoProfile", "-NonInteractive", "-Command", (c.str)text]
+    let (status, out, err) = try process.run("powershell", arguments)
+    process.release(out)
+    process.release(err)
+    if status != 0: error(invalid, "could not create the Start Menu shortcut")
+
+## Install the bundle luc built (`built`) where the system keeps applications and make the
+## desktop find it. Returns the executable to link commands to; every path created is
+## noted in `record` for uninstall. macOS: Name.app in the shelf, which Launchpad and
+## Spotlight index. Linux: the AppDir in luce/apps under the data directory and a desktop
+## entry.
+## Windows: the program folder under Programs and a Start Menu shortcut.
+pub func place(definition: pkg.Definition*, built: str, record: u8[], used: usize*) -> str!:
     let directory = try shelf()
     defer strings.release(directory)
-    if directory.length == 0: return try strings.copy("")
+    var budget: usize = 20000
+    var name: u8[128]
     if os.macos:
-        var name: u8[96]
         let target = try paths.join(directory, try format(name, f"{definition.application.name}.app"))
-        errdefer strings.release(target)
-        let target_z = try strings.copy(target)
-        defer strings.release(target_z)
-        if files.exists((c.str)target_z): try files.remove_tree((c.str)target_z)
-        var budget: usize = 20000
-        try copy_tree(placed_bundle, target, &budget)
-        return target
-    var name: u8[96]
-    let target = try paths.join(directory, try format(name, f"{definition.name}.desktop"))
-    errdefer strings.release(target)
-    var icon = ""
-    if definition.application.icon.length > 0: icon = paths.base(definition.application.icon)
-    let text = try alloc u8[4096] in memory.heap
-    defer free(text) in memory.heap
-    try write_text(target, try format(text, f"[Desktop Entry]\nType=Application\nName={definition.application.name}\nExec=\"{placed_bundle}/AppRun\"\nIcon={placed_bundle}/{icon}\nTerminal=false\nX-Luce-Identifier={definition.application.identifier}\nX-Luce-Version={definition.version}\n"))
-    return target
+        defer strings.release(target)
+        try refuse_foreign(target, definition.application.identifier)
+        try replace_tree(built, target, &budget)
+        try note(record, used, target)
+        var inner: u8[256]
+        return try paths.join(target, try format(inner, f"Contents/MacOS/{definition.name}"))
+    if os.linux:
+        let store = try linux_store()
+        defer strings.release(store)
+        let target = try paths.join(store, paths.base(built))
+        defer strings.release(target)
+        try replace_tree(built, target, &budget)
+        try note(record, used, target)
+        let entries = try launcher()
+        defer strings.release(entries)
+        let entry = try paths.join(entries, try format(name, f"{definition.name}.desktop"))
+        defer strings.release(entry)
+        var icon = ""
+        if definition.application.icon.length > 0: icon = paths.base(definition.application.icon)
+        let text = try alloc u8[4096] in memory.heap
+        defer free(text) in memory.heap
+        try write_text(entry, try format(text, f"[Desktop Entry]\nType=Application\nName={definition.application.name}\nExec=\"{target}/AppRun\"\nIcon={target}/{icon}\nTerminal=false\nX-Luce-Identifier={definition.application.identifier}\nX-Luce-Version={definition.version}\n"))
+        try note(record, used, entry)
+        return try paths.join(target, "AppRun")
+    let target = try paths.join(directory, definition.application.name)
+    defer strings.release(target)
+    try replace_tree(built, target, &budget)
+    try note(record, used, target)
+    var executable_name: u8[128]
+    let executable = try paths.join(target, try format(executable_name, f"{definition.name}.exe"))
+    errdefer strings.release(executable)
+    let menu = try launcher()
+    defer strings.release(menu)
+    try ensure_directory(menu)
+    let link = try paths.join(menu, try format(name, f"{definition.application.name}.lnk"))
+    defer strings.release(link)
+    try shortcut(link, executable, target)
+    try note(record, used, link)
+    return executable
 
-## Remove something expose() created. Only entries directly inside the shelf are touched.
-pub func unexpose(path: str) -> !:
+## luc's own directory for Linux AppDirs, inside the data directory, so an application's
+## files never share a directory with the data it keeps there itself.
+func linux_store() -> str!:
     let directory = try shelf()
     defer strings.release(directory)
-    if directory.length == 0 or path.length <= directory.length + 1 or not strings.starts_with(path, directory) or path.bytes[directory.length] != '/': return
-    for byte in path.bytes[directory.length + 1..]:
-        if byte == '/': return
+    let luce = try child(directory, "luce")
+    defer strings.release(luce)
+    return try child(luce, "apps")
+
+## An application of the same name that luc did not install (another identifier) stays.
+func refuse_foreign(target: str, identifier: str) -> !:
+    let plist = try paths.join(target, "Contents/Info.plist")
+    defer strings.release(plist)
+    let terminated = try strings.copy(plist)
+    defer strings.release(terminated)
+    if not files.exists((c.str)terminated): return
+    let text = try files.read_limit((c.str)terminated, 65536)
+    defer free(text) in memory.heap
+    var wanted: u8[320]
+    if not strings.contains((str)text, try format(wanted, f"<string>{identifier}</string>")):
+        error(invalid, "another application of that name is installed there; luc will not replace it")
+
+func replace_tree(source: str, target: str, budget: usize*) -> !:
+    let terminated = try strings.copy(target)
+    defer strings.release(terminated)
+    if files.exists((c.str)terminated): try files.remove_tree((c.str)terminated)
+    try copy_tree(source, target, budget)
+
+## Remove something place() created. Only an entry directly inside the shelf or the
+## launcher directory is touched, whatever the record says.
+pub func unplace(path: str) -> !:
+    let directory = try linux_store() if os.linux else try shelf()
+    defer strings.release(directory)
+    let entries = try launcher()
+    defer strings.release(entries)
+    if not directly_inside(path, directory) and not directly_inside(path, entries): return
     let terminated = try strings.copy(path)
     defer strings.release(terminated)
     if not files.exists((c.str)terminated): return
     let info = try files.metadata((c.str)terminated, follow_symlinks = false)
     if info.kind == files.FileKind.directory: try files.remove_tree((c.str)terminated)
     else: try files.remove_file((c.str)terminated)
+
+func directly_inside(path: str, directory: str) -> bool:
+    if directory.length == 0 or path.length <= directory.length + 1 or not strings.starts_with(path, directory): return false
+    let separator = path.bytes[directory.length]
+    if separator != '/' and separator != '\\': return false
+    for byte in path.bytes[directory.length + 1..]:
+        if byte == '/' or byte == '\\': return false
+    return true

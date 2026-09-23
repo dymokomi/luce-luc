@@ -9,7 +9,7 @@ base=${LUCE_BASE_COMPILER:-../luce-base/build/luce-base}
 case "$base" in /*) ;; *) base=$PWD/$base ;; esac   # absolute, so LUCE_BASE survives the cd into a scaffolded project
 LUCE_BASE_COMPILER="$base" ./build.sh > /dev/null
 luc="$PWD/build/luc"
-[ "$("$luc" --version)" = "luc 0.17.2" ] || { echo "FAIL: version"; exit 1; }
+[ "$("$luc" --version)" = "luc 0.18.0" ] || { echo "FAIL: version"; exit 1; }
 # update/upgrade name the official installers (dry-run so nothing is installed)
 [ "$("$luc" update --dry-run | head -1)" = "curl -fsSL https://luce-base.luciaos.com/install.sh | sh" ] || { echo "FAIL: update --dry-run"; exit 1; }
 [ "$("$luc" upgrade --dry-run | tail -1)" = "curl -fsSL https://luce.luciaos.com/install.sh | sh" ] || { echo "FAIL: upgrade alias"; exit 1; }

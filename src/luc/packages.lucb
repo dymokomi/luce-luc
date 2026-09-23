@@ -15,8 +15,10 @@ import strings
 import pkg
 import prism
 import luc.checkout as checkout
+import luc.progress as progress
 import luc.project_file as project_file
 import luc.registry_http as registry_http
+import time
 
 pub let invalid = pkg.invalid
 pub let lock_name = "luc.lock"
@@ -311,7 +313,9 @@ func verified_pack(item: Locked, offline: bool, output: u8[]) -> usize!:
     elif offline:
         error(invalid, "a locked package is not in the cache; run 'luc sync' online once")
     var target: u8[256]
+    let started = time.now()
     let size = try fetch(try format(target, f"/{item.owner}/{item.name}/{item.version}.pack"), output)
+    try progress.detail(f"downloaded {item.owner}/{item.name} {item.version} ({(size + 1023) // 1024} KB, {progress.seconds_since(started)}s)")
     if not try digest_matches(output[..<size], item.sha256):
         error(invalid, "a downloaded package does not match the SHA-256 in luc.lock")
     try files.write_atomic((c.str)terminated, output[..<size])
@@ -363,7 +367,9 @@ pub func prepare(root: str, registry: bool = false) -> !:
     defer strings.release(path)
     let terminated = try strings.copy(path)
     defer strings.release(terminated)
-    if not files.exists((c.str)terminated): discard(try lock(root, registry))
+    if not files.exists((c.str)terminated):
+        try progress.step(f"resolving dependency versions")
+        discard(try lock(root, registry))
     discard(try sync(root))
 
 ## `luc sync`: make .luc/deps match luc.lock exactly, from the cache or the registry.
@@ -378,6 +384,7 @@ pub func sync(root: str, offline: bool = false) -> usize!:
     try ensure_directory(parent)
     let bytes = try alloc u8[max_pack] in memory.heap
     defer free(bytes) in memory.heap
+    var announced = false
     for index in 0..<graph.count:
         let item = graph.packages[index]
         let destination = try project_file.dependency_directory(root, item.name)
@@ -388,6 +395,9 @@ pub func sync(root: str, offline: bool = false) -> usize!:
         let marker_z = try strings.copy(marker)
         defer strings.release(marker_z)
         if files.exists((c.str)marker_z): continue
+        if not announced:
+            try progress.step(f"fetching {graph.count} dependencies")
+            announced = true
         let size = try verified_pack(item, offline, bytes)
         var pack = try git.decode_pack(bytes[..<size])
         defer pack.close()

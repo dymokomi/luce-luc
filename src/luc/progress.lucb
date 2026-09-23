@@ -1,0 +1,57 @@
+## What luc says while it works: a line for each step, and while a long child process runs,
+## a line that keeps time, so a slow download or build never looks like a hang.
+import c
+import io
+import process
+import thread
+import time
+
+extern func isatty(descriptor: i32) -> i32
+
+## Whether standard error is a terminal, where a line can be rewritten in place.
+func live() -> bool:
+    return isatty(2) != 0
+
+## One step of a longer command: `==> text`.
+pub func step(text: fmt) -> !:
+    try io.stderr().write(f"==> {text}\n")
+
+## A detail under the current step.
+pub func detail(text: fmt) -> !:
+    try io.stderr().write(f"    {text}\n")
+
+## Seconds since `started`, a time.now() reading.
+pub func seconds_since(started: u64) -> u64:
+    return (time.now() - started) // 1000000000
+
+## Run `program` and keep time until it ends: on a terminal a `label... 42s` line rewritten
+## each second, elsewhere a line every thirty seconds. What the child printed follows once
+## it has finished, then its exit status is returned.
+pub func run(label: str, program: str, arguments: const str[]) -> i32!:
+    let started = time.now()
+    var command = try process.Command(program, arguments, output_limit = 16777216)
+    var shown: u64 = 0
+    var first = true
+    let terminal = live()
+    while not command.is_finished():
+        thread.sleep(100)
+        let elapsed = seconds_since(started)
+        if elapsed == shown and not first: continue
+        shown = elapsed
+        first = false
+        if terminal:
+            try io.stderr().write(f"\r    {label}... {elapsed}s ")
+        elif elapsed > 0 and elapsed % 30 == 0:
+            try io.stderr().write(f"    {label}... {elapsed}s\n")
+    let status = command.exit_code() else -1
+    let output = try command.output()
+    defer output.release()
+    let failure = try command.error_message()
+    defer failure.release()
+    command.close()
+    if terminal: try io.stderr().write(b"\r\x1b[K")
+    if output.value.length > 0: try io.stdout().write(output.value)
+    if failure.value.length > 0: try io.stderr().write(failure.value)
+    let total = seconds_since(started)
+    if status == 0: try io.stderr().write(f"    {label}: done in {total}s\n")
+    return (i32)status
