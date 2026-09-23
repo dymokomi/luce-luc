@@ -11,7 +11,7 @@ LUCE_BASE_COMPILER="$base" ./build.sh > /dev/null
 luc="$PWD/build/luc"
 [ "$("$luc" --version)" = "luc 0.18.0" ] || { echo "FAIL: version"; exit 1; }
 # update/upgrade name the official installers (dry-run so nothing is installed)
-[ "$("$luc" update --dry-run | head -1)" = "curl -fsSL https://luce-base.luciaos.com/install.sh | sh" ] || { echo "FAIL: update --dry-run"; exit 1; }
+[ "$("$luc" update --dry-run)" = "curl -fsSL https://luce.luciaos.com/install.sh | sh" ] || { echo "FAIL: update --dry-run"; exit 1; }
 [ "$("$luc" upgrade --dry-run | tail -1)" = "curl -fsSL https://luce.luciaos.com/install.sh | sh" ] || { echo "FAIL: upgrade alias"; exit 1; }
 export LUCE_BASE="$base"
 # scaffolding: a new app builds and runs; a new package checks

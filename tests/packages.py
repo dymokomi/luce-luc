@@ -141,6 +141,17 @@ def applications(site, work, root, online):
         placed_paths = [appdir, exposed]
     assert (placed / '.luc-placed').read_text().splitlines() == [str(path) for path in placed_paths]
     assert subprocess.check_output([str(home / 'bin/desk-clock')], text=True).strip() == 'desk-clock 3.0.0 runs'
+    # update brings the newest release and replaces the installed application
+    desk = ('    def application "bundle" {\n        str name = "Desk Clock"\n        str identifier = "com.example.desk-clock"\n'
+            '        str icon = "assets/clock.icns"\n    }\n')
+    assert 'is the newest' in luc_run('update', 'acme/desk-clock')
+    release_app(site, work, 'desk-clock', '3.0.1', {'assets/clock.icns': 'icon-bytes'}, application=desk)
+    assert 'installed acme/desk-clock 3.0.1' in luc_run('update', 'acme/desk-clock')
+    assert subprocess.check_output([str(home / 'bin/desk-clock')], text=True).strip() == 'desk-clock 3.0.1 runs'
+    assert sorted(path.name for path in (home / 'apps/desk-clock').iterdir()) == ['3.0.1']
+    placed = home / 'apps/desk-clock/3.0.1'
+    assert (placed / '.luc-placed').read_text().splitlines() == [str(path) for path in placed_paths]
+    assert all(path.exists() for path in placed_paths)
     (shelf / 'Unrelated.app').mkdir()
     assert 'uninstalled desk-clock' in luc_run('uninstall', 'desk-clock')
     assert not any(path.exists() for path in placed_paths) and (shelf / 'Unrelated.app').is_dir(), 'uninstall removes exactly what install placed'

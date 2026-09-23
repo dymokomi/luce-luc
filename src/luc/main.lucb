@@ -424,7 +424,7 @@ func list_tasks(project: Project*) -> !:
 # mark: Applications ===========================================================================
 
 ## `luc install <owner>/<name>[@<version>]`: fetch, build and install an application.
-func install_command(own: str[]) -> i32!:
+func install_command(own: str[], updating: bool = false) -> i32!:
     if own.length != 1: error(usage_error, "usage: luc install <owner>/<name>[@<version>]")
     let (coordinate, requirement) = strings.split_once(own[0], "@") else (own[0], "")
     let (owner, name) = strings.split_once(coordinate, "/") else error(usage_error, "usage: luc install <owner>/<name>[@<version>]")
@@ -452,7 +452,10 @@ func install_command(own: str[]) -> i32!:
     let placed_z = try strings.copy(placed)
     defer strings.release(placed_z)
     if files.exists((c.str)placed_z):
-        try io.stdout().write(f"{coordinate} {version} is already installed\n")
+        if updating:
+            try io.stdout().write(f"{coordinate} {version} is the newest; it is installed\n")
+        else:
+            try io.stdout().write(f"{coordinate} {version} is already installed\n")
         return 0
 
     var definition = try project_file.read(work)
@@ -474,7 +477,9 @@ func install_command(own: str[]) -> i32!:
         defer strings.release(built_build)
         let built = try paths.join(built_build, bundled)
         defer strings.release(built)
-        return try install_application(&definition, built, application, placed, home, name, coordinate, version)
+        let status_code = try install_application(&definition, built, application, placed, home, name, coordinate, version)
+        try remove_other_versions(application, version)
+        return status_code
     var scripted = ""
     defer if_release(scripted)
     if definition.install.length > 0:
@@ -517,8 +522,26 @@ func install_command(own: str[]) -> i32!:
         discard(files.remove_file((c.str)link_z) catch: recover ())
         try files.create_symlink((c.str)target_z, (c.str)link_z)
         try io.stdout().write(f"  {command} -> {target}\n")
+    try remove_other_versions(application, version)
     try io.stdout().write(f"installed {coordinate} {version}\n")
     return 0
+
+## Once a version is installed it replaces the others: their records go, and with them
+## what they copied under ~/.luce. What they placed for the desktop the new version has
+## replaced already, so it stays.
+func remove_other_versions(application: str, kept: str) -> !:
+    let application_z = try strings.copy(application)
+    defer strings.release(application_z)
+    let versions = try files.list((c.str)application_z)
+    defer files.release_list(versions)
+    for version in versions:
+        if version == kept or strings.starts_with(version, "."): continue
+        let inner = try paths.join(application, version)
+        defer strings.release(inner)
+        let inner_z = try strings.copy(inner)
+        defer strings.release(inner_z)
+        try files.remove_tree((c.str)inner_z)
+        try progress.detail(f"removed version {version}")
 
 ## Install a desktop application: the bundle goes where the system keeps applications
 ## (apps.place), ~/.luce/apps/<name>/<version>/ records what was created, and
@@ -893,19 +916,22 @@ func toml_line(key: str, value: str) -> str!:
 ## `luc update` (alias `upgrade`) reinstalls the latest luc + luce-base + luce by re-running
 ## the official installers from luciaos.com. luc ships inside the luce-base release, so
 ## updating luce-base updates luc too. `--dry-run` prints the commands without running them.
+## `luc update`: the whole toolset (luce, luce-base and luc, one release archive) through
+## the Luce installer. `luc update owner/name`: that application or tool at its newest
+## version, replacing what is installed.
 func update_command(own: str[]) -> i32!:
-    let dry = has(own, "--dry-run")
-    var failed = false
-    for site in ["luce-base", "luce"]:
-        let command = try installer_command(site)
-        if dry:
-            try io.stdout().write(f"{command}\n")
-        else:
-            try io.stdout().write(f"==> updating {site} from https://{site}.luciaos.com\n")
-            if try run_shell(command) != 0:
-                try io.stderr().write(f"luc: updating {site} did not complete\n")
-                failed = true
-    return 1 if failed else 0
+    for word in own:
+        if not strings.starts_with(word, "--"):
+            return try install_command(own, updating = true)
+    let command = try installer_command("luce")
+    if has(own, "--dry-run"):
+        try io.stdout().write(f"{command}\n")
+        return 0
+    try progress.step(f"updating luce, luce-base and luc from https://luce.luciaos.com")
+    if try run_shell(command) != 0:
+        try io.stderr().write("luc: the update did not complete\n")
+        return 1
+    return 0
 
 ## The one-line installer pipeline for a site: curl|sh on POSIX, irm|iex on Windows.
 func installer_command(site: str) -> str!:

@@ -72,6 +72,7 @@ account.
 | Command | Does |
 | --- | --- |
 | `luc install owner/name[@version]` | downloads, builds and installs a tool or application |
+| `luc update owner/name` | brings an installed tool or application to its newest version, replacing the installed one |
 | `luc list` | shows what is installed |
 | `luc uninstall name` | removes it, including whatever was placed for the desktop |
 
@@ -104,7 +105,8 @@ extra `copy` and `link` steps; the format is in the package.prisma document abov
 | `LUC_CACHE` | the download cache (default `~/.luce/cache`) |
 | `LUC_REGISTRY` | another registry, for testing (default `https://pkg.luciaos.com`) |
 
-`luc update` reinstalls the latest `luce`, `luce-base` and `luc` from luciaos.com.
+`luc update` reinstalls the latest `luce`, `luce-base` and `luc` together, through the
+installer at luce.luciaos.com; installed applications stay.
 
 ## License
 
