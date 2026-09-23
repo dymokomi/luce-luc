@@ -7,8 +7,8 @@
 set -eu
 cd "$(dirname "$0")"
 mkdir -p build
-for dependency in PKG CRYPTO GIT HTTP_CLIENT TLS COMPRESS PRISM; do
-    case "$dependency" in PKG) repo=luce-pkg ;; CRYPTO) repo=luce-crypto ;; GIT) repo=luce-git ;; HTTP_CLIENT) repo=luce-http-client ;; TLS) repo=luce-tls ;; COMPRESS) repo=luce-compress ;; PRISM) repo=luce-prism ;; esac
+for dependency in STD PKG CRYPTO GIT HTTP_CLIENT TLS COMPRESS PRISM; do
+    case "$dependency" in STD) repo=luce-std ;; PKG) repo=luce-pkg ;; CRYPTO) repo=luce-crypto ;; GIT) repo=luce-git ;; HTTP_CLIENT) repo=luce-http-client ;; TLS) repo=luce-tls ;; COMPRESS) repo=luce-compress ;; PRISM) repo=luce-prism ;; esac
     expected=$(cat "bootstrap/$dependency")
     actual=$(git -C "../$repo" rev-parse HEAD 2>/dev/null || true)
     if [ "$actual" != "$expected" ]; then
@@ -34,6 +34,11 @@ else
         git init -q build/luce-base
         git --git-dir=build/luce-base/.git fetch -q --depth 1 "$source" "$revision"
         git -C build/luce-base checkout -q --detach FETCH_HEAD
+        # Base's own package depends on luce-std beside it, at the commit Base pins
+        rm -rf build/luce-std
+        git init -q build/luce-std
+        git --git-dir=build/luce-std/.git fetch -q --depth 1 "${LUCE_STD_SOURCE:-https://github.com/dymokomi/luce-std.git}" "$(cat build/luce-base/bootstrap/STD)"
+        git -C build/luce-std checkout -q --detach FETCH_HEAD
         (cd build/luce-base && ./build.sh > /dev/null)
     fi
 fi
