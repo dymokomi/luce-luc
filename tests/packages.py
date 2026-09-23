@@ -219,6 +219,11 @@ def main():
         for leftover in ('.luc', 'build'): subprocess.run(['rm', '-rf', str(app / leftover)], check=True)
         assert 'synced 2' in run('sync', '--offline', env=offline)
         assert 'hello 0.1.1' in run('run', env=offline).splitlines()
+        # With nothing cached, the packs download together before they are unpacked in order.
+        subprocess.run(['rm', '-rf', str(app / '.luc'), str(cache)], check=True)
+        fetched = run('sync')
+        assert 'fetching 2 packages, 4 at a time' in fetched and 'synced 2' in fetched, fetched
+        assert (cache / 'acme/greeter/0.1.1.pack').exists() and (cache / 'acme/polite-kit').is_dir()
 
         # The lock's SHA-256 is the integrity check: a changed cache or download is refused.
         cached = cache / 'acme/greeter/0.1.1.pack'

@@ -18,6 +18,7 @@ import luc.checkout as checkout
 import luc.progress as progress
 import luc.project_file as project_file
 import luc.registry_http as registry_http
+import thread
 import time
 
 pub let invalid = pkg.invalid
@@ -372,10 +373,70 @@ pub func prepare(root: str, registry: bool = false) -> !:
         discard(try lock(root, registry))
     discard(try sync(root))
 
+# mark: Downloading in parallel ===============================================================
+
+## Packs download on this many threads at once, each with a pack buffer of its own.
+let download_threads: usize = 4
+
+## The packages a prefetch downloads, shared by its workers: each takes the next index.
+struct Prefetch:
+    var items: Locked[]
+    var next: @u64
+    var failures: @u64
+    var message: str
+
+## Download every pack of `items` the cache lacks, on several threads, so a fresh install
+## waits for its slowest download rather than the sum of them. The packs land in the cache,
+## where the ordered unpacking reads them; a failed download is reported there again.
+func prefetch(items: Locked[]) -> !:
+    var missing: usize
+    for item in items:
+        if not try in_cache(item): missing += 1
+    if missing < 2: return
+    try progress.step(f"fetching {missing} packages, {download_threads} at a time")
+    var shared = Prefetch(items = items, message = "")
+    var workers: thread.Handle[4]
+    var started: usize
+    while started < download_threads and started < missing:
+        workers[started] = thread.spawn(prefetch_worker, (void*)&shared, name = "luc fetch") catch failure:
+            break
+        started += 1
+    for index in 0..<started:
+        try workers[index].join()
+
+func prefetch_worker(raw: void*?):
+    let shared = (Prefetch*)(raw else return)
+    let bytes = alloc u8[max_pack] in memory.heap catch failure:
+        discard(shared.failures.add(1, .relaxed))
+        return
+    defer free(bytes) in memory.heap
+    while true:
+        let index = (usize)shared.next.add(1, .relaxed)
+        if index >= shared.items.length: return
+        let item = shared.items[index]
+        let present = in_cache(item) catch failure: recover false
+        if present: continue
+        discard(verified_pack(item, false, bytes) catch failure:
+            discard(shared.failures.add(1, .relaxed))
+            recover 0)
+
+## Whether the cache already holds this package's pack.
+func in_cache(item: Locked) -> bool!:
+    let directory = try cache_directory(item.owner, item.name)
+    defer strings.release(directory)
+    var name: u8[96]
+    let path = try paths.join(directory, try format(name, f"{item.version}.pack"))
+    defer strings.release(path)
+    let terminated = try strings.copy(path)
+    defer strings.release(terminated)
+    return files.exists((c.str)terminated)
+
 ## `luc sync`: make .luc/deps match luc.lock exactly, from the cache or the registry.
 pub func sync(root: str, offline: bool = false) -> usize!:
     var graph = try read_lock(root)
     defer graph.close()
+    if not offline:
+        try prefetch(graph.packages[..<graph.count])
     let hidden = try paths.join(root, ".luc")
     defer strings.release(hidden)
     try ensure_directory(hidden)
