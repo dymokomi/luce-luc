@@ -52,6 +52,15 @@ jobs:
           git -C ../luce-base fetch --depth 1 origin "$revision"
           git -C ../luce-base checkout --detach FETCH_HEAD
           test "$(git -C ../luce-base rev-parse HEAD)" = "$revision"
+          # the library packages Base and this repository depend on, beside them
+          while read -r name pin; do
+            pin=${pin%$'\r'}
+            [ -n "$name" ] || continue
+            [ -d "../$name" ] && continue
+            git init -q "../$name"
+            git -C "../$name" fetch -q --depth 1 "https://github.com/dymokomi/$name.git" "$pin"
+            git -C "../$name" checkout -q --detach FETCH_HEAD
+          done < bootstrap/PACKAGES
           (cd ../luce-base && ./build.sh)
       - name: Build the pinned Luce compiler
         run: |
