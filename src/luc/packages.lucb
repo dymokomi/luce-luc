@@ -14,6 +14,7 @@ import paths
 import strings
 import pkg
 import prism
+import luc.apps as apps
 import luc.checkout as checkout
 import luc.progress as progress
 import luc.project_file as project_file
@@ -264,16 +265,15 @@ func ensure_directory(path: str) -> !:
     defer strings.release(terminated)
     if not files.exists((c.str)terminated): try files.create_directory((c.str)terminated)
 
-## ~/.luce/cache/<owner>/<name>, created as needed. LUC_CACHE overrides the root.
+## <luc home>/cache/<owner>/<name>, created as needed. LUC_CACHE overrides the root.
 func cache_directory(owner: str, name: str) -> str!:
     var root: str
     if let chosen = os.env((c.str)"LUC_CACHE"):
         root = try strings.copy(chosen)
     else:
-        let home = os.env((c.str)"HOME") else error(invalid, "HOME is not set; set LUC_CACHE")
-        let base = try paths.join(home, ".luce")
+        # luc's own home: ~/.luce, %USERPROFILE%\.luce on Windows, or LUC_HOME
+        let base = try apps.home()
         defer strings.release(base)
-        try ensure_directory(base)
         root = try paths.join(base, "cache")
     defer strings.release(root)
     try ensure_directory(root)

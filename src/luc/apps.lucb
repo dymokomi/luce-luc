@@ -181,6 +181,50 @@ pub func apply(plan: str, package_root: str, staging: str, links: u8[], links_us
             error(invalid, "an install plan line must start with copy or link")
     if count == 0: error(invalid, "the install plan is empty")
 
+# mark: Commands ===============================================================================
+
+## Make `command` in `commands` start `target`: a symbolic link, or on Windows, where a link
+## needs Developer Mode or an administrator, a `command.cmd` that runs it with its arguments.
+pub func link_command(commands: str, command: str, target: str) -> !:
+    let link = try command_path(commands, command)
+    defer strings.release(link)
+    let link_z = try strings.copy(link)
+    defer strings.release(link_z)
+    discard(files.remove_file((c.str)link_z) catch: recover ())
+    if os.windows:
+        var native = try strings.copy(target)
+        defer strings.release(native)
+        let bytes = (u8[])native.bytes
+        for i in 0..<bytes.length:
+            if bytes[i] == '/': bytes[i] = '\\'
+        let text = try alloc u8[native.length + 32] in memory.heap
+        defer free(text) in memory.heap
+        try write_text(link, try format(text, f"@\"{native}\" %*\r\n"))
+        return
+    let target_z = try strings.copy(target)
+    defer strings.release(target_z)
+    try files.create_symlink((c.str)target_z, (c.str)link_z)
+
+## Remove what link_command made for `command`: the link, or the Windows `.cmd`. Anything
+## else of that name is not luc's and stays.
+pub func unlink_command(commands: str, command: str) -> !:
+    let link = try command_path(commands, command)
+    defer strings.release(link)
+    let link_z = try strings.copy(link)
+    defer strings.release(link_z)
+    if os.windows:
+        if files.exists((c.str)link_z): try files.remove_file((c.str)link_z)
+        return
+    let linked = files.read_symlink((c.str)link_z) catch: recover ""
+    if linked.length > 0:
+        try files.remove_file((c.str)link_z)
+
+func command_path(commands: str, command: str) -> str!:
+    if not os.windows:
+        return try paths.join(commands, command)
+    var name: u8[96]
+    return try paths.join(commands, try format(name, f"{command}.cmd"))
+
 # mark: Desktop bundles ========================================================================
 
 func write_text(path: str, text: str) -> !:

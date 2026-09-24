@@ -36,7 +36,7 @@ import git
 import crypto_native
 
 ## The luc version, kept in step with package.prisma.
-pub let luc_version: str = "0.18.1"
+pub let luc_version: str = "0.18.2"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"
@@ -515,12 +515,7 @@ func install_command(own: str[], updating: bool = false) -> i32!:
         let target_z = try strings.copy(target)
         defer strings.release(target_z)
         if not files.exists((c.str)target_z): error(usage_error, "the install plan links a file it did not copy")
-        let link = try paths.join(commands, command)
-        defer strings.release(link)
-        let link_z = try strings.copy(link)
-        defer strings.release(link_z)
-        discard(files.remove_file((c.str)link_z) catch: recover ())
-        try files.create_symlink((c.str)target_z, (c.str)link_z)
+        try apps.link_command(commands, command, target)
         try io.stdout().write(f"  {command} -> {target}\n")
     try remove_other_versions(application, version)
     try io.stdout().write(f"installed {coordinate} {version}\n")
@@ -575,14 +570,7 @@ func install_application(definition: pkg.Definition*, built: str, application: s
     try files.rename((c.str)staging_z, (c.str)placed_z, replace = false)
     let commands = try apps.child(home, "bin")
     defer strings.release(commands)
-    let link = try paths.join(commands, name)
-    defer strings.release(link)
-    let link_z = try strings.copy(link)
-    defer strings.release(link_z)
-    let executable_z = try strings.copy(executable)
-    defer strings.release(executable_z)
-    discard(files.remove_file((c.str)link_z) catch: recover ())
-    try files.create_symlink((c.str)executable_z, (c.str)link_z)
+    try apps.link_command(commands, name, executable)
     var start: usize
     for end in 0..<used:
         if record[end] != '\n': continue
@@ -720,12 +708,7 @@ func remove_recorded(inner: str, commands: str) -> !:
         let (command, target) = strings.split_once((str)links[start..<end], "\t") else (strings.trim((str)links[start..<end]), "")
         discard(target)
         start = end + 1
-        let link = try paths.join(commands, command)
-        defer strings.release(link)
-        let link_z = try strings.copy(link)
-        defer strings.release(link_z)
-        discard(files.read_symlink((c.str)link_z) catch: continue)
-        try files.remove_file((c.str)link_z)
+        try apps.unlink_command(commands, command)
 
 ## `luc list`: installed applications and their versions.
 func list_command() -> i32!:
