@@ -256,7 +256,8 @@ func resolve_levels(graph: Graph*, first: WantedList) -> !:
                 let chosen = graph.packages[existing]
                 if chosen.owner != wanted.owner: error(invalid, "two dependencies share a package name but not an owner")
                 if not try satisfies(try pkg.parse_version(chosen.version), wanted.requirement):
-                    error(invalid, "two dependencies need incompatible versions of one package")
+                    var message: u8[512]
+                    error(invalid, try graph.keep(try format(message, f"{wanted.owner}/{wanted.name} {chosen.version} was chosen for one dependency, but another needs {wanted.requirement}; they must agree on one version")))
                 continue
             var found: Lookup* = &shared.items[0]
             for index in 0..<shared.count:
