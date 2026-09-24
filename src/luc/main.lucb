@@ -928,6 +928,15 @@ func update_command(own: str[]) -> i32!:
         try io.stdout().write(f"{command}\n")
         return 0
     try progress.step(f"updating luce, luce-base and luc from https://luce.luciaos.com")
+    if platform.windows:
+        # Windows will not replace a running luc.exe: the installer runs in its own window
+        # once this process has exited and released it
+        let detached = try strings.join(["Start-Process powershell -ArgumentList '-NoExit','-NoProfile','-Command','Start-Sleep 1; ", command, "'"], "")
+        if try run_shell(detached) != 0:
+            try io.stderr().write("luc: could not start the installer\n")
+            return 1
+        try io.stdout().write("the update continues in a new PowerShell window\n")
+        return 0
     if try run_shell(command) != 0:
         try io.stderr().write("luc: the update did not complete\n")
         return 1
