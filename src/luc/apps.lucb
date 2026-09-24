@@ -466,11 +466,29 @@ func refuse_foreign(target: str, identifier: str) -> !:
     if not strings.contains((str)text, try format(wanted, f"<string>{identifier}</string>")):
         error(invalid, "another application of that name is installed there; luc will not replace it")
 
+## Put `source` at `target`, replacing what is there. The old tree is moved aside
+## first and removed only once the new one is complete: a running program's files
+## cannot be moved on Windows, so an application in use fails here with nothing
+## changed, and a failed copy puts the old tree back.
 func replace_tree(source: str, target: str, budget: usize*) -> !:
     let terminated = try strings.copy(target)
     defer strings.release(terminated)
-    if files.exists((c.str)terminated): try files.remove_tree((c.str)terminated)
+    if not files.exists((c.str)terminated):
+        try copy_tree(source, target, budget)
+        return
+    var aside_text: u8[1200]
+    let aside = try strings.copy(try format(aside_text, f"{target}.previous"))
+    defer strings.release(aside)
+    if files.exists((c.str)aside): try files.remove_tree((c.str)aside)
+    files.rename((c.str)terminated, (c.str)aside, replace = false) catch failure:
+        error(failure.code, "the installed application is in use; close it and run the command again")
+    errdefer restore_tree((c.str)terminated, (c.str)aside)
     try copy_tree(source, target, budget)
+    discard(files.remove_tree((c.str)aside) catch: recover ())
+
+func restore_tree(target: c.str, aside: c.str):
+    discard(files.remove_tree(target) catch: recover ())
+    discard(files.rename(aside, target, replace = false) catch: recover ())
 
 ## Remove something place() created. Only an entry directly inside the shelf or the
 ## launcher directory is touched, whatever the record says.
