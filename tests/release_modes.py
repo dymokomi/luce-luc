@@ -32,7 +32,6 @@ for name, flags in modes:
     run([sys.executable, 'tests/register.py', binary])
     run([sys.executable, 'tests/fetch.py', binary])
     run([sys.executable, 'tests/checkout.py', binary, base])
-    if name == 'native0':
 runtime = ROOT.parent / 'luce-base/runtime'
 generated = out / 'sanitize.c'
 binary = out / 'sanitize'
