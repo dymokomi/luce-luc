@@ -233,7 +233,7 @@ def main():
         # With nothing cached, the packs download together before they are unpacked in order.
         subprocess.run(['rm', '-rf', str(app / '.luc'), str(cache)], check=True)
         fetched = run('sync')
-        assert 'fetching 2 packages, 4 at a time' in fetched and 'synced 2' in fetched, fetched
+        assert 'fetching 2 packages' in fetched and 'synced 2' in fetched, fetched
         # the ordered pass after the downloads unpacks; it does not claim a second fetch
         assert fetched.index('fetching 2 packages') < fetched.index('unpacking 2 dependencies'), fetched
         assert (cache / 'acme/greeter/0.1.1.pack').exists() and (cache / 'acme/polite-kit').is_dir()

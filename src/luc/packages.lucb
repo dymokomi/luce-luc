@@ -143,50 +143,157 @@ pub func latest(owner: str, name: str, output: u8[]) -> str!:
     return try format(output, f"{best}")
 
 ## Select one release for a requirement and walk its own dependencies.
-func resolve_registry(graph: Graph*, owner: str, name: str, requirement: str, depth: usize) -> !:
-    if depth > 64: error(invalid, "dependencies nest too deeply")
-    if let existing = graph.find(name):
-        let chosen = graph.packages[existing]
-        if chosen.owner != owner: error(invalid, "two dependencies share a package name but not an owner")
-        if not try satisfies(try pkg.parse_version(chosen.version), requirement):
-            error(invalid, "two dependencies need incompatible versions of one package")
-        return
-    if graph.count >= max_packages: error(invalid, "too many packages in the dependency graph")
-    let listing = try alloc u8[max_listing] in memory.heap
-    defer free(listing) in memory.heap
-    var target: u8[256]
-    let size = try fetch(try format(target, f"/{owner}/{name}/versions"), listing)
-    let line = try select((str)listing[..<size], requirement)
-    let version = try graph.keep(field(line, 0))
-    graph.packages[graph.count] = Locked(name = try graph.keep(name), owner = try graph.keep(owner), version = version,
-        sha256 = try graph.keep(field(line, 1)), commit = try graph.keep(field(line, 2)))
-    graph.count += 1
-    var document: u8[65536]
-    let length = try fetch(try format(target, f"/{owner}/{name}/{version}.prisma"), document)
-    var definition = try pkg.decode_package(document[..<length])
-    defer definition.close()
-    if definition.owner != owner or definition.name != name or definition.version != version:
-        error(invalid, "the registry served a definition for a different package")
-    # A released package's `path` is its author's local override; consumers use the registry.
-    for i in 0..<definition.dependency_count:
-        let item = try definition.dependency_at(i)
-        try resolve_registry(graph, item.owner, item.name, item.version, depth + 1)
+# mark: Resolving ==============================================================================
 
-## Walk a local package: path dependencies are followed on disk, the rest resolved.
-## `registry` marks a package that itself came from the registry: its `path` overrides are
-## its author's local checkouts and are ignored.
-func resolve_local(graph: Graph*, directory: str, depth: usize, registry: bool = false) -> !:
+## A registry package some package asks for, with the version it will take.
+struct Wanted:
+    var owner: str
+    var name: str
+    var requirement: str
+
+## The registry packages asked for so far, their text kept in the graph.
+struct WantedList:
+    var items: Wanted[]
+    var count: usize
+
+    mutating func add(graph: Graph*, owner: str, name: str, requirement: str) -> !:
+        if self.count >= self.items.length: error(invalid, "too many dependency requirements")
+        self.items[self.count] = Wanted(owner = try graph.keep(owner), name = try graph.keep(name), requirement = try graph.keep(requirement))
+        self.count += 1
+
+func wanted_list() -> WantedList!:
+    return WantedList(items = try alloc Wanted[max_packages * 4] in memory.heap, count = 0)
+
+## One package looked up on the registry: the versions line its requirement selects and
+## that version's definition, or why the lookup failed. Both live on the heap.
+struct Lookup:
+    var owner: str
+    var name: str
+    var requirement: str
+    var line: str
+    var document: u8[]
+    var length: usize
+    var failure: str
+
+## The lookups of one level, shared by the threads that make them.
+struct Lookups:
+    var items: Lookup[]
+    var count: usize
+    var next: @u64
+
+## Lookups run on this many threads at once: each is two requests, so a level of the
+## graph costs about one round trip's worth of waiting rather than one per package.
+let lookup_threads: usize = 8
+
+func look_up(item: Lookup*) -> !:
+    let listing = try alloc u8[max_listing]
+    defer free(listing)
+    var target: u8[256]
+    let size = try fetch(try format(target, f"/{item.owner}/{item.name}/versions"), listing)
+    item.line = try strings.copy(try select((str)listing[..<size], item.requirement))
+    item.document = try alloc u8[65536]
+    item.length = try fetch(try format(target, f"/{item.owner}/{item.name}/{field(item.line, 0)}.prisma"), item.document)
+
+func lookup_worker(raw: void*?):
+    let shared = (Lookups*)(raw else return)
+    with memory.heap:
+        while true:
+            let index = (usize)shared.next.add(1, .relaxed)
+            if index >= shared.count: return
+            let item = &shared.items[index]
+            look_up(item) catch failure:
+                item.failure = strings.copy(failure.message) catch ignored: recover "a registry lookup failed"
+
+## Make every lookup, on threads when there is more than one.
+func look_up_all(shared: Lookups*) -> !:
+    if shared.count == 1:
+        lookup_worker((void*)shared)
+        return
+    var workers: thread.Handle[8]
+    var started: usize
+    while started < lookup_threads and started < shared.count:
+        workers[started] = thread.spawn(lookup_worker, (void*)shared, name = "luc resolve") catch failure:
+            break
+        started += 1
+    if started == 0:
+        lookup_worker((void*)shared)
+    for index in 0..<started:
+        try workers[index].join()
+
+func release_lookups(shared: Lookups*):
+    with memory.heap:
+        for item in shared.items[..<shared.count]:
+            if item.line.length > 0: strings.release(item.line)
+            if item.document.length > 0: free(item.document)
+            if item.failure.length > 0: strings.release(item.failure)
+        free(shared.items)
+
+## Resolve the registry packages `first` asks for and everything they depend on, one level
+## of the graph at a time: a level's new packages are looked up together, then taken in
+## the order they were asked for, so the lock is what a one-by-one walk would write.
+func resolve_levels(graph: Graph*, first: WantedList) -> !:
+    var level = first
+    var depth: usize
+    while level.count > 0:
+        if depth > 64: error(invalid, "dependencies nest too deeply")
+        let asked = level.items
+        defer free(asked) in memory.heap
+        var shared = Lookups(items = try alloc Lookup[level.count] in memory.heap, count = 0)
+        defer release_lookups(&shared)
+        for wanted in level.items[..<level.count]:
+            if graph.find(wanted.name) != none: continue
+            var seen = false
+            for other in shared.items[..<shared.count]:
+                if other.name == wanted.name: seen = true
+            if not seen:
+                shared.items[shared.count] = Lookup(owner = wanted.owner, name = wanted.name, requirement = wanted.requirement, line = "", length = 0, failure = "")
+                shared.count += 1
+        if shared.count > 0:
+            try look_up_all(&shared)
+        var next = try wanted_list()
+        for wanted in level.items[..<level.count]:
+            if let existing = graph.find(wanted.name):
+                let chosen = graph.packages[existing]
+                if chosen.owner != wanted.owner: error(invalid, "two dependencies share a package name but not an owner")
+                if not try satisfies(try pkg.parse_version(chosen.version), wanted.requirement):
+                    error(invalid, "two dependencies need incompatible versions of one package")
+                continue
+            var found: Lookup* = &shared.items[0]
+            for index in 0..<shared.count:
+                if shared.items[index].name == wanted.name: found = &shared.items[index]
+            if found.failure.length > 0: error(invalid, try graph.keep(found.failure))
+            if graph.count >= max_packages: error(invalid, "too many packages in the dependency graph")
+            let version = try graph.keep(field(found.line, 0))
+            graph.packages[graph.count] = Locked(name = wanted.name, owner = wanted.owner, version = version,
+                sha256 = try graph.keep(field(found.line, 1)), commit = try graph.keep(field(found.line, 2)))
+            graph.count += 1
+            var definition = try pkg.decode_package(found.document[..<found.length])
+            defer definition.close()
+            if definition.owner != wanted.owner or definition.name != wanted.name or definition.version != version:
+                error(invalid, "the registry served a definition for a different package")
+            # A released package's `path` is its author's local override; consumers use the registry.
+            for i in 0..<definition.dependency_count:
+                let item = try definition.dependency_at(i)
+                try next.add(graph, item.owner, item.name, item.version)
+        level = next
+        depth += 1
+    free(level.items) in memory.heap
+
+## Walk a local package: path dependencies are followed on disk, the registry ones
+## collected for `resolve_levels`. `registry` marks a package that itself came from the
+## registry: its `path` overrides are its author's local checkouts and are ignored.
+func resolve_local(graph: Graph*, directory: str, depth: usize, wanted: WantedList*, registry: bool = false) -> !:
     if depth > 32: error(invalid, "path dependencies nest too deeply or form a cycle")
     var definition = try project_file.read(directory)
     defer definition.close()
     for i in 0..<definition.dependency_count:
         let item = try definition.dependency_at(i)
         if item.path.length == 0 or registry:
-            try resolve_registry(graph, item.owner, item.name, item.version, 0)
+            try wanted.add(graph, item.owner, item.name, item.version)
             continue
         let location = try paths.join(directory, item.path)
         defer strings.release(location)
-        try resolve_local(graph, location, depth + 1)
+        try resolve_local(graph, location, depth + 1, wanted)
 
 func write_lock(root: str, graph: Graph*) -> !:
     let buffer = try alloc u8[1048576] in memory.heap
@@ -215,7 +322,9 @@ func write_lock(root: str, graph: Graph*) -> !:
 pub func lock(root: str, registry: bool = false) -> usize!:
     var graph = try new_graph()
     defer graph.close()
-    try resolve_local(&graph, root, 0, registry)
+    var wanted = try wanted_list()
+    try resolve_local(&graph, root, 0, &wanted, registry)
+    try resolve_levels(&graph, wanted)
     try write_lock(root, &graph)
     return graph.count
 
@@ -393,7 +502,7 @@ func prefetch(items: Locked[]) -> !:
     for item in items:
         if not try in_cache(item): missing += 1
     if missing < 2: return
-    try progress.step(f"fetching {missing} packages, {download_threads} at a time")
+    try progress.step(f"fetching {missing} packages")
     var shared = Prefetch(items = items, message = "")
     var workers: thread.Handle[4]
     var started: usize
