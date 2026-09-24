@@ -457,7 +457,7 @@ pub func sync(root: str, offline: bool = false) -> usize!:
         defer strings.release(marker_z)
         if files.exists((c.str)marker_z): continue
         if not announced:
-            try progress.step(f"fetching {graph.count} dependencies")
+            try progress.step(f"unpacking {graph.count} dependencies")
             announced = true
         let size = try verified_pack(item, offline, bytes)
         var pack = try git.decode_pack(bytes[..<size])
