@@ -302,7 +302,8 @@ pub func bundle(root: str, definition: pkg.Definition*) -> !:
     var stem = icon_name
     for i in 0..<icon_name.length:
         if icon_name.bytes[i] == '.': stem = (str)icon_name.bytes[..<i]
-    try write_text(desktop, try format(text[..<4096], f"[Desktop Entry]\nType=Application\nName={definition.application.name}\nExec=AppRun\nIcon={stem}\nTerminal=false\nX-Luce-Identifier={definition.application.identifier}\nX-Luce-Version={definition.version}\n"))
+    let icon_line = try format(text[4096..], f"Icon={stem}\n") if stem.length > 0 else ""
+    try write_text(desktop, try format(text[..<4096], f"[Desktop Entry]\nType=Application\nName={definition.application.name}\nExec=AppRun\n{icon_line}Terminal=false\nStartupWMClass={definition.name}\nX-Luce-Identifier={definition.application.identifier}\nX-Luce-Version={definition.version}\n"))
 
 # mark: Where applications are installed ======================================================
 
@@ -422,11 +423,12 @@ pub func place(definition: pkg.Definition*, built: str, record: u8[], used: usiz
         defer strings.release(entries)
         let entry = try paths.join(entries, try format(name, f"{definition.name}.desktop"))
         defer strings.release(entry)
-        var icon = ""
-        if definition.application.icon.length > 0: icon = paths.base(definition.application.icon)
-        let text = try alloc u8[4096] in memory.heap
+        let text = try alloc u8[5120] in memory.heap
         defer free(text) in memory.heap
-        try write_text(entry, try format(text, f"[Desktop Entry]\nType=Application\nName={definition.application.name}\nExec=\"{target}/AppRun\"\nIcon={target}/{icon}\nTerminal=false\nX-Luce-Identifier={definition.application.identifier}\nX-Luce-Version={definition.version}\n"))
+        # No Icon= without an icon: a directory there fails desktop-file-validate.
+        let icon = try format(text[4096..], f"Icon={target}/{paths.base(definition.application.icon)}\n") if definition.application.icon.length > 0 else ""
+        # StartupWMClass matches the window's WM_CLASS (the program's name) to this entry.
+        try write_text(entry, try format(text[..<4096], f"[Desktop Entry]\nType=Application\nName={definition.application.name}\nExec=\"{target}/AppRun\"\n{icon}Terminal=false\nStartupWMClass={definition.name}\nX-Luce-Identifier={definition.application.identifier}\nX-Luce-Version={definition.version}\n"))
         try note(record, used, entry)
         return try paths.join(target, "AppRun")
     let target = try paths.join(directory, definition.application.name)
