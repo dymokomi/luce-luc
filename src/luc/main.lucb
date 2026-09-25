@@ -36,7 +36,7 @@ import git
 import crypto_native
 
 ## The luc version, kept in step with package.prisma.
-pub let luc_version: str = "0.18.6"
+pub let luc_version: str = "0.18.7"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"
@@ -424,6 +424,16 @@ func list_tasks(project: Project*) -> !:
 # mark: Applications ===========================================================================
 
 ## `luc install <owner>/<name>[@<version>]`: fetch, build and install an application.
+## `luc latest owner/name`: the newest released version, alone on a line, for
+## applications that tell their users of an update.
+func latest_command(own: str[]) -> i32!:
+    if own.length != 1: error(usage_error, "usage: luc latest <owner>/<name>")
+    let (owner, name) = strings.split_once(own[0], "/") else error(usage_error, "usage: luc latest <owner>/<name>")
+    var buffer: u8[64]
+    let version = try packages.latest(owner, name, buffer)
+    try io.stdout().write(f"{version}\n")
+    return 0
+
 func install_command(own: str[], updating: bool = false) -> i32!:
     if own.length != 1: error(usage_error, "usage: luc install <owner>/<name>[@<version>]")
     let (coordinate, requirement) = strings.split_once(own[0], "@") else (own[0], "")
@@ -1163,6 +1173,8 @@ pub func main(arguments: c.str[]) -> i32!:
         defer release_string_array(passthrough)
         if command == "info":
             return try info_command()
+        if command == "latest":
+            return try latest_command(own)
         if command == "install":
             return try install_command(own)
         if command == "uninstall":
@@ -1242,6 +1254,7 @@ func usage(out: io.Writer) -> !:
     try out.write("Installing\n")
     try out.write("  install owner/name[@version]   download, build and install a tool or application\n")
     try out.write("  list                   what is installed\n")
+    try out.write("  latest owner/name      the newest released version\n")
     try out.write("  uninstall <name>       remove it\n\n")
     try out.write("Other\n")
     try out.write("  update                 reinstall the latest luce, luce-base and luc\n")

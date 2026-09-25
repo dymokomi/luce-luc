@@ -225,6 +225,9 @@ def main():
         assert hashlib.sha256((site / 'acme/greeter/0.1.1.pack').read_bytes()).hexdigest() in lock
         assert 'hello 0.1.1' in run('run').splitlines()
         assert 'no such package' in run('add', 'acme/missing', success=False)
+        # The newest release, whatever the requirement: 0.2.0 over the 0.1 line.
+        assert run('latest', 'acme/greeter').strip() == '0.2.0'
+        assert 'no such package' in run('latest', 'acme/missing', success=False)
 
         # A fresh checkout rebuilds from the lock and the cache alone.
         for leftover in ('.luc', 'build'): subprocess.run(['rm', '-rf', str(app / leftover)], check=True)
