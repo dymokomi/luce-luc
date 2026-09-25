@@ -348,7 +348,8 @@ pub func shelf() -> str!:
     let share = try child(dot_local, "share")
     defer strings.release(share)
     let data = try environment_or((c.str)"XDG_DATA_HOME", share)
-    defer strings.release(data)
+    # Returned to the caller, who releases it; only a failure here drops it.
+    errdefer strings.release(data)
     try ensure_directory(data)
     return data
 
