@@ -293,8 +293,17 @@ pub func bundle(root: str, definition: pkg.Definition*) -> !:
         try copy_into(executable, bundle_root, built_name, 0o755)
         if icon_name.length > 0: try copy_into(icon_source, bundle_root, icon_name, 0o644)
         return
-    # Linux AppDir: AppRun is the executable, with a desktop entry and the icon beside it.
-    try copy_into(executable, bundle_root, "AppRun", 0o755)
+    # Linux AppDir: the program under its own name, so its windows' class and
+    # /proc/self/exe name it, and AppRun a script that runs it (through the
+    # symlink ~/.luce/bin keeps too), with a desktop entry and the icon beside.
+    try copy_into(executable, bundle_root, definition.name, 0o755)
+    let staged = try paths.join(bundle_root, ".AppRun.new")
+    defer strings.release(staged)
+    try write_text(staged, try format(text[..<4096], f"#!/bin/sh\nexec \"$(dirname \"$(readlink -f \"$0\")\")/{definition.name}\" \"$@\"\n"))
+    try copy_into(staged, bundle_root, "AppRun", 0o755)
+    let staged_path = try strings.copy(staged)
+    defer strings.release(staged_path)
+    try files.remove_file((c.str)staged_path)
     if icon_name.length > 0: try copy_into(icon_source, bundle_root, icon_name, 0o644)
     var entry_name: u8[96]
     let desktop = try paths.join(bundle_root, try format(entry_name, f"{definition.name}.desktop"))
