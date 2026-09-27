@@ -15,6 +15,17 @@ expected=$(sed -n 's/^    str version = "\(.*\)"$/\1/p' package.prisma | head -1
 # update/upgrade name the official installers (dry-run so nothing is installed)
 [ "$("$luc" update --dry-run)" = "curl -fsSL https://luce.luciaos.com/install.sh | sh" ] || { echo "FAIL: update --dry-run"; exit 1; }
 [ "$("$luc" upgrade --dry-run | tail -1)" = "curl -fsSL https://luce.luciaos.com/install.sh | sh" ] || { echo "FAIL: upgrade alias"; exit 1; }
+# with no LUCE_BASE, the compiler installed beside luc wins over one earlier on the path, so
+# an old luce-base built from source never stands in for the release's own
+sib="$PWD/build/sibling"
+rm -rf "$sib"; mkdir -p "$sib/bin" "$sib/path"
+cp "$luc" "$sib/bin/luc"
+printf '#!/bin/sh\necho beside\n' > "$sib/bin/luce-base"; printf '#!/bin/sh\necho path\n' > "$sib/path/luce-base"
+chmod +x "$sib/bin/luce-base" "$sib/path/luce-base"
+( cd "$sib" && env -u LUCE_BASE PATH="$sib/path:$PATH" "$sib/bin/luc" new demo > /dev/null ) || { echo "FAIL: sibling scaffold"; exit 1; }
+[ "$( cd "$sib/demo" && env -u LUCE_BASE PATH="$sib/path:$PATH" "$sib/bin/luc" check )" = "beside" ] || { echo "FAIL: luc prefers the luce-base beside it"; exit 1; }
+rm "$sib/bin/luce-base"
+[ "$( cd "$sib/demo" && env -u LUCE_BASE PATH="$sib/path:$PATH" "$sib/bin/luc" check )" = "path" ] || { echo "FAIL: luc falls back to the path"; exit 1; }
 export LUCE_BASE="$base"
 # scaffolding: a new app builds and runs; a new package checks
 scaff="build/scaffold"

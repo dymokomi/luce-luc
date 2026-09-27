@@ -82,10 +82,9 @@ struct Project:
 
     ## The compiler for this project's language, overridable through the environment.
     func compiler() -> str!:
-        let variable = "LUCE" if self.language == "luce" else "LUCE_BASE"
-        if let chosen = os.env((c.str)variable):
-            return chosen
-        return "luce" if self.language == "luce" else "luce-base"
+        if self.language == "luce":
+            return try toolchain_compiler("luce", "LUCE")
+        return try toolchain_compiler("luce-base", "LUCE_BASE")
 
     ## The entry source: the manifest's `entry`, else the conventional app main, else the
     ## package's own library module (src/<name>/<name>.<ext>) so `check` works on a package.
@@ -493,7 +492,7 @@ func install_command(own: str[], updating: bool = false) -> i32!:
     var scripted = ""
     defer if_release(scripted)
     if definition.install.length > 0:
-        scripted = try apps.scripted_plan(os.env((c.str)"LUCE") else "luce", work, definition.install, name, version)
+        scripted = try apps.scripted_plan(try toolchain_compiler("luce", "LUCE"), work, definition.install, name, version)
         plan = scripted
 
     let staging = try paths.join(application, ".staging")
@@ -1260,3 +1259,25 @@ func usage(out: io.Writer) -> !:
     try out.write("  update                 reinstall the latest luce, luce-base and luc\n")
     try out.write("  --version, help\n")
 
+## The compiler `name` (`luce` or `luce-base`): the one `variable` names, else the one
+## installed beside luc, since a release puts luc, luce and luce-base in one `bin/` that
+## belong together, else `name` on the path. Beside luc before the path, so an older
+## luce-base elsewhere on the path (a build from source) is never picked up by mistake.
+func toolchain_compiler(name: str, variable: str) -> str!:
+    if let chosen = os.env((c.str)variable):
+        return chosen
+    let exe = os.executable() catch failure:
+        discard(failure)
+        return name
+    let joined = try paths.join(paths.directory(exe), name)
+    defer strings.release(joined)
+    # a copy, so the path ends in the zero the file system call reads
+    let candidate = try strings.join([joined, ".exe" if os.windows else ""], "")
+    let info = files.metadata((c.str)candidate) catch failure:
+        discard(failure)
+        strings.release(candidate)
+        return name
+    if info.kind == files.FileKind.regular:
+        return candidate
+    strings.release(candidate)
+    return name
