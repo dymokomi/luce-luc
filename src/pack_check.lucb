@@ -1,72 +1,84 @@
-## Full-pack graph checks before publishing downloaded source objects.
+## Full-pack graph checks before publishing downloaded source objects: every object a
+## commit, tree or tag names is in the pack with the kind it is named as, and no object is
+## there twice. An index over the objects' IDs keeps the checks linear in the pack, so a
+## large release (thousands of files) costs what its size does.
+import memory
 from luce_git import git
 from luce_crypto import native as crypto_native
 
 let invalid: ErrorCode = ErrorCode.package(3)
 
-func lookup(pack: git.Pack*, id: const u8[], kind: str, budget: usize*) -> git.PackItem*!:
-    for i in 0..<pack.items.length:
-        if *budget == 0: error(invalid, "download graph work limit exceeded")
-        *budget -= 1
-        if crypto_native.equal(pack.items[i].id, id):
-            if pack.items[i].kind != kind: error(invalid, "download graph object type mismatch")
-            return &pack.items[i]
-    error(invalid, "download graph object is missing")
+## The pack's objects by ID: open addressing over twice as many slots as objects, each
+## slot an object's index plus one, 0 when free.
+struct Index:
+    var pack: git.Pack*
+    var slots: u32[]
 
-func require(pack: git.Pack*, id: const u8[], kind: str, budget: usize*) -> !:
-    discard(try lookup(pack, id, kind, budget))
+    static func over(pack: git.Pack*) -> Index!:
+        var size: usize = 16
+        while size < pack.items.length * 2:
+            size *= 2
+        var slots = try alloc u32[size] in memory.heap
+        for i in 0..<size: slots[i] = 0
+        var index = Index(pack = pack, slots = slots)
+        for i in 0..<pack.items.length:
+            var slot = index.start(pack.items[i].id)
+            while index.slots[slot] != 0:
+                if crypto_native.equal(pack.items[(usize)index.slots[slot] - 1].id, pack.items[i].id):
+                    index.release()
+                    error(invalid, "duplicate download object")
+                slot = (slot + 1) & (index.slots.length - 1)
+            index.slots[slot] = u32(i + 1)
+        return index
 
-func require_hex(pack: git.Pack*, text: str, kind: str, budget: usize*) -> !:
-    var id: u8[20]
-    try git.decode_id(text, id)
-    try require(pack, id, kind, budget)
+    mutating func release():
+        free(self.slots) in memory.heap
+
+    ## The first slot of `id`'s probe sequence: its leading bytes, which a SHA-1 spreads.
+    func start(id: const u8[]) -> usize:
+        var h: usize = 0
+        for k in 0..<(usize)8: h = (h << 8) | (usize)id[k]
+        return h & (self.slots.length - 1)
+
+    ## The object `id` names, which must be of `kind`.
+    func lookup(id: const u8[], kind: str) -> git.PackItem*!:
+        var slot = self.start(id)
+        while self.slots[slot] != 0:
+            let item = &self.pack.items[(usize)self.slots[slot] - 1]
+            if crypto_native.equal(item.id, id):
+                if item.kind != kind: error(invalid, "download graph object type mismatch")
+                return item
+            slot = (slot + 1) & (self.slots.length - 1)
+        error(invalid, "download graph object is missing")
+
+    func require(id: const u8[], kind: str) -> !:
+        discard(try self.lookup(id, kind))
+
+    func require_hex(text: str, kind: str) -> !:
+        var id: u8[20]
+        try git.decode_id(text, id)
+        try self.require(id, kind)
 
 ## A registry release pack holds one commit and its tree, without history; pass
 ## `history = false` so the commit's parents are not required.
 pub func validate(pack: git.Pack*, requested: const u8[], history: bool = true) -> !:
-    var budget: usize = 16777216
-    try require(pack, requested, "commit", &budget)
-    for i in 0..<pack.items.length:
-        let item = &pack.items[i]
-        for j in 0..<i:
-            if budget == 0: error(invalid, "download graph work limit exceeded")
-            budget -= 1
-            if crypto_native.equal(item.id, pack.items[j].id): error(invalid, "duplicate download object")
+    var index = try Index.over(pack)
+    defer index.release()
+    try index.require(requested, "commit")
+    for item in pack.items:
         if item.kind == "tree":
             discard(try git.validate_tree(item.payload))
             var at: usize = 0
             while at < item.payload.length:
                 let entry = try git.decode_tree_entry(item.payload[at..])
                 if entry.mode != "160000":
-                    try require(pack, entry.id, "tree" if entry.mode == "40000" else "blob", &budget)
+                    try index.require(entry.id, "tree" if entry.mode == "40000" else "blob")
                 at += entry.consumed
         elif item.kind == "commit":
             let commit = try git.decode_commit(item.payload)
-            try require_hex(pack, commit.tree, "tree", &budget)
+            try index.require_hex(commit.tree, "tree")
             if history:
-                for j in 0..<commit.parent_count: try require_hex(pack, try commit.parent(j), "commit", &budget)
+                for j in 0..<commit.parent_count: try index.require_hex(try commit.parent(j), "commit")
         elif item.kind == "tag":
             let tag = try git.decode_tag(item.payload)
-            try require_hex(pack, tag.object, tag.kind, &budget)
-
-## Return the exact regular root luce.toml selected by `requested`. The view
-## borrows the decoded pack and is suitable for canonical LRS2 construction.
-pub func root_manifest(pack: git.Pack*, requested: const u8[]) -> const u8[]!:
-    try validate(pack, requested)
-    var budget: usize = 16777216
-    let commit_item = try lookup(pack, requested, "commit", &budget)
-    let commit = try git.decode_commit(commit_item.payload)
-    var tree_id: u8[20]
-    try git.decode_id(commit.tree, tree_id)
-    let tree = try lookup(pack, tree_id, "tree", &budget)
-    var at: usize = 0
-    while at < tree.payload.length:
-        let entry = try git.decode_tree_entry(tree.payload[at..])
-        if entry.name == "luce.toml":
-            if entry.mode != "100644": error(invalid, "release manifest must be a regular file")
-            let blob = try lookup(pack, entry.id, "blob", &budget)
-            if blob.payload.length == 0 or blob.payload.length > 1048576:
-                error(invalid, "release manifest size outside bounds")
-            return blob.payload
-        at += entry.consumed
-    error(invalid, "release commit has no root luce.toml")
+            try index.require_hex(tag.object, tag.kind)

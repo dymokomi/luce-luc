@@ -53,6 +53,66 @@ func must(root: str, arguments: const str[], what: str) -> !:
     try io.stderr().write(result.err)
     error(invalid, what)
 
+## Push the current branch to the registry. One push carries at most what the registry
+## takes in a pack (its objects and bytes are bounded); a history larger than that, a long
+## repository published the first time, goes up in steps: the commits the registry lacks,
+## oldest first, as many to a push as fit, the step halved each time the registry refuses
+## one as too large.
+func push_branch(root: str) -> !:
+    var whole = try git(root, ["push", "pkg", "HEAD"])
+    defer whole.close()
+    if whole.status == 0: return
+    if not too_large(whole.err):
+        try io.stderr().write(whole.err)
+        error(invalid, "the push was refused")
+    var head = try git(root, ["rev-parse", "--abbrev-ref", "HEAD"])
+    defer head.close()
+    let branch = strings.trim(head.out)
+    var listing = try git(root, ["rev-list", "--reverse", "--first-parent", "HEAD", "--not", "--remotes=pkg"])
+    defer listing.close()
+    let commits = try lines_of(listing.out)
+    defer free(commits) in memory.heap
+    var done: usize = 0
+    var step = commits.length // 2 if commits.length > 1 else 1
+    while done < commits.length:
+        let last = (done + step if done + step < commits.length else commits.length) - 1
+        var spelled: u8[512]
+        let refspec = try format(spelled, f"{commits[last]}:refs/heads/{branch}")
+        var pushed = try git(root, ["push", "pkg", refspec])
+        defer pushed.close()
+        if pushed.status == 0:
+            done = last + 1
+            continue
+        if not too_large(pushed.err) or step == 1:
+            try io.stderr().write(pushed.err)
+            error(invalid, "one commit is larger than the registry takes in a push" if step == 1 and too_large(pushed.err) else "the push was refused")
+        step = step // 2
+
+## Whether the registry refused a push for one of the limits on what a push carries: a
+## named limit of its pack, or the request's size, which the server answers with 413 or by
+## closing the connection before Git has sent it all (`RPC failed`).
+func too_large(err: str) -> bool:
+    return strings.contains(err, "limit exceeded") or strings.contains(err, "HTTP 413") or strings.contains(err, "RPC failed")
+
+## The lines of `text`, each a slice of it, in a heap list the caller frees.
+func lines_of(text: str) -> str[]!:
+    var count: usize = 0
+    for byte in text.bytes:
+        if byte == '\n': count += 1
+    let lines = try alloc str[count + 1] in memory.heap
+    var used: usize = 0
+    var start: usize = 0
+    for i in 0..<text.length:
+        if text.bytes[i] != '\n': continue
+        if i > start:
+            lines[used] = (str)text.bytes[start..<i]
+            used += 1
+        start = i + 1
+    if start < text.length:
+        lines[used] = (str)text.bytes[start..]
+        used += 1
+    return lines[..<used]
+
 ## `luc git-credential get|store|erase`, speaking Git's helper protocol on stdin/stdout.
 pub func credential_helper(action: str, session: str) -> i32!:
     if action != "get": return 0
@@ -138,7 +198,7 @@ pub func publish(root: str, origin: str, session: str, notes: str) -> i32!:
     if try credentials.ensure_repository(origin, definition.name, session):
         try io.stdout().write(f"created {definition.owner}/{definition.name} on the registry\n")
     try configure(root, origin, definition.owner, definition.name)
-    try must(root, ["push", "pkg", "HEAD"], "the push was refused")
+    try push_branch(root)
     try must(root, ["tag", "-a", tag, "-m", notes], "could not create the release tag")
     var pushed = try git(root, ["push", "pkg", tag])
     defer pushed.close()
