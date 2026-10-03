@@ -145,9 +145,15 @@ pub func library_module(name: str) -> str!:
             start = i + 1
     return try strings.copy((str)name.bytes[start..])
 
+## The oldest luce-ui a new application may ask for: the first with the flat package
+## layout (base.md §16.4). `luc new` asks the registry for the newest one instead and falls
+## back to this one offline.
+pub let minimum_ui = "0.13.1"
+
 ## Text of a new package.prisma for `luc init` and `luc new`. `kind` is package,
-## application or tool; an application is a luce-ui window with its desktop bundle.
-pub func scaffold(name: str, owner: str, language: str, kind: str, output: u8[]) -> str!:
+## application or tool; an application is a luce-ui window with its desktop bundle,
+## requiring luce-ui `^ui_version`.
+pub func scaffold(name: str, owner: str, language: str, kind: str, output: u8[], ui_version: str = minimum_ui) -> str!:
     let suffix = ".luc" if language == "luce" else ".lucb"
     let module = try library_module(name)
     defer strings.release(module)
@@ -175,4 +181,4 @@ pub func scaffold(name: str, owner: str, language: str, kind: str, output: u8[])
         if byte == '_': continue
         label[label_length] = byte
         label_length += 1
-    return try format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str kind = \"application\"\n    str language = \"luce\"\n    str entry = \"src/main.luc\"\n    def application \"bundle\" {{\n        str name = \"{(str)display[..<length]}\"\n        str identifier = \"com.{owner}.{(str)label[..<label_length]}\"\n    }}\n    def dependency \"luce-ui\" {{\n        str owner = \"dymokomi\"\n        str version = \"^0.1.0\"\n    }}\n}}\n")
+    return try format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str kind = \"application\"\n    str language = \"luce\"\n    str entry = \"src/main.luc\"\n    def application \"bundle\" {{\n        str name = \"{(str)display[..<length]}\"\n        str identifier = \"com.{owner}.{(str)label[..<label_length]}\"\n    }}\n    def dependency \"luce-ui\" {{\n        str owner = \"dymokomi\"\n        str version = \"^{ui_version}\"\n    }}\n}}\n")

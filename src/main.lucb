@@ -35,7 +35,7 @@ from luce_git import git
 from luce_crypto import native as crypto_native
 
 ## The luc version, kept in step with package.prisma.
-pub let luc_version: str = "0.20.1"
+pub let luc_version: str = "0.20.2"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"
@@ -759,10 +759,12 @@ func add_command(project: Project*, own: str[]) -> i32!:
     for word in own:
         if not strings.starts_with(word, "--"): location = word
     if location.length == 0:
-        error(usage_error, "luc add needs a package: luc add <owner>/<name> or luc add <path-to-package>")
+        error(usage_error, "luc add needs a package: luc add [<owner>/]<name> or luc add <path-to-package>")
     if not try project_file.exists_in(location):
-        # Not a local package: a registry coordinate, pinned to its newest release.
-        let (owner, name) = strings.split_once(location, "/") else error(usage_error, "no package.prisma at that path, and not an <owner>/<name> coordinate")
+        # Not a local package: a registry package, pinned to its newest release; a bare
+        # name is the one registry package of that name, as `luc install` takes it
+        let coordinate = try qualified(location)
+        let (owner, name) = strings.split_once(coordinate, "/") else error(usage_error, "no package.prisma at that path, and not a registry package")
         var newest: u8[64]
         let version = try packages.latest(owner, name, newest)
         var requirement: u8[80]
@@ -770,7 +772,7 @@ func add_command(project: Project*, own: str[]) -> i32!:
         discard(try packages.lock(project.root))
         discard(try packages.sync(project.root))
         try project_file.generate(project.root, project.root)
-        try io.stdout().write(f"added dependency {location} ^{version}\n")
+        try io.stdout().write(f"added dependency {coordinate} ^{version}\n")
         return 0
     let name = try project_file.add_dependency(project.root, location)
     defer strings.release(name)
@@ -1001,7 +1003,14 @@ func scaffold(target: str, name: str, language: str, kind: str) -> !:
     try ensure_dir(source)
     let suffix = ".luc" if language == "luce" else ".lucb"
     var definition: u8[2048]
-    try write_file(try paths.join(target, project_file.file_name), try project_file.scaffold(name, default_owner, language, kind, definition))
+    # an application asks for the newest luce-ui; a stale requirement would resolve to a
+    # release whose manifest this luc no longer reads
+    var newest: u8[64]
+    var ui_version = project_file.minimum_ui
+    if kind == "application":
+        ui_version = packages.latest("dymokomi", "luce-ui", newest) catch:
+            recover project_file.minimum_ui
+    try write_file(try paths.join(target, project_file.file_name), try project_file.scaffold(name, default_owner, language, kind, definition, ui_version))
     try write_file(try paths.join(target, ".gitignore"), "build/\n.luc/\n")
     if kind == "package":
         # luce-json's starter module is src/json, imported as `from luce_json import json`
@@ -1261,7 +1270,7 @@ func usage(out: io.Writer) -> !:
     try out.write("  fmt [--check]          format the sources\n")
     try out.write("  clean [cache]          remove build/, or only its cache\n\n")
     try out.write("Dependencies\n")
-    try out.write("  add owner/name         add a registry package\n")
+    try out.write("  add [owner/]name       add a registry package\n")
     try out.write("  add ../path            add a package checked out beside this one\n")
     try out.write("  remove <name>          remove a dependency\n")
     try out.write("  lock                   resolve everything and write luc.lock\n")

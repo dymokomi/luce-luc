@@ -249,6 +249,14 @@ def main():
         # The newest release, whatever the requirement: 0.2.0 over the 0.1 line.
         assert run('latest', 'acme/greeter').strip() == '0.2.0'
         assert 'no such package' in run('latest', 'acme/missing', success=False)
+        # `luc add` takes a bare name as `luc install` does: the one registry package of it
+        (site / 'index').write_text('acme/polite-kit\t1.0.0\tPolite.\tpackage\n')
+        refused = run('add', 'missing-kit', success=False)
+        assert 'no registry package is called missing-kit' in refused, refused
+        before = (app / 'package.prisma').read_text()
+        run('remove', 'polite-kit')
+        assert 'added dependency acme/polite-kit ^1.0.0' in run('add', 'polite-kit')
+        assert (app / 'package.prisma').read_text() == before
 
         # A fresh checkout rebuilds from the lock and the cache alone.
         for leftover in ('.luc', 'build'): subprocess.run(['rm', '-rf', str(app / leftover)], check=True)

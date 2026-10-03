@@ -122,7 +122,7 @@ func select(listing: str, requirement: str) -> str!:
     if best.length == 0: error(invalid, "no released version satisfies the requirement")
     return best
 
-## The newest released version of a package, for `luc add owner/name`.
+## The newest released version of a package, for `luc add [owner/]name`.
 pub func latest(owner: str, name: str, output: u8[]) -> str!:
     let listing = try alloc u8[max_listing] in memory.heap
     defer free(listing) in memory.heap
