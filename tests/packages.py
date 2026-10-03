@@ -257,6 +257,15 @@ def main():
         run('remove', 'polite-kit')
         assert 'added dependency acme/polite-kit ^1.0.0' in run('add', 'polite-kit')
         assert (app / 'package.prisma').read_text() == before
+        # a dependency without a version is the newest release, which the lock records
+        app = root
+        run('new', 'newest')
+        app = root / 'newest'
+        manifest = (app / 'package.prisma').read_text()
+        (app / 'package.prisma').write_text(manifest.rstrip()[:-1] + '    def dependency "greeter" {\n        str owner = "acme"\n    }\n}\n')
+        run('lock')
+        assert 'str version = "0.2.0"' in (app / 'luc.lock').read_text(), (app / 'luc.lock').read_text()
+        app = root / 'app'
 
         # A fresh checkout rebuilds from the lock and the cache alone.
         for leftover in ('.luc', 'build'): subprocess.run(['rm', '-rf', str(app / leftover)], check=True)

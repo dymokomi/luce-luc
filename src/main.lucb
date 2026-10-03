@@ -35,7 +35,7 @@ from luce_git import git
 from luce_crypto import native as crypto_native
 
 ## The luc version, kept in step with package.prisma.
-pub let luc_version: str = "0.20.2"
+pub let luc_version: str = "0.20.3"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"
@@ -1003,14 +1003,7 @@ func scaffold(target: str, name: str, language: str, kind: str) -> !:
     try ensure_dir(source)
     let suffix = ".luc" if language == "luce" else ".lucb"
     var definition: u8[2048]
-    # an application asks for the newest luce-ui; a stale requirement would resolve to a
-    # release whose manifest this luc no longer reads
-    var newest: u8[64]
-    var ui_version = project_file.minimum_ui
-    if kind == "application":
-        ui_version = packages.latest("dymokomi", "luce-ui", newest) catch:
-            recover project_file.minimum_ui
-    try write_file(try paths.join(target, project_file.file_name), try project_file.scaffold(name, default_owner, language, kind, definition, ui_version))
+    try write_file(try paths.join(target, project_file.file_name), try project_file.scaffold(name, default_owner, language, kind, definition))
     try write_file(try paths.join(target, ".gitignore"), "build/\n.luc/\n")
     if kind == "package":
         # luce-json's starter module is src/json, imported as `from luce_json import json`
