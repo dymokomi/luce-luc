@@ -192,6 +192,19 @@ def applications(site, work, root, online):
     assert (home / 'bin/plain-clock').is_symlink()
     assert 'uninstalled plain-clock' in luc_run('uninstall', 'plain-clock')
     assert not (home / 'bin/plain-clock').exists() and 'not installed' in luc_run('uninstall', 'plain-clock', success=False)
+
+    # A bare name is the one registry package of that name, found in the index; an
+    # unknown name fails, and so does one several owners publish, naming each of them.
+    (site / 'index').write_text('acme/plain-clock\t1.0.0\tA clock.\ttool\nacme/greeter\t0.2.0\tGreets.\tpackage\n')
+    assert 'installed acme/plain-clock 1.0.0' in luc_run('install', 'plain-clock')
+    assert luc_run('latest', 'plain-clock').strip() == '1.0.0'
+    assert 'uninstalled plain-clock' in luc_run('uninstall', 'plain-clock')
+    assert 'no registry package is called no-clock' in luc_run('install', 'no-clock', success=False)
+    with (site / 'index').open('a') as index:
+        index.write('zeta/plain-clock\t2.0.0\tAnother clock.\ttool\n')
+    ambiguous = luc_run('install', 'plain-clock', success=False)
+    assert 'acme/plain-clock' in ambiguous and 'zeta/plain-clock' in ambiguous and 'owner/name' in ambiguous, ambiguous
+    (site / 'index').unlink()
     print('PASS application install/list/uninstall' + (', sandboxed install script and hostile plans' if sandbox else ' (no LUCE: scripted install skipped)'), flush=True)
 
 

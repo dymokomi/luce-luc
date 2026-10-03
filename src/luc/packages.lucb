@@ -142,6 +142,39 @@ pub func latest(owner: str, name: str, output: u8[]) -> str!:
     if best.length == 0: error(invalid, "the package has no released version")
     return try format(output, f"{best}")
 
+## The owner of the one registry package called `name`, copied into `output`, for
+## `luc install name`. The registry's index lists each package on a line that starts
+## `owner/name` and a tab. No package of that name is an error, and so are several;
+## the error's text is written into `message`, which must outlive the error, and
+## names every candidate as `owner/name`.
+pub func owner_of(name: str, output: u8[], message: u8[]) -> str!:
+    let listing = try alloc u8[max_listing] in memory.heap
+    defer free(listing) in memory.heap
+    let size = try fetch("/index", listing)
+    var owner = ""
+    var matches: usize
+    var written = (try format(message, f"several registry packages are called {name}:")).length
+    var start: usize
+    for end in 0..<size:
+        if listing[end] != '\n': continue
+        let line = (str)listing[start..<end]
+        start = end + 1
+        var stop: usize
+        while stop < line.length and line.bytes[stop] != '\t': stop += 1
+        let coordinate = (str)line.bytes[..<stop]
+        let (candidate, package) = strings.split_once(coordinate, "/") else continue
+        if package != name: continue
+        matches += 1
+        if matches == 1: owner = try format(output, f"{candidate}")
+        if written + coordinate.length + 2 <= message.length:
+            written += (try format(message[written..], f" {coordinate}")).length
+    if matches == 0: error(invalid, try format(message, f"no registry package is called {name}"))
+    if matches > 1:
+        let hint = "; name one as owner/name"
+        if written + hint.length <= message.length: written += (try format(message[written..], f"{hint}")).length
+        error(invalid, (str)message[..<written])
+    return owner
+
 ## Select one release for a requirement and walk its own dependencies.
 # mark: Resolving ==============================================================================
 

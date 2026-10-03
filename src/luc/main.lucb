@@ -36,7 +36,7 @@ import git
 import crypto_native
 
 ## The luc version, kept in step with package.prisma.
-pub let luc_version: str = "0.19.0"
+pub let luc_version: str = "0.19.1"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"
@@ -423,11 +423,21 @@ func list_tasks(project: Project*) -> !:
 # mark: Applications ===========================================================================
 
 ## `luc install <owner>/<name>[@<version>]`: fetch, build and install an application.
-## `luc latest owner/name`: the newest released version, alone on a line, for
+var owner_buffer: u8[128]
+var coordinate_buffer: u8[256]
+
+## `owner/name` as given, or a bare `name` with the owner of the one registry package
+## of that name: `luc install luced-2d` when no one else publishes a luced-2d.
+func qualified(wanted: str) -> str!:
+    if strings.contains(wanted, "/"): return wanted
+    let owner = try packages.owner_of(wanted, owner_buffer[0..], message_buffer[0..])
+    return try format(coordinate_buffer[0..], f"{owner}/{wanted}")
+
+## `luc latest [owner/]name`: the newest released version, alone on a line, for
 ## applications that tell their users of an update.
 func latest_command(own: str[]) -> i32!:
-    if own.length != 1: error(usage_error, "usage: luc latest <owner>/<name>")
-    let (owner, name) = strings.split_once(own[0], "/") else error(usage_error, "usage: luc latest <owner>/<name>")
+    if own.length != 1: error(usage_error, "usage: luc latest [<owner>/]<name>")
+    let (owner, name) = strings.split_once(try qualified(own[0]), "/") else error(usage_error, "usage: luc latest [<owner>/]<name>")
     var buffer: u8[64]
     let version = try packages.latest(owner, name, buffer)
     try io.stdout().write(f"{version}\n")
@@ -442,9 +452,10 @@ func install_command(own: str[], updating: bool = false) -> i32!:
         if argument != "--dev":
             wanted = argument
             count += 1
-    if count != 1: error(usage_error, "usage: luc install <owner>/<name>[@<version>] [--dev]")
-    let (coordinate, requirement) = strings.split_once(wanted, "@") else (wanted, "")
-    let (owner, name) = strings.split_once(coordinate, "/") else error(usage_error, "usage: luc install <owner>/<name>[@<version>] [--dev]")
+    if count != 1: error(usage_error, "usage: luc install [<owner>/]<name>[@<version>] [--dev]")
+    let (given, requirement) = strings.split_once(wanted, "@") else (wanted, "")
+    let coordinate = try qualified(given)
+    let (owner, name) = strings.split_once(coordinate, "/") else error(usage_error, "usage: luc install [<owner>/]<name>[@<version>] [--dev]")
     let home = try apps.home()
     defer strings.release(home)
     let scratch = try apps.child(home, "build")
@@ -917,7 +928,7 @@ func toml_line(key: str, value: str) -> str!:
 ## the official installers from luciaos.com. luc ships inside the luce-base release, so
 ## updating luce-base updates luc too. `--dry-run` prints the commands without running them.
 ## `luc update`: the whole toolset (luce, luce-base and luc, one release archive) through
-## the Luce installer. `luc update owner/name`: that application or tool at its newest
+## the Luce installer. `luc update [owner/]name`: that application or tool at its newest
 ## version, replacing what is installed.
 func update_command(own: str[]) -> i32!:
     for word in own:
@@ -1261,10 +1272,10 @@ func usage(out: io.Writer) -> !:
     try out.write("  lock                   resolve everything and write luc.lock\n")
     try out.write("  sync [--offline]       make .luc/deps match luc.lock\n\n")
     try out.write("Installing\n")
-    try out.write("  install owner/name[@version] [--dev]   download, build and install a tool or application;\n")
+    try out.write("  install [owner/]name[@version] [--dev]   download, build and install a tool or application;\n")
     try out.write("                         --dev keeps its tests/, dev/ and other development paths\n")
     try out.write("  list                   what is installed\n")
-    try out.write("  latest owner/name      the newest released version\n")
+    try out.write("  latest [owner/]name    the newest released version\n")
     try out.write("  uninstall <name>       remove it\n\n")
     try out.write("Other\n")
     try out.write("  update                 reinstall the latest luce, luce-base and luc\n")

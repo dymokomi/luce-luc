@@ -72,8 +72,9 @@ account.
 | Command | Does |
 | --- | --- |
 | `luc install owner/name[@version]` | downloads, builds and installs a tool or application, without its development paths |
+| `luc install name` | the same for the one registry package called `name`; when several owners publish that name, luc lists them and asks for `owner/name` |
 | `luc install owner/name --dev` | the same with the whole release tree: tests, dev and every declared development path |
-| `luc update owner/name` | brings an installed tool or application to its newest version, replacing the installed one |
+| `luc update [owner/]name` | brings an installed tool or application to its newest version, replacing the installed one |
 | `luc list` | shows what is installed |
 | `luc uninstall name` | removes it, including whatever was placed for the desktop |
 
