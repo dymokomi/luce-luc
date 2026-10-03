@@ -71,10 +71,16 @@ account.
 
 | Command | Does |
 | --- | --- |
-| `luc install owner/name[@version]` | downloads, builds and installs a tool or application |
+| `luc install owner/name[@version]` | downloads, builds and installs a tool or application, without its development paths |
+| `luc install owner/name --dev` | the same with the whole release tree: tests, dev and every declared development path |
 | `luc update owner/name` | brings an installed tool or application to its newest version, replacing the installed one |
 | `luc list` | shows what is installed |
 | `luc uninstall name` | removes it, including whatever was placed for the desktop |
+
+An install builds a working program, not a development checkout. It leaves out each
+package's development paths, for the package itself and for every dependency: `tests/`,
+`dev/`, and whatever the package lists in `str[] development` in package.prisma. Keep
+tests and test data under `tests/`.
 
 An application installs where the system keeps applications and opens like any other
 program:

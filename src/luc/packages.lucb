@@ -434,8 +434,9 @@ func verified_pack(item: Locked, offline: bool, output: u8[]) -> usize!:
 
 ## Download one released package and unpack it into `destination`, which must not
 ## exist. `requirement` is a version, a caret requirement, or empty for the newest.
-## The pack is checked against the SHA-256 the registry lists for that version.
-pub func download(owner: str, name: str, requirement: str, destination: str, version_output: u8[]) -> str!:
+## The pack is checked against the SHA-256 the registry lists for that version. Its
+## development paths (tests/, dev/, …) are left out unless `development`.
+pub func download(owner: str, name: str, requirement: str, destination: str, version_output: u8[], development: bool = false) -> str!:
     var graph = try new_graph()
     defer graph.close()
     let listing = try alloc u8[max_listing] in memory.heap
@@ -454,7 +455,7 @@ pub func download(owner: str, name: str, requirement: str, destination: str, ver
     defer pack.close()
     var commit: u8[20]
     try git.decode_id(item.commit, commit)
-    try checkout.materialize(&pack, commit, destination, history = false)
+    try checkout.materialize(&pack, commit, destination, history = false, development = development)
     return try format(version_output, f"{item.version}")
 
 ## True when this package, or a path dependency of it, needs a registry package.
@@ -577,6 +578,7 @@ pub func sync(root: str, offline: bool = false) -> usize!:
         let destination_z = try strings.copy(destination)
         defer strings.release(destination_z)
         if files.exists((c.str)destination_z): try files.remove_tree((c.str)destination_z)
-        try checkout.materialize(&pack, commit, destination, history = false)
+        # A dependency is built, never developed: its tests and dev paths stay out.
+        try checkout.materialize(&pack, commit, destination, history = false, development = false)
         try files.write((c.str)marker_z, b"")
     return graph.count

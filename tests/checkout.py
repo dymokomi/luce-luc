@@ -74,7 +74,39 @@ def check(binary, compiler):
         source.write_bytes(wire)
         run(True)
         assert (output / 'empty').is_dir()
-    print('PASS checkout byte/mode fidelity, Luce Base build/run, hostile paths and no-clobber rollback', flush=True)
+        # An install leaves out tests/, dev/ and the declared development paths; the
+        # whole tree stays available without --install (luc install --dev).
+        developed = (b'#prisma 4.0\ndef package "hello" {\n    str owner = "acme"\n    str version = "0.1.0"\n'
+                     b'    str kind = "tool"\n    str language = "luce-base"\n    str entry = "main.lucb"\n'
+                     b'    str[] development = ["tools", "docs/internal"]\n}\n')
+        inner = b'100644 vector.txt\0' + bytes.fromhex(identity(b'blob', b'vector').decode())
+        internal = b'100644 notes.md\0' + bytes.fromhex(identity(b'blob', b'internal').decode())
+        docs = (b'100644 API.md\0' + bytes.fromhex(identity(b'blob', b'public').decode())
+                + b'40000 internal\0' + bytes.fromhex(identity(b'tree', internal).decode()))
+        objects = [('blob', b'vector'), ('tree', inner), ('blob', b'internal'), ('tree', internal), ('blob', b'public'), ('tree', docs)]
+        entries = [(b'40000', b'dev', inner), (b'40000', b'docs', docs), (b'100644', b'main.lucb', main),
+                   (b'100644', b'package.prisma', developed), (b'40000', b'tests', inner), (b'100644', b'testsuite.txt', b'kept'),
+                   (b'40000', b'tools', inner)]
+        tree = b''
+        for mode, name, payload in entries:
+            kind = b'tree' if mode == b'40000' else b'blob'
+            if kind == b'blob':
+                objects.append(('blob', payload))
+            tree += mode + b' ' + name + b'\0' + bytes.fromhex(identity(kind, payload).decode())
+        objects.append(('tree', tree))
+        commit = b'tree ' + identity(b'tree', tree) + b'\nauthor A <a@b> 1 +0000\ncommitter A <a@b> 1 +0000\n\ndevelopment\n'
+        objects.append(('commit', commit))
+        source.write_bytes(pack(list(dict.fromkeys(objects))))
+        oid = identity(b'commit', commit)
+        for flag, kept in (([], True), (['--install'], False)):
+            output = root / f'development-{bool(flag)}'
+            result = subprocess.run([str(binary), 'checkout-pack', str(source), oid.decode(), str(output), *flag],
+                                    cwd=root, capture_output=True, timeout=40)
+            assert result.returncode == 0, result.stderr
+            assert (output / 'main.lucb').exists() and (output / 'testsuite.txt').exists() and (output / 'docs/API.md').exists()
+            for path in ('tests/vector.txt', 'dev/vector.txt', 'tools/vector.txt', 'docs/internal/notes.md'):
+                assert (output / path).exists() == kept, (path, flag)
+    print('PASS checkout byte/mode fidelity, Luce Base build/run, hostile paths, no-clobber rollback and development paths', flush=True)
 
 
 if __name__ == '__main__':

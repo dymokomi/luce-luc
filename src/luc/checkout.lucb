@@ -1,5 +1,8 @@
 ## Bounded source-tree materialization into a new directory, never a Git worktree.
+## An install leaves out the package's development paths (tests/, dev/ and what its
+## package.prisma lists); `development = true` keeps the whole tree.
 import git
+import pkg
 import crypto_native
 import files
 import paths
@@ -56,13 +59,36 @@ func cleanup(stage: str, entries: Entry[], made: usize*):
         strings.release(path)
     discard(files.remove_directory((c.str)stage) catch: recover ())
 
-pub func materialize(pack: git.Pack*, requested: const u8[], destination: str, history: bool = true) -> !:
+## The definition in the root tree's package.prisma, for its development paths.
+func root_definition(pack: git.Pack*, root: const u8[], budget: usize*) -> pkg.Definition!:
+    var offset: usize = 0
+    while offset < root.length:
+        let item = try git.decode_tree_entry(root[offset..])
+        offset += item.consumed
+        if item.name == "package.prisma":
+            let object = try lookup(pack, item.id, budget)
+            return try pkg.decode_package(object.payload)
+    error(invalid, "the release has no package.prisma")
+
+## Whether entry `path` (joined with the host separator) is a development path.
+func developing(definition: const pkg.Definition*, path: str) -> bool:
+    var logical: u8[4096]
+    if path.length > logical.length: return false
+    for i in 0..<path.length:
+        logical[i] = '/' if path.bytes[i] == '\\' else path.bytes[i]
+    return definition.is_development((str)logical[..<path.length])
+
+pub func materialize(pack: git.Pack*, requested: const u8[], destination: str, history: bool = true, development: bool = true) -> !:
     try pack_check.validate(pack, requested, history)
     var budget: usize = 16777216
     let commit = try git.decode_commit((try lookup(pack, requested, &budget)).payload)
     var tree_id: u8[20]
     try git.decode_id(commit.tree, tree_id)
     let root = try lookup(pack, tree_id, &budget)
+    var definition: pkg.Definition
+    defer definition.close()
+    if not development:
+        definition = try root_definition(pack, root.payload, &budget)
     let entries = try alloc Entry[4096] in memory.heap
     defer free(entries) in memory.heap
     var count: usize = 1
@@ -84,6 +110,9 @@ pub func materialize(pack: git.Pack*, requested: const u8[], destination: str, h
                 if path.length > 4096:
                     strings.release(path)
                     error(invalid, "checkout path too long")
+                if not development and developing(&definition, path):
+                    strings.release(path)
+                    continue
                 let object = lookup(pack, item.id, &budget) catch failure:
                     strings.release(path)
                     error(failure.code, failure.message)
@@ -127,7 +156,7 @@ pub func materialize(pack: git.Pack*, requested: const u8[], destination: str, h
             try file.sync()
     try files.rename((c.str)stage, (c.str)filename, replace = false)
 
-pub func from_pack(source: str, commit: str, destination: str) -> i32!:
+pub func from_pack(source: str, commit: str, destination: str, development: bool = true) -> i32!:
     for byte in destination.bytes:
         if byte == 0: error(invalid, "invalid checkout destination")
     if destination.length == 0: error(invalid, "empty checkout destination")
@@ -139,6 +168,6 @@ pub func from_pack(source: str, commit: str, destination: str) -> i32!:
     defer free(bytes) in memory.heap
     var pack = try git.decode_pack(bytes)
     defer pack.close()
-    try materialize(&pack, id, destination)
+    try materialize(&pack, id, destination, development = development)
     try io.stdout().write("checked out source tree (release signature not verified)\n")
     return 0

@@ -66,6 +66,10 @@ def release(site, work, name, version, module_source, dependencies=''):
                   f'{dependencies}}}\n')
     (repo / 'package.prisma').write_text(definition)
     (repo / 'src' / module / f'{module}.lucb').write_text(module_source)
+    # Development material every release carries and no dependency checkout should.
+    for relative in ('tests/vectors.txt', 'dev/notes.txt'):
+        (repo / relative).parent.mkdir(parents=True, exist_ok=True)
+        (repo / relative).write_text('development only')
     git(repo, 'init', '-q', '-b', 'main')
     git(repo, 'add', '-A')
     git(repo, 'commit', '-qm', f'{name} {version}')
@@ -224,6 +228,10 @@ def main():
         assert 'def package "greeter"' in lock and 'str version = "0.1.1"' in lock and '0.2.0' not in lock
         assert hashlib.sha256((site / 'acme/greeter/0.1.1.pack').read_bytes()).hexdigest() in lock
         assert 'hello 0.1.1' in run('run').splitlines()
+        # Dependencies are unpacked without their development paths.
+        greeter = app / '.luc' / 'deps' / 'greeter'
+        assert (greeter / 'package.prisma').exists() and (greeter / 'src').is_dir(), list(greeter.parent.iterdir())
+        assert not (greeter / 'tests').exists() and not (greeter / 'dev').exists()
         assert 'no such package' in run('add', 'acme/missing', success=False)
         # The newest release, whatever the requirement: 0.2.0 over the 0.1 line.
         assert run('latest', 'acme/greeter').strip() == '0.2.0'

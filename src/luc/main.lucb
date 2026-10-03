@@ -36,7 +36,7 @@ import git
 import crypto_native
 
 ## The luc version, kept in step with package.prisma.
-pub let luc_version: str = "0.18.13"
+pub let luc_version: str = "0.19.0"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"
@@ -434,9 +434,17 @@ func latest_command(own: str[]) -> i32!:
     return 0
 
 func install_command(own: str[], updating: bool = false) -> i32!:
-    if own.length != 1: error(usage_error, "usage: luc install <owner>/<name>[@<version>]")
-    let (coordinate, requirement) = strings.split_once(own[0], "@") else (own[0], "")
-    let (owner, name) = strings.split_once(coordinate, "/") else error(usage_error, "usage: luc install <owner>/<name>[@<version>]")
+    # `--dev` installs the package's whole tree, its tests and dev paths included.
+    let development = has(own, "--dev")
+    var wanted: str = ""
+    var count: usize = 0
+    for argument in own:
+        if argument != "--dev":
+            wanted = argument
+            count += 1
+    if count != 1: error(usage_error, "usage: luc install <owner>/<name>[@<version>] [--dev]")
+    let (coordinate, requirement) = strings.split_once(wanted, "@") else (wanted, "")
+    let (owner, name) = strings.split_once(coordinate, "/") else error(usage_error, "usage: luc install <owner>/<name>[@<version>] [--dev]")
     let home = try apps.home()
     defer strings.release(home)
     let scratch = try apps.child(home, "build")
@@ -449,7 +457,7 @@ func install_command(own: str[], updating: bool = false) -> i32!:
     defer discard(files.remove_tree((c.str)work_z) catch: recover ())
     var version_buffer: u8[64]
     try progress.step(f"fetching {coordinate}")
-    let version = try packages.download(owner, name, requirement, work, version_buffer)
+    let version = try packages.download(owner, name, requirement, work, version_buffer, development = development)
     try progress.detail(f"version {version}")
 
     let installed = try apps.child(home, "apps")
@@ -1165,8 +1173,10 @@ pub func main(arguments: c.str[]) -> i32!:
             if arguments.length != 5: error(usage_error, "usage: luc remote-fetch <registry-git-url> <commit-id> <new-pack-path>")
             return try remote.fetch((str)arguments[2], (str)arguments[3], (str)arguments[4])
         if command == "checkout-pack":
-            if arguments.length != 5: error(usage_error, "usage: luc checkout-pack <pack-path> <commit-id> <new-directory>")
-            return try checkout.from_pack((str)arguments[2], (str)arguments[3], (str)arguments[4])
+            # `--install` leaves the development paths out, as an install does.
+            let install = arguments.length == 6 and (str)arguments[5] == "--install"
+            if arguments.length != 5 and not install: error(usage_error, "usage: luc checkout-pack <pack-path> <commit-id> <new-directory> [--install]")
+            return try checkout.from_pack((str)arguments[2], (str)arguments[3], (str)arguments[4], development = not install)
         let (own, passthrough) = try partition(arguments, 2)
         defer release_string_array(own)
         defer release_string_array(passthrough)
@@ -1251,7 +1261,8 @@ func usage(out: io.Writer) -> !:
     try out.write("  lock                   resolve everything and write luc.lock\n")
     try out.write("  sync [--offline]       make .luc/deps match luc.lock\n\n")
     try out.write("Installing\n")
-    try out.write("  install owner/name[@version]   download, build and install a tool or application\n")
+    try out.write("  install owner/name[@version] [--dev]   download, build and install a tool or application;\n")
+    try out.write("                         --dev keeps its tests/, dev/ and other development paths\n")
     try out.write("  list                   what is installed\n")
     try out.write("  latest owner/name      the newest released version\n")
     try out.write("  uninstall <name>       remove it\n\n")
