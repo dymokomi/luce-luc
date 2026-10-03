@@ -262,6 +262,17 @@ def main():
         assert fetched.index('fetching 2 packages') < fetched.index('unpacking 2 dependencies'), fetched
         assert (cache / 'acme/greeter/0.1.1.pack').exists() and (cache / 'acme/polite-kit').is_dir()
 
+        # A fresh clone of a project whose author keeps its packages as sibling checkouts:
+        # a checkout path that is not there resolves from the registry by owner and version.
+        manifest = app / 'package.prisma'
+        authored = manifest.read_text()
+        manifest.write_text(authored.replace('str version = "^1.0.0"', 'str version = "^1.0.0"\n        str path = "../polite-kit-checkout"', 1))
+        subprocess.run(['rm', '-rf', str(app / '.luc'), str(app / 'build'), str(app / 'luc.lock')], check=True)
+        assert 'hello 0.1.1' in run('run').splitlines()
+        assert 'def package "polite-kit"' in (app / 'luc.lock').read_text()
+        manifest.write_text(authored)
+        assert 'synced 2' in run('lock') + run('sync')
+
         # The lock's SHA-256 is the integrity check: a changed cache or download is refused.
         cached = cache / 'acme/greeter/0.1.1.pack'
         cached.write_bytes(cached.read_bytes() + b'x')

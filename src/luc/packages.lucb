@@ -315,7 +315,10 @@ func resolve_levels(graph: Graph*, first: WantedList) -> !:
 
 ## Walk a local package: path dependencies are followed on disk, the registry ones
 ## collected for `resolve_levels`. `registry` marks a package that itself came from the
-## registry: its `path` overrides are its author's local checkouts and are ignored.
+## registry: its `path` overrides are its author's local checkouts and are ignored. So
+## is a checkout path that is not there, as in a fresh clone of an application whose
+## author keeps its packages as siblings: the registry release its owner and version
+## name stands in, as the compilers then look in .luc/deps for it.
 func resolve_local(graph: Graph*, directory: str, depth: usize, wanted: WantedList*, registry: bool = false) -> !:
     if depth > 32: error(invalid, "path dependencies nest too deeply or form a cycle")
     var definition = try project_file.read(directory)
@@ -327,6 +330,9 @@ func resolve_local(graph: Graph*, directory: str, depth: usize, wanted: WantedLi
             continue
         let location = try paths.join(directory, item.path)
         defer strings.release(location)
+        if not try project_file.exists_in(location):
+            try wanted.add(graph, item.owner, item.name, item.version)
+            continue
         try resolve_local(graph, location, depth + 1, wanted)
 
 func write_lock(root: str, graph: Graph*) -> !:
@@ -501,7 +507,9 @@ func needs_registry(directory: str, depth: usize, registry: bool = false) -> boo
         if item.path.length == 0 or registry: return true
         let location = try paths.join(directory, item.path)
         defer strings.release(location)
-        if try project_file.exists_in(location) and try needs_registry(location, depth + 1): return true
+        # A missing checkout comes from the registry, as resolve_local takes it.
+        if not try project_file.exists_in(location): return true
+        if try needs_registry(location, depth + 1): return true
     return false
 
 ## Before a build: lock if nothing is locked yet, then make .luc/deps match the lock.
