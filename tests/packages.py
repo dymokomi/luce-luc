@@ -60,12 +60,12 @@ def release(site, work, name, version, module_source, dependencies=''):
     """Publish one history-free release exactly as the registry does on a tag push."""
     repo = work / f'{name}-{version}'
     module = name.replace('-', '_')
-    (repo / 'src' / module).mkdir(parents=True)
+    (repo / 'src').mkdir(parents=True)
     definition = (f'#prisma 4.0\ndef package "{name}" {{\n    str owner = "acme"\n    str version = "{version}"\n'
-                  f'    str kind = "package"\n    str language = "luce-base"\n    def export "{module}" {{\n        str module = "{module}.{module}"\n    }}\n'
+                  f'    str kind = "package"\n    str language = "luce-base"\n    str[] public = ["{module}"]\n'
                   f'{dependencies}}}\n')
     (repo / 'package.prisma').write_text(definition)
-    (repo / 'src' / module / f'{module}.lucb').write_text(module_source)
+    (repo / 'src' / f'{module}.lucb').write_text(module_source)
     # Development material every release carries and no dependency checkout should.
     for relative in ('tests/vectors.txt', 'dev/notes.txt'):
         (repo / relative).parent.mkdir(parents=True, exist_ok=True)
@@ -216,7 +216,7 @@ def main():
         release(site, work, 'greeter', '0.1.0', 'pub func greeting() -> str:\n    return "hello 0.1.0"\n')
         release(site, work, 'greeter', '0.1.1', 'pub func greeting() -> str:\n    return "hello 0.1.1"\n')
         release(site, work, 'greeter', '0.2.0', 'pub func greeting() -> str:\n    return "hello 0.2.0"\n')
-        release(site, work, 'polite-kit', '1.0.0', 'import greeter\n\npub func welcome() -> str:\n    return greeter.greeting()\n',
+        release(site, work, 'polite-kit', '1.0.0', 'import greeter.greeter\n\npub func welcome() -> str:\n    return greeter.greeting()\n',
                 '    def dependency "greeter" {\n        str owner = "acme"\n        str version = "^0.1.0"\n'
                 '        str path = "../author-only-checkout"\n    }\n')
         handler = functools.partial(Quiet, directory=str(site))
@@ -234,7 +234,7 @@ def main():
         run('new', 'app')
         app = root / 'app'
         assert 'added dependency acme/polite-kit ^1.0.0' in run('add', 'acme/polite-kit')
-        (app / 'src' / 'main.lucb').write_text('import polite_kit\n\npub func main(arguments: str[]) -> i32:\n'
+        (app / 'src' / 'main.lucb').write_text('import polite_kit.polite_kit\n\npub func main(arguments: str[]) -> i32:\n'
                                                '    print(polite_kit.welcome())\n    return 0\n')
         lock = (app / 'luc.lock').read_text()
         # ^0.1.0 takes the newest 0.1.x and never 0.2.0; the author's path override is ignored.

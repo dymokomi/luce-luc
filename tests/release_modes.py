@@ -26,7 +26,7 @@ modes = [(f'native{i}', ['--native', '--opt', str(i)]) for i in range(4)]
 modes += [('c', ['--backend=c']), ('c-release', ['--backend=c', '--release'])]
 for name, flags in modes:
     binary = out / name
-    run([base, 'build', 'src/luc/main.lucb', *flags, '-o', binary])
+    run([base, 'build', 'src/main.lucb', *flags, '-o', binary])
     run([sys.executable, 'tests/remote.py', binary])
     run([sys.executable, 'tests/session.py', binary])
     run([sys.executable, 'tests/register.py', binary])
@@ -35,7 +35,7 @@ for name, flags in modes:
 runtime = ROOT.parent / 'luce-base/runtime'
 generated = out / 'sanitize.c'
 binary = out / 'sanitize'
-run([base, 'build', 'src/luc/main.lucb', '--emit=c', '-o', generated])
+run([base, 'build', 'src/main.lucb', '--emit=c', '-o', generated])
 sanitizers = ['-fsanitize=address,undefined']
 # The pinned Base compiler emits allocator callbacks with ABI-compatible but
 # type-incompatible function pointers on Linux. Clang's function UBSan

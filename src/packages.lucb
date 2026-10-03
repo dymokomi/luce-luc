@@ -6,19 +6,19 @@
 ## No account, credential or signature is involved. luc.lock pins every package to the
 ## SHA-256 of its pack, and a download whose digest differs is refused.
 import c
-import files
-import git
+import luce_std.files
+import luce_git.git
 import memory
 import os
-import paths
+import luce_std.paths
 import strings
-import pkg
-import prism
-import luc.apps as apps
-import luc.checkout as checkout
-import luc.progress as progress
-import luc.project_file as project_file
-import luc.registry_http as registry_http
+import luce_pkg.pkg
+import luce_prism.prism
+import apps
+import checkout
+import progress
+import project_file
+import registry_http
 import thread
 import time
 

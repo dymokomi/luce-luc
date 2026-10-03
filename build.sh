@@ -43,5 +43,5 @@ else
     fi
 fi
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) out=build/luc.exe ;; *) out=build/luc ;; esac
-"$base" build src/luc/main.lucb --native -o "$out"
+"$base" build src/main.lucb --native -o "$out"
 echo "built $out"

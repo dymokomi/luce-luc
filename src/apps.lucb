@@ -9,13 +9,13 @@
 ## luc validates every path and does the copying. A package without a script gets
 ## the default: its built executable as bin/<name>, linked as <name>.
 import c
-import files
+import luce_std.files
 import memory
 import os
-import paths
-import process
+import luce_std.paths
+import luce_std.process
 import strings
-import pkg
+import luce_pkg.pkg
 
 pub let invalid = pkg.invalid
 let max_plan_lines: usize = 1024

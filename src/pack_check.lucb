@@ -1,6 +1,6 @@
 ## Full-pack graph checks before publishing downloaded source objects.
-import git
-import crypto_native
+import luce_git.git
+import luce_crypto.native as crypto_native
 
 let invalid: ErrorCode = ErrorCode.package(3)
 

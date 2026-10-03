@@ -15,28 +15,28 @@
 import c
 import io
 import os
-import files
-import paths
+import luce_std.files
+import luce_std.paths
 import platform
-import process
+import luce_std.process
 import strings
 import memory
-import pkg
-import luc.remote as remote
-import luc.pack_check as pack_check
-import luc.credentials as credentials
-import luc.checkout as checkout
-import luc.project_file as project_file
-import luc.packages as packages
-import luc.registry_http as registry_http
-import luc.apps as apps
-import luc.progress as progress
-import luc.release as releasing
-import git
-import crypto_native
+import luce_pkg.pkg
+import remote
+import pack_check
+import credentials
+import checkout
+import project_file
+import packages
+import registry_http
+import apps
+import progress
+import release as releasing
+import luce_git.git
+import luce_crypto.native as crypto_native
 
 ## The luc version, kept in step with package.prisma.
-pub let luc_version: str = "0.19.1"
+pub let luc_version: str = "0.20.0"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"
@@ -87,20 +87,18 @@ struct Project:
         return try toolchain_compiler("luce-base", "LUCE_BASE")
 
     ## The entry source: the manifest's `entry`, else the conventional app main, else the
-    ## package's own library module (src/<name>/<name>.<ext>) so `check` works on a package.
+    ## library's starter module (src/<module>.<ext>) so `check` works on a package.
     func entry_path() -> str!:
         if self.entry.length > 0:
             return try paths.join(self.root, self.entry)
         let suffix = ".luc" if self.language == "luce" else ".lucb"
         let main_name = try join_name("main", suffix)
         defer strings.release(main_name)
-        let identifier = try project_file.module_name(self.name)
-        defer strings.release(identifier)
-        let module_name = try join_name(identifier, suffix)
+        let library = try project_file.library_module(self.name)
+        defer strings.release(library)
+        let module_name = try join_name(library, suffix)
         defer strings.release(module_name)
-        let module_directory = try paths.join("src", identifier)
-        defer strings.release(module_directory)
-        let module = try paths.join(module_directory, module_name)
+        let module = try paths.join("src", module_name)
         defer strings.release(module)
         let application = try paths.join("src", main_name)
         defer strings.release(application)
@@ -111,7 +109,7 @@ struct Project:
             strings.release(terminated)
             if exists: return candidate
             strings.release(candidate)
-        error(usage_error, "no entry source found (expected src/main or src/<name>/<name>); set entry in package.prisma")
+        error(usage_error, "no entry source found (expected src/main or src/<module>, the last word of the package's name); set entry in package.prisma")
 
     func find_task(name: str) -> Task?:
         var index: usize = 0
@@ -1007,15 +1005,13 @@ func scaffold(target: str, name: str, language: str, kind: str) -> !:
     try write_file(try paths.join(target, project_file.file_name), try project_file.scaffold(name, default_owner, language, kind, definition))
     try write_file(try paths.join(target, ".gitignore"), "build/\n.luc/\n")
     if kind == "package":
-        # A package may be named luce-json; its module is the identifier luce_json.
-        let module = try project_file.module_name(name)
+        # luce-json's starter module is src/json, imported as `from luce_json import json`
+        let module = try project_file.library_module(name)
         defer strings.release(module)
-        let module_dir = try paths.join(source, module)
-        try ensure_dir(module_dir)
-        try write_file(try paths.join(module_dir, try join_name(module, suffix)), try library_source(module, language))
+        try write_file(try paths.join(source, try join_name(module, suffix)), try library_source(module, language))
     elif kind == "application":
         var window: u8[1024]
-        try write_file(try paths.join(source, "main.luc"), try format(window, f"from ui import Application, Button, Text, VStack\n\npub func main(arguments: list[str]) -> int!:\n    let button = Button(\"Continue\")\n    let content = VStack([Text(\"Hello from {name}\"), button], padding = 24.0)\n    let app = Application(content, title = \"{name}\")\n    app.run()\n    return 0\n"))
+        try write_file(try paths.join(source, "main.luc"), try format(window, f"from luce_ui.ui import Application, Button, Text, VStack\n\npub func main(arguments: list[str]) -> int!:\n    let button = Button(\"Continue\")\n    let content = VStack([Text(\"Hello from {name}\"), button], padding = 24.0)\n    let app = Application(content, title = \"{name}\")\n    app.run()\n    return 0\n"))
     else:
         try write_file(try paths.join(source, try join_name("main", suffix)), try program_source(name, language))
 

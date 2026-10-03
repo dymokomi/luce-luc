@@ -1,17 +1,17 @@
 ## Native Git smart-HTTP transport over canonical loopback HTTP or verified
 ## production HTTPS.
-import git
+import luce_git.git
 import os
 import c
 import strings
 import memory
 import io
-import files
-import paths
-import crypto_native
-import luc.pack_check as pack_check
-import luc.credentials as credentials
-import luc.registry_http as registry
+import luce_std.files
+import luce_std.paths
+import luce_crypto.native as crypto_native
+import pack_check
+import credentials
+import registry_http as registry
 
 let invalid: ErrorCode = ErrorCode.package(2)
 

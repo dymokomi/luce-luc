@@ -1,17 +1,17 @@
 ## Bounded source-tree materialization into a new directory, never a Git worktree.
 ## An install leaves out the package's development paths (tests/, dev/ and what its
 ## package.prisma lists); `development = true` keeps the whole tree.
-import git
-import pkg
-import crypto_native
-import files
-import paths
+import luce_git.git
+import luce_pkg.pkg
+import luce_crypto.native as crypto_native
+import luce_std.files
+import luce_std.paths
 import strings
 import memory
 import c
 import io
 import os
-import luc.pack_check as pack_check
+import pack_check
 
 let invalid: ErrorCode = ErrorCode.package(4)
 

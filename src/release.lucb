@@ -11,12 +11,12 @@
 import c
 import io
 import memory
-import process
+import luce_std.process
 import strings
-import pkg
-import luc.credentials as credentials
-import luc.project_file as project_file
-import luc.registry_http as registry_http
+import luce_pkg.pkg
+import credentials
+import project_file
+import registry_http
 
 pub let invalid = pkg.invalid
 

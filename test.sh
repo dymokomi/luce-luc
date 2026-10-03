@@ -34,19 +34,19 @@ rm -rf "$scaff"; mkdir -p "$scaff"
 [ -f "$scaff/demo/package.prisma" ] && [ -f "$scaff/demo/src/main.lucb" ] || { echo "FAIL: new app layout"; exit 1; }
 [ "$( cd "$scaff/demo" && "$luc" run )" = "hello from demo" ] || { echo "FAIL: scaffolded app run"; exit 1; }
 ( cd "$scaff" && "$luc" new mylib --package ) > /dev/null || { echo "FAIL: new package"; exit 1; }
-[ -f "$scaff/mylib/src/mylib/mylib.lucb" ] || { echo "FAIL: new package layout"; exit 1; }
-# a hyphenated package name scaffolds an identifier module, and checks
+[ -f "$scaff/mylib/src/mylib.lucb" ] || { echo "FAIL: new package layout"; exit 1; }
+# a hyphenated package name scaffolds a module named by its last word, and checks
 ( cd "$scaff" && "$luc" new my-kit --package ) > /dev/null || { echo "FAIL: new hyphenated package"; exit 1; }
-[ -f "$scaff/my-kit/src/my_kit/my_kit.lucb" ] && grep -q 'module = "my_kit.my_kit"' "$scaff/my-kit/package.prisma" || { echo "FAIL: hyphenated package layout"; exit 1; }
+[ -f "$scaff/my-kit/src/kit.lucb" ] && grep -q 'public = \["kit"\]' "$scaff/my-kit/package.prisma" || { echo "FAIL: hyphenated package layout"; exit 1; }
 ( cd "$scaff/my-kit" && "$luc" check ) || { echo "FAIL: hyphenated package check"; exit 1; }
 ( cd "$scaff/mylib" && "$luc" check ) || { echo "FAIL: package check"; exit 1; }
 ( cd "$scaff/demo" && "$luc" init ) 2>/dev/null && { echo "FAIL: init over an existing manifest should refuse"; exit 1; } || true
-# dependencies: an app depends on the scaffolded local package and imports its export
+# dependencies: an app depends on the scaffolded local package and imports its public module
 ( cd "$scaff" && "$luc" new app1 ) > /dev/null || { echo "FAIL: new app1"; exit 1; }
 ( cd "$scaff/app1" && "$luc" add ../mylib ) > /dev/null || { echo "FAIL: add"; exit 1; }
 grep -q 'def dependency "mylib"' "$scaff/app1/package.prisma" || { echo "FAIL: dependency not written"; cat "$scaff/app1/package.prisma"; exit 1; }
 [ ! -e "$scaff/app1/luce.toml" ] || { echo "FAIL: luce.toml must not be generated"; exit 1; }
-printf 'import mylib\npub func main(arguments: str[]) -> i32:\n    print(mylib.greeting())\n    return 0\n' > "$scaff/app1/src/main.lucb"
+printf 'import mylib.mylib\npub func main(arguments: str[]) -> i32:\n    print(mylib.greeting())\n    return 0\n' > "$scaff/app1/src/main.lucb"
 [ "$( cd "$scaff/app1" && "$luc" run )" = "hello from mylib" ] || { echo "FAIL: dependency import/run"; exit 1; }
 ( cd "$scaff/app1" && "$luc" remove mylib ) > /dev/null || { echo "FAIL: remove"; exit 1; }
 grep -q 'mylib' "$scaff/app1/package.prisma" && { echo "FAIL: dependency not removed"; exit 1; } || true

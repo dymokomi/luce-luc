@@ -1,11 +1,11 @@
 ## package.prisma is the one project file; the compilers read it directly.
 import c
-import files
+import luce_std.files
 import memory
-import paths
+import luce_std.paths
 import strings
-import pkg
-import prism
+import luce_pkg.pkg
+import luce_prism.prism
 
 pub let file_name = "package.prisma"
 pub let generated_name = "luce.toml"
@@ -135,14 +135,24 @@ pub func module_name(name: str) -> str!:
         if bytes[i] == '-': bytes[i] = '_'
     return copy
 
+## The starter module of a new library: the last word of its name, `json` for luce-json
+## and `lib` for my-lib, so a consumer writes `from luce_json import json` rather than
+## repeating the package's name (base.md §16.3).
+pub func library_module(name: str) -> str!:
+    var start: usize = 0
+    for i in 0..<name.length:
+        if (name.bytes[i] == '-' or name.bytes[i] == '_') and i + 1 < name.length:
+            start = i + 1
+    return try strings.copy((str)name.bytes[start..])
+
 ## Text of a new package.prisma for `luc init` and `luc new`. `kind` is package,
 ## application or tool; an application is a luce-ui window with its desktop bundle.
 pub func scaffold(name: str, owner: str, language: str, kind: str, output: u8[]) -> str!:
     let suffix = ".luc" if language == "luce" else ".lucb"
-    let module = try module_name(name)
+    let module = try library_module(name)
     defer strings.release(module)
     if kind == "package":
-        return try format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str kind = \"package\"\n    str language = \"{language}\"\n    def export \"{module}\" {{\n        str module = \"{module}.{module}\"\n    }}\n}}\n")
+        return try format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str kind = \"package\"\n    str language = \"{language}\"\n    str[] public = [\"{module}\"]\n}}\n")
     if kind == "tool":
         return try format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str kind = \"tool\"\n    str language = \"{language}\"\n    str entry = \"src/main{suffix}\"\n}}\n")
     # The display name is the package name in words: my-editor -> "My Editor".
