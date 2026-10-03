@@ -1,11 +1,11 @@
 ## package.prisma is the one project file; the compilers read it directly.
 import c
-import luce_std.files
+from luce_std import files
 import memory
-import luce_std.paths
+from luce_std import paths
 import strings
-import luce_pkg.pkg
-import luce_prism.prism
+from luce_pkg import pkg
+from luce_prism import prism
 
 pub let file_name = "package.prisma"
 pub let generated_name = "luce.toml"

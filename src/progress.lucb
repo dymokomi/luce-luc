@@ -2,7 +2,7 @@
 ## a line that keeps time, so a slow download or build never looks like a hang.
 import c
 import io
-import luce_std.process
+from luce_std import process
 import thread
 import time
 

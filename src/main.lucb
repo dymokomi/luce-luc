@@ -15,13 +15,12 @@
 import c
 import io
 import os
-import luce_std.files
-import luce_std.paths
+from luce_std import files, paths
 import platform
-import luce_std.process
+from luce_std import process
 import strings
 import memory
-import luce_pkg.pkg
+from luce_pkg import pkg
 import remote
 import pack_check
 import credentials
@@ -32,11 +31,11 @@ import registry_http
 import apps
 import progress
 import release as releasing
-import luce_git.git
-import luce_crypto.native as crypto_native
+from luce_git import git
+from luce_crypto import native as crypto_native
 
 ## The luc version, kept in step with package.prisma.
-pub let luc_version: str = "0.20.0"
+pub let luc_version: str = "0.20.1"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"

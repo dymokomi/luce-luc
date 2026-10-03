@@ -1,14 +1,13 @@
 ## Native Git smart-HTTP transport over canonical loopback HTTP or verified
 ## production HTTPS.
-import luce_git.git
+from luce_git import git
 import os
 import c
 import strings
 import memory
 import io
-import luce_std.files
-import luce_std.paths
-import luce_crypto.native as crypto_native
+from luce_std import files, paths
+from luce_crypto import native as crypto_native
 import pack_check
 import credentials
 import registry_http as registry

@@ -1,9 +1,8 @@
 ## One strict registry transport boundary. Local integration keeps canonical
 ## numeric-loopback HTTP; production uses verified native HTTPS at the single
 ## Lucia OS registry origin.
-import luce_http_client.client as http_client
-import luce_http_client.secure as https
-import luce_std.net
+from luce_http_client import client as http_client, secure as https
+from luce_std import net
 import strings
 
 pub let invalid: ErrorCode = ErrorCode.package(12)

@@ -11,9 +11,9 @@
 import c
 import io
 import memory
-import luce_std.process
+from luce_std import process
 import strings
-import luce_pkg.pkg
+from luce_pkg import pkg
 import credentials
 import project_file
 import registry_http

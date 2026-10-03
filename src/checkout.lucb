@@ -1,11 +1,10 @@
 ## Bounded source-tree materialization into a new directory, never a Git worktree.
 ## An install leaves out the package's development paths (tests/, dev/ and what its
 ## package.prisma lists); `development = true` keeps the whole tree.
-import luce_git.git
-import luce_pkg.pkg
-import luce_crypto.native as crypto_native
-import luce_std.files
-import luce_std.paths
+from luce_git import git
+from luce_pkg import pkg
+from luce_crypto import native as crypto_native
+from luce_std import files, paths
 import strings
 import memory
 import c
