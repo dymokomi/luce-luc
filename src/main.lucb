@@ -35,7 +35,7 @@ from luce_git import git
 from luce_crypto import native as crypto_native
 
 ## The luc version, kept in step with package.prisma.
-pub let luc_version: str = "0.20.5"
+pub let luc_version: str = "0.20.6"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"
@@ -89,7 +89,7 @@ struct Project:
     ## library's starter module (src/<module>.<ext>) so `check` works on a package.
     func entry_path() -> str!:
         if self.entry.length > 0:
-            return try paths.join(self.root, self.entry)
+            return try join(self.root, self.entry)
         let suffix = ".luc" if self.language == "luce" else ".lucb"
         let main_name = try join_name("main", suffix)
         defer strings.release(main_name)
@@ -98,11 +98,11 @@ struct Project:
         let module_name = try join_name(library, suffix)
         defer strings.release(module_name)
         let module = try paths.join("src", module_name)
-        defer strings.release(module)
+        defer module.release()
         let application = try paths.join("src", main_name)
-        defer strings.release(application)
-        for relative in [application, main_name, module]:
-            let candidate = try paths.join(self.root, relative)
+        defer application.release()
+        for relative in [application.value, main_name, module.value]:
+            let candidate = try join(self.root, relative)
             let terminated = try strings.copy(candidate)
             let exists = files.exists((c.str)terminated)
             strings.release(terminated)
@@ -263,24 +263,29 @@ func spawn(program: str, arguments: str[]) -> i32!:
     while index < arguments.length:
         argv[index] = (c.str)try strings.copy(arguments[index])
         index += 1
-    let (status, out, err) = try process.run((c.str)program_text, argv)
-    defer process.release(out)
-    defer process.release(err)
-    if out.length > 0:
-        try io.stdout().write(out)
-    if err.length > 0:
-        try io.stderr().write(err)
-    return status
+    let ran = try process.run((c.str)program_text, argv)
+    defer ran.release()
+    if ran.value.output.length > 0:
+        try io.stdout().write(ran.value.output)
+    if ran.value.error_output.length > 0:
+        try io.stderr().write(ran.value.error_output)
+    return ran.value.exit_code
 
 func release_spawn_arguments(arguments: c.str[], count: usize):
     for i in 0..<count: strings.release((str)arguments[i])
     if arguments.length > 0: free(arguments) in memory.heap
 
+## `left` and `right` joined, as text the caller releases with strings.release.
+func join(left: str, right: str) -> str!:
+    let joined = try paths.join(left, right)
+    defer joined.release()
+    return try strings.copy(joined.value)
+
 ## The project's build output path, build/<name> under its root.
 func output_path(project: Project*) -> str!:
     let directory = try paths.join(project.root, "build")
-    defer strings.release(directory)
-    return try paths.join(directory, project.name)
+    defer directory.release()
+    return try join(directory.value, project.name)
 
 ## Build the project's entry into build/<name> under the project root.
 func build(project: Project*, release: bool, extra: str[]) -> i32!:
@@ -308,11 +313,9 @@ func build(project: Project*, release: bool, extra: str[]) -> i32!:
 
 func ensure_build(project: Project*) -> !:
     let directory = try paths.join(project.root, "build")
-    defer strings.release(directory)
-    let terminated = try strings.copy(directory)
-    defer strings.release(terminated)
-    if not files.exists((c.str)terminated):
-        try files.create_directory((c.str)terminated)
+    defer directory.release()
+    if not files.exists((c.str)directory.value):
+        try files.create_directory((c.str)directory.value)
 
 ## Build, then run the produced binary with `arguments`.
 func run_app(project: Project*, release: bool, arguments: str[]) -> i32!:
@@ -457,12 +460,11 @@ func install_command(own: str[], updating: bool = false) -> i32!:
     defer strings.release(home)
     let scratch = try apps.child(home, "build")
     defer strings.release(scratch)
-    let work = try paths.join(scratch, name)
-    defer strings.release(work)
-    let work_z = try strings.copy(work)
-    defer strings.release(work_z)
-    if files.exists((c.str)work_z): try files.remove_tree((c.str)work_z)
-    defer discard(files.remove_tree((c.str)work_z) catch: recover ())
+    let work_path = try paths.join(scratch, name)
+    defer work_path.release()
+    let work = work_path.value
+    if files.exists((c.str)work): try files.remove_tree((c.str)work)
+    defer discard(files.remove_tree((c.str)work) catch: recover ())
     var version_buffer: u8[64]
     try progress.step(f"fetching {coordinate}")
     let version = try packages.download(owner, name, requirement, work, version_buffer, development = development)
@@ -472,11 +474,10 @@ func install_command(own: str[], updating: bool = false) -> i32!:
     defer strings.release(installed)
     let application = try apps.child(installed, name)
     defer strings.release(application)
-    let placed = try paths.join(application, version)
-    defer strings.release(placed)
-    let placed_z = try strings.copy(placed)
-    defer strings.release(placed_z)
-    if files.exists((c.str)placed_z):
+    let placed_path = try paths.join(application, version)
+    defer placed_path.release()
+    let placed = placed_path.value
+    if files.exists((c.str)placed):
         if updating:
             try io.stdout().write(f"{coordinate} {version} is the newest; it is installed\n")
         else:
@@ -499,10 +500,10 @@ func install_command(own: str[], updating: bool = false) -> i32!:
     var plan = try format(plan_buffer, f"copy build/{project.name} -> bin/{name}\nlink {name} -> bin/{name}\n")
     if bundled.length > 0 and definition.install.length == 0:
         let built_build = try paths.join(work, "build")
-        defer strings.release(built_build)
-        let built = try paths.join(built_build, bundled)
-        defer strings.release(built)
-        let status_code = try install_application(&definition, built, application, placed, home, name, coordinate, version)
+        defer built_build.release()
+        let built = try paths.join(built_build.value, bundled)
+        defer built.release()
+        let status_code = try install_application(&definition, built.value, application, placed, home, name, coordinate, version)
         try remove_other_versions(application, version)
         return status_code
     var scripted = ""
@@ -512,21 +513,17 @@ func install_command(own: str[], updating: bool = false) -> i32!:
         plan = scripted
 
     let staging = try paths.join(application, ".staging")
-    defer strings.release(staging)
-    let staging_z = try strings.copy(staging)
-    defer strings.release(staging_z)
-    if files.exists((c.str)staging_z): try files.remove_tree((c.str)staging_z)
-    try files.create_directory((c.str)staging_z)
-    errdefer discard(files.remove_tree((c.str)staging_z) catch: recover ())
+    defer staging.release()
+    if files.exists((c.str)staging.value): try files.remove_tree((c.str)staging.value)
+    try files.create_directory((c.str)staging.value)
+    errdefer discard(files.remove_tree((c.str)staging.value) catch: recover ())
     var links: u8[16384]
     var links_used: usize
-    try apps.apply(plan, work, staging, links[0..], &links_used)
-    let record = try paths.join(staging, ".luc-links")
-    defer strings.release(record)
-    let record_z = try strings.copy(record)
-    defer strings.release(record_z)
-    try files.write((c.str)record_z, links[..<links_used])
-    try files.rename((c.str)staging_z, (c.str)placed_z, replace = false)
+    try apps.apply(plan, work, staging.value, links[0..], &links_used)
+    let record = try paths.join(staging.value, ".luc-links")
+    defer record.release()
+    try files.write((c.str)record.value, links[..<links_used])
+    try files.rename((c.str)staging.value, (c.str)placed, replace = false)
 
     let commands = try apps.child(home, "bin")
     defer strings.release(commands)
@@ -536,12 +533,10 @@ func install_command(own: str[], updating: bool = false) -> i32!:
         let (command, relative) = strings.split_once((str)links[start..<end], "\t") else continue
         start = end + 1
         let target = try paths.join(placed, relative)
-        defer strings.release(target)
-        let target_z = try strings.copy(target)
-        defer strings.release(target_z)
-        if not files.exists((c.str)target_z): error(usage_error, "the install plan links a file it did not copy")
-        try apps.link_command(commands, command, target)
-        try io.stdout().write(f"  {command} -> {target}\n")
+        defer target.release()
+        if not files.exists((c.str)target.value): error(usage_error, "the install plan links a file it did not copy")
+        try apps.link_command(commands, command, target.value)
+        try io.stdout().write(f"  {command} -> {target.value}\n")
     try remove_other_versions(application, version)
     try io.stdout().write(f"installed {coordinate} {version}\n")
     return 0
@@ -553,14 +548,12 @@ func remove_other_versions(application: str, kept: str) -> !:
     let application_z = try strings.copy(application)
     defer strings.release(application_z)
     let versions = try files.list((c.str)application_z)
-    defer files.release_list(versions)
-    for version in versions:
+    defer versions.release()
+    for version in versions.value:
         if version == kept or strings.starts_with(version, "."): continue
         let inner = try paths.join(application, version)
-        defer strings.release(inner)
-        let inner_z = try strings.copy(inner)
-        defer strings.release(inner_z)
-        try files.remove_tree((c.str)inner_z)
+        defer inner.release()
+        try files.remove_tree((c.str)inner.value)
         try progress.detail(f"removed version {version}")
 
 ## Install a desktop application: the bundle goes where the system keeps applications
@@ -573,26 +566,20 @@ func install_application(definition: pkg.Definition*, built: str, application: s
     let executable = try apps.place(definition, built, record, &used)
     defer strings.release(executable)
     let staging = try paths.join(application, ".staging")
-    defer strings.release(staging)
-    let staging_z = try strings.copy(staging)
-    defer strings.release(staging_z)
-    if files.exists((c.str)staging_z): try files.remove_tree((c.str)staging_z)
-    try files.create_directory((c.str)staging_z)
-    errdefer discard(files.remove_tree((c.str)staging_z) catch: recover ())
-    let placed_note = try paths.join(staging, ".luc-placed")
-    defer strings.release(placed_note)
-    let placed_note_z = try strings.copy(placed_note)
-    defer strings.release(placed_note_z)
-    try files.write((c.str)placed_note_z, record[..<used])
+    defer staging.release()
+    if files.exists((c.str)staging.value): try files.remove_tree((c.str)staging.value)
+    try files.create_directory((c.str)staging.value)
+    errdefer discard(files.remove_tree((c.str)staging.value) catch: recover ())
+    let placed_note = try paths.join(staging.value, ".luc-placed")
+    defer placed_note.release()
+    try files.write((c.str)placed_note.value, record[..<used])
     var link_line: u8[1200]
-    let links_note = try paths.join(staging, ".luc-links")
-    defer strings.release(links_note)
-    let links_note_z = try strings.copy(links_note)
-    defer strings.release(links_note_z)
-    try files.write((c.str)links_note_z, (try format(link_line, f"{name}\t{executable}\n")).bytes)
+    let links_note = try paths.join(staging.value, ".luc-links")
+    defer links_note.release()
+    try files.write((c.str)links_note.value, (try format(link_line, f"{name}\t{executable}\n")).bytes)
     let placed_z = try strings.copy(placed)
     defer strings.release(placed_z)
-    try files.rename((c.str)staging_z, (c.str)placed_z, replace = false)
+    try files.rename((c.str)staging.value, (c.str)placed_z, replace = false)
     let commands = try apps.child(home, "bin")
     defer strings.release(commands)
     try apps.link_command(commands, name, executable)
@@ -609,12 +596,12 @@ func install_application(definition: pkg.Definition*, built: str, application: s
 func default_vault() -> str!:
     let home = try apps.home()
     defer strings.release(home)
-    return try paths.join(home, "session")
+    return try join(home, "session")
 
 func account_file() -> str!:
     let home = try apps.home()
     defer strings.release(home)
-    return try paths.join(home, "account")
+    return try join(home, "account")
 
 ## Only the real registry's account is remembered: a test or a loopback registry must
 ## never change who `luc login` logs in as.
@@ -633,9 +620,9 @@ func remembered_account() -> str!:
     let terminated = try strings.copy(path)
     defer strings.release(terminated)
     if not files.exists((c.str)terminated): return try strings.copy("")
-    let bytes = try files.read_limit((c.str)terminated, 128)
-    defer free(bytes) in memory.heap
-    return try strings.copy(strings.trim((str)bytes))
+    let bytes = try files.read((c.str)terminated, limit = 128)
+    defer bytes.release()
+    return try strings.copy(strings.trim((str)bytes.value))
 
 ## `luc info`: the project as other tools see it, one `key<TAB>value` per line. Written
 ## for luced, which asks luc about a project rather than reading package.prisma itself.
@@ -663,7 +650,7 @@ func info_command() -> i32!:
     return 0
 
 func if_release(text: str):
-    if text.length > 0: process.release(text)
+    if text.length > 0: strings.release(text)
 
 ## `luc uninstall <name>`: remove an application and the commands it linked. Runs no package code.
 func uninstall_command(own: str[]) -> i32!:
@@ -675,33 +662,33 @@ func uninstall_command(own: str[]) -> i32!:
     defer strings.release(home)
     let installed = try apps.child(home, "apps")
     defer strings.release(installed)
-    let application = try paths.join(installed, name)
-    defer strings.release(application)
-    let application_z = try strings.copy(application)
-    defer strings.release(application_z)
-    if not files.exists((c.str)application_z):
+    let application_path = try paths.join(installed, name)
+    defer application_path.release()
+    let application = application_path.value
+    if not files.exists((c.str)application):
         try io.stderr().write(f"luc: {name} is not installed\n")
         return 1
     let commands = try apps.child(home, "bin")
     defer strings.release(commands)
-    let entries = try files.list((c.str)try strings.copy(commands))
-    defer files.release_list(entries)
-    for entry in entries:
+    let commands_z = try strings.copy(commands)
+    defer strings.release(commands_z)
+    let entries = try files.list((c.str)commands_z)
+    defer entries.release()
+    for entry in entries.value:
         let link = try paths.join(commands, entry)
-        defer strings.release(link)
-        let link_z = try strings.copy(link)
-        defer strings.release(link_z)
-        let target = files.read_symlink((c.str)link_z) catch: continue
-        if strings.starts_with(target, application) and target.length > application.length and target.bytes[application.length] == '/':
-            try files.remove_file((c.str)link_z)
+        defer link.release()
+        let target = files.read_symlink((c.str)link.value) catch: continue
+        defer target.release()
+        if strings.starts_with(target.value, application) and target.value.length > application.length and target.value.bytes[application.length] == '/':
+            try files.remove_file((c.str)link.value)
     # Remove what each installed version placed outside ~/.luce and the commands it linked.
-    let versions = try files.list((c.str)application_z)
-    defer files.release_list(versions)
-    for version in versions:
+    let versions = try files.list((c.str)application)
+    defer versions.release()
+    for version in versions.value:
         let inner = try paths.join(application, version)
-        defer strings.release(inner)
-        try remove_recorded(inner, commands)
-    try files.remove_tree((c.str)application_z)
+        defer inner.release()
+        try remove_recorded(inner.value, commands)
+    try files.remove_tree((c.str)application)
     try io.stdout().write(f"uninstalled {name}\n")
     return 0
 
@@ -709,24 +696,22 @@ func uninstall_command(own: str[]) -> i32!:
 ## command in .luc-links that is still a link.
 func remove_recorded(inner: str, commands: str) -> !:
     let placed_note = try paths.join(inner, ".luc-placed")
-    defer strings.release(placed_note)
-    let placed_z = try strings.copy(placed_note)
-    defer strings.release(placed_z)
-    if not files.exists((c.str)placed_z): return
-    let recorded = try files.read_limit((c.str)placed_z, 4096)
-    defer free(recorded) in memory.heap
+    defer placed_note.release()
+    if not files.exists((c.str)placed_note.value): return
+    let read_placed = try files.read((c.str)placed_note.value, limit = 4096)
+    defer read_placed.release()
+    let recorded = read_placed.value
     var start: usize
     for end in 0..<recorded.length:
         if recorded[end] != '\n': continue
         try apps.unplace((str)recorded[start..<end])
         start = end + 1
     let links_note = try paths.join(inner, ".luc-links")
-    defer strings.release(links_note)
-    let links_z = try strings.copy(links_note)
-    defer strings.release(links_z)
-    if not files.exists((c.str)links_z): return
-    let links = try files.read_limit((c.str)links_z, 16384)
-    defer free(links) in memory.heap
+    defer links_note.release()
+    if not files.exists((c.str)links_note.value): return
+    let read_links = try files.read((c.str)links_note.value, limit = 16384)
+    defer read_links.release()
+    let links = read_links.value
     start = 0
     for end in 0..<links.length:
         if links[end] != '\n': continue
@@ -741,14 +726,16 @@ func list_command() -> i32!:
     defer strings.release(home)
     let installed = try apps.child(home, "apps")
     defer strings.release(installed)
-    let names = try files.list((c.str)try strings.copy(installed))
-    defer files.release_list(names)
-    for name in names:
+    let installed_z = try strings.copy(installed)
+    defer strings.release(installed_z)
+    let names = try files.list((c.str)installed_z)
+    defer names.release()
+    for name in names.value:
         let application = try paths.join(installed, name)
-        defer strings.release(application)
-        let versions = try files.list((c.str)try strings.copy(application))
-        defer files.release_list(versions)
-        for version in versions:
+        defer application.release()
+        let versions = try files.list((c.str)application.value)
+        defer versions.release()
+        for version in versions.value:
             if not strings.starts_with(version, "."): try io.stdout().write(f"{name} {version}\n")
     return 0
 
@@ -803,16 +790,19 @@ func remove_command(project: Project*, own: str[]) -> i32!:
 func clean_command(project: Project*, own: str[]) -> i32!:
     let manifest = try require_manifest(project)
     strings.release(manifest)
-    var target = try paths.join(project.root, "build")
+    let build_directory = try paths.join(project.root, "build")
+    defer build_directory.release()
+    let cache_directory = try paths.join(build_directory.value, ".cache")
+    defer cache_directory.release()
+    var target = build_directory.value
     var label = "build"
     if own.length > 0 and own[0] == "cache":
-        target = try paths.join(target, ".cache")
+        target = cache_directory.value
         label = "build/.cache"
-    let terminated = try strings.copy(target)
-    if not files.exists((c.str)terminated):
+    if not files.exists((c.str)target):
         try io.stdout().write(f"nothing to clean ({label} is not present)\n")
         return 0
-    try files.remove_tree((c.str)terminated)
+    try files.remove_tree((c.str)target)
     try io.stdout().write(f"removed {target}\n")
     return 0
 
@@ -820,7 +810,7 @@ func clean_command(project: Project*, own: str[]) -> i32!:
 func require_manifest(project: Project*) -> str!:
     if not try project_file.exists_in(project.root):
         error(usage_error, "not in a Luce project (no package.prisma found); run 'luc init' first")
-    return try paths.join(project.root, project_file.file_name)
+    return try join(project.root, project_file.file_name)
 
 func package_name_at(manifest: str) -> str!:
     var probe = Project(root = try strings.copy(""), name = try strings.copy(""),
@@ -830,8 +820,8 @@ func package_name_at(manifest: str) -> str!:
     let filename = try strings.copy(manifest)
     defer strings.release(filename)
     let contents = try files.read((c.str)filename)
-    defer free(contents) in memory.heap
-    try parse_manifest(&probe, (str)contents)
+    defer contents.release()
+    try parse_manifest(&probe, (str)contents.value)
     if probe.name.length == 0:
         error(usage_error, try format(message_buffer[0..], f"the package at {manifest} has no [package] name"))
     if probe.name.length > 128: error(usage_error, "dependency package name is too long")
@@ -853,8 +843,8 @@ func upsert_dependency(manifest: str, name: str, value: str) -> !:
     let filename = try strings.copy(manifest)
     defer strings.release(filename)
     let contents = try files.read((c.str)filename)
-    defer free(contents) in memory.heap
-    let text = (str)contents
+    defer contents.release()
+    let text = (str)contents.value
     var result: str[]
     defer release_string_array(result)
     var section = ""
@@ -886,8 +876,8 @@ func remove_dependency(manifest: str, name: str) -> bool!:
     let filename = try strings.copy(manifest)
     defer strings.release(filename)
     let contents = try files.read((c.str)filename)
-    defer free(contents) in memory.heap
-    let text = (str)contents
+    defer contents.release()
+    let text = (str)contents.value
     var result: str[]
     defer release_string_array(result)
     var section = ""
@@ -999,22 +989,24 @@ func scaffold_command(command: str, own: str[]) -> i32!:
 ## Write the project's directories and starter files.
 func scaffold(target: str, name: str, language: str, kind: str) -> !:
     try ensure_dir(target)
-    let source = try paths.join(target, "src")
+    let source_path = try paths.join(target, "src")
+    defer source_path.release()
+    let source = source_path.value
     try ensure_dir(source)
     let suffix = ".luc" if language == "luce" else ".lucb"
     var definition: u8[2048]
-    try write_file(try paths.join(target, project_file.file_name), try project_file.scaffold(name, default_owner, language, kind, definition))
-    try write_file(try paths.join(target, ".gitignore"), "build/\n.luc/\n")
+    try write_file(target, project_file.file_name, try project_file.scaffold(name, default_owner, language, kind, definition))
+    try write_file(target, ".gitignore", "build/\n.luc/\n")
     if kind == "package":
         # luce-json's starter module is src/json, imported as `from luce_json import json`
         let module = try project_file.library_module(name)
         defer strings.release(module)
-        try write_file(try paths.join(source, try join_name(module, suffix)), try library_source(module, language))
+        try write_file(source, try join_name(module, suffix), try library_source(module, language))
     elif kind == "application":
         var window: u8[1024]
-        try write_file(try paths.join(source, "main.luc"), try format(window, f"from luce_ui.ui import Application, Button, Text, VStack\n\npub func main(arguments: list[str]) -> int!:\n    let button = Button(\"Continue\")\n    let content = VStack([Text(\"Hello from {name}\"), button], padding = 24.0)\n    let app = Application(content, title = \"{name}\")\n    app.run()\n    return 0\n"))
+        try write_file(source, "main.luc", try format(window, f"from luce_ui.ui import Application, Button, Text, VStack\n\npub func main(arguments: list[str]) -> int!:\n    let button = Button(\"Continue\")\n    let content = VStack([Text(\"Hello from {name}\"), button], padding = 24.0)\n    let app = Application(content, title = \"{name}\")\n    app.run()\n    return 0\n"))
     else:
-        try write_file(try paths.join(source, try join_name("main", suffix)), try program_source(name, language))
+        try write_file(source, try join_name("main", suffix), try program_source(name, language))
 
 func ensure_dir(path: str) -> !:
     let terminated = try strings.copy(path)
@@ -1022,10 +1014,11 @@ func ensure_dir(path: str) -> !:
     if not files.exists((c.str)terminated):
         try files.create_directory((c.str)terminated)
 
-func write_file(path: str, content: str) -> !:
-    let terminated = try strings.copy(path)
-    defer strings.release(terminated)
-    try files.write((c.str)terminated, content.bytes)
+## Write `content` to the file `name` in `directory`.
+func write_file(directory: str, name: str, content: str) -> !:
+    let path = try paths.join(directory, name)
+    defer path.release()
+    try files.write((c.str)path.value, content.bytes)
 
 func join_name(stem: str, suffix: str) -> str!:
     var buffer: u8[128]
@@ -1289,9 +1282,9 @@ func toolchain_compiler(name: str, variable: str) -> str!:
         discard(failure)
         return name
     let joined = try paths.join(paths.directory(exe), name)
-    defer strings.release(joined)
+    defer joined.release()
     # a copy, so the path ends in the zero the file system call reads
-    let candidate = try strings.join([joined, ".exe" if os.windows else ""], "")
+    let candidate = try strings.join([joined.value, ".exe" if os.windows else ""], "")
     let info = files.metadata((c.str)candidate) catch failure:
         discard(failure)
         strings.release(candidate)

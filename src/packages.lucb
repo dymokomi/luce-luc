@@ -331,11 +331,11 @@ func resolve_local(graph: Graph*, directory: str, depth: usize, wanted: WantedLi
             try wanted.add(graph, item.owner, item.name, item.version)
             continue
         let location = try paths.join(directory, item.path)
-        defer strings.release(location)
-        if not try project_file.exists_in(location):
+        defer location.release()
+        if not try project_file.exists_in(location.value):
             try wanted.add(graph, item.owner, item.name, item.version)
             continue
-        try resolve_local(graph, location, depth + 1, wanted)
+        try resolve_local(graph, location.value, depth + 1, wanted)
 
 func write_lock(root: str, graph: Graph*) -> !:
     let buffer = try alloc u8[1048576] in memory.heap
@@ -355,10 +355,8 @@ func write_lock(root: str, graph: Graph*) -> !:
     buffer[used + 1] = '\n'
     used += 2
     let path = try paths.join(root, lock_name)
-    defer strings.release(path)
-    let terminated = try strings.copy(path)
-    defer strings.release(terminated)
-    try files.write_atomic((c.str)terminated, buffer[..<used])
+    defer path.release()
+    try files.write_atomic((c.str)path.value, buffer[..<used])
 
 ## `luc lock`: resolve the whole graph against the registry and write luc.lock.
 pub func lock(root: str, registry: bool = false) -> usize!:
@@ -384,11 +382,9 @@ func text_of(graph: Graph*, document: prism.Document*, path: str, name: str) -> 
 
 pub func read_lock(root: str) -> Graph!:
     let path = try paths.join(root, lock_name)
-    defer strings.release(path)
-    let terminated = try strings.copy(path)
-    defer strings.release(terminated)
-    if not files.exists((c.str)terminated): error(invalid, "no luc.lock here; run 'luc lock' first")
-    let reference = try prism.Document.load(path)
+    defer path.release()
+    if not files.exists((c.str)path.value): error(invalid, "no luc.lock here; run 'luc lock' first")
+    let reference = try prism.Document.load(path.value)
     defer reference.release()
     let document = reference.value()
     var graph = try new_graph()
@@ -425,16 +421,12 @@ func cache_directory(owner: str, name: str) -> str!:
         # luc's own home: ~/.luce, %USERPROFILE%\.luce on Windows, or LUC_HOME
         let base = try apps.home()
         defer strings.release(base)
-        root = try paths.join(base, "cache")
+        root = try apps.child(base, "cache")
     defer strings.release(root)
     try ensure_directory(root)
-    let group = try paths.join(root, owner)
+    let group = try apps.child(root, owner)
     defer strings.release(group)
-    try ensure_directory(group)
-    let directory = try paths.join(group, name)
-    errdefer strings.release(directory)
-    try ensure_directory(directory)
-    return directory
+    return try apps.child(group, name)
 
 func digest_matches(bytes: const u8[], expected: str) -> bool!:
     var digest: u8[32]
@@ -452,15 +444,13 @@ func verified_pack(item: Locked, offline: bool, output: u8[]) -> usize!:
     defer strings.release(directory)
     var name: u8[96]
     let cached = try paths.join(directory, try format(name, f"{item.version}.pack"))
-    defer strings.release(cached)
-    let terminated = try strings.copy(cached)
-    defer strings.release(terminated)
-    if files.exists((c.str)terminated):
-        let bytes = try files.read_limit((c.str)terminated, max_pack)
-        defer free(bytes) in memory.heap
-        if try digest_matches(bytes, item.sha256):
-            for i in 0..<bytes.length: output[i] = bytes[i]
-            return bytes.length
+    defer cached.release()
+    if files.exists((c.str)cached.value):
+        let bytes = try files.read((c.str)cached.value, limit = max_pack)
+        defer bytes.release()
+        if try digest_matches(bytes.value, item.sha256):
+            for i in 0..<bytes.value.length: output[i] = bytes.value[i]
+            return bytes.value.length
         if offline: error(invalid, "a cached package does not match luc.lock")
     elif offline:
         error(invalid, "a locked package is not in the cache; run 'luc sync' online once")
@@ -470,7 +460,7 @@ func verified_pack(item: Locked, offline: bool, output: u8[]) -> usize!:
     try progress.detail(f"downloaded {item.owner}/{item.name} {item.version} ({(size + 1023) // 1024} KB, {progress.seconds_since(started)}s)")
     if not try digest_matches(output[..<size], item.sha256):
         error(invalid, "a downloaded package does not match the SHA-256 in luc.lock")
-    try files.write_atomic((c.str)terminated, output[..<size])
+    try files.write_atomic((c.str)cached.value, output[..<size])
     return size
 
 ## Download one released package and unpack it into `destination`, which must not
@@ -508,10 +498,10 @@ func needs_registry(directory: str, depth: usize, registry: bool = false) -> boo
         let item = try definition.dependency_at(i)
         if item.path.length == 0 or registry: return true
         let location = try paths.join(directory, item.path)
-        defer strings.release(location)
+        defer location.release()
         # A missing checkout comes from the registry, as resolve_local takes it.
-        if not try project_file.exists_in(location): return true
-        if try needs_registry(location, depth + 1): return true
+        if not try project_file.exists_in(location.value): return true
+        if try needs_registry(location.value, depth + 1): return true
     return false
 
 ## Before a build: lock if nothing is locked yet, then make .luc/deps match the lock.
@@ -519,10 +509,8 @@ func needs_registry(directory: str, depth: usize, registry: bool = false) -> boo
 pub func prepare(root: str, registry: bool = false) -> !:
     if not try needs_registry(root, 0, registry): return
     let path = try paths.join(root, lock_name)
-    defer strings.release(path)
-    let terminated = try strings.copy(path)
-    defer strings.release(terminated)
-    if not files.exists((c.str)terminated):
+    defer path.release()
+    if not files.exists((c.str)path.value):
         try progress.step(f"resolving dependency versions")
         discard(try lock(root, registry))
     discard(try sync(root))
@@ -580,10 +568,8 @@ func in_cache(item: Locked) -> bool!:
     defer strings.release(directory)
     var name: u8[96]
     let path = try paths.join(directory, try format(name, f"{item.version}.pack"))
-    defer strings.release(path)
-    let terminated = try strings.copy(path)
-    defer strings.release(terminated)
-    return files.exists((c.str)terminated)
+    defer path.release()
+    return files.exists((c.str)path.value)
 
 ## `luc sync`: make .luc/deps match luc.lock exactly, from the cache or the registry.
 pub func sync(root: str, offline: bool = false) -> usize!:
@@ -592,11 +578,11 @@ pub func sync(root: str, offline: bool = false) -> usize!:
     if not offline:
         try prefetch(graph.packages[..<graph.count])
     let hidden = try paths.join(root, ".luc")
-    defer strings.release(hidden)
-    try ensure_directory(hidden)
-    let parent = try paths.join(hidden, "deps")
-    defer strings.release(parent)
-    try ensure_directory(parent)
+    defer hidden.release()
+    try ensure_directory(hidden.value)
+    let parent = try paths.join(hidden.value, "deps")
+    defer parent.release()
+    try ensure_directory(parent.value)
     let bytes = try alloc u8[max_pack] in memory.heap
     defer free(bytes) in memory.heap
     var announced = false
@@ -606,10 +592,8 @@ pub func sync(root: str, offline: bool = false) -> usize!:
         defer strings.release(destination)
         var marker_name: u8[96]
         let marker = try paths.join(destination, try format(marker_name, f".luc-{item.sha256}"))
-        defer strings.release(marker)
-        let marker_z = try strings.copy(marker)
-        defer strings.release(marker_z)
-        if files.exists((c.str)marker_z): continue
+        defer marker.release()
+        if files.exists((c.str)marker.value): continue
         if not announced:
             try progress.step(f"unpacking {graph.count} dependencies")
             announced = true
@@ -623,5 +607,5 @@ pub func sync(root: str, offline: bool = false) -> usize!:
         if files.exists((c.str)destination_z): try files.remove_tree((c.str)destination_z)
         # A dependency is built, never developed: its tests and dev paths stay out.
         try checkout.materialize(&pack, commit, destination, history = false, development = false)
-        try files.write((c.str)marker_z, b"")
+        try files.write((c.str)marker.value, b"")
     return graph.count

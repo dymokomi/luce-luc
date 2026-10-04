@@ -24,6 +24,12 @@ func ensure_directory(path: str) -> !:
     defer strings.release(terminated)
     if not files.exists((c.str)terminated): try files.create_directory((c.str)terminated)
 
+## `left` and `right` joined, as text the caller releases with strings.release.
+func join(left: str, right: str) -> str!:
+    let joined = try paths.join(left, right)
+    defer joined.release()
+    return try strings.copy(joined.value)
+
 func exists(path: str) -> bool!:
     let terminated = try strings.copy(path)
     defer strings.release(terminated)
@@ -36,13 +42,13 @@ pub func home() -> str!:
         return try strings.copy(chosen)
     let user = try user_home()
     defer strings.release(user)
-    let directory = try paths.join(user, ".luce")
+    let directory = try join(user, ".luce")
     errdefer strings.release(directory)
     try ensure_directory(directory)
     return directory
 
 pub func child(parent: str, name: str) -> str!:
-    let directory = try paths.join(parent, name)
+    let directory = try join(parent, name)
     errdefer strings.release(directory)
     try ensure_directory(directory)
     return directory
@@ -85,13 +91,13 @@ func copy_tree(source: str, destination: str, budget: usize*) -> !:
     if info.kind != files.FileKind.directory: error(invalid, "an install may copy only regular files and directories")
     try files.create_directory((c.str)target)
     let names = try files.list((c.str)origin)
-    defer files.release_list(names)
-    for name in names:
+    defer names.release()
+    for name in names.value:
         let inner_source = try paths.join(source, name)
-        defer strings.release(inner_source)
+        defer inner_source.release()
         let inner_destination = try paths.join(destination, name)
-        defer strings.release(inner_destination)
-        try copy_tree(inner_source, inner_destination, budget)
+        defer inner_destination.release()
+        try copy_tree(inner_source.value, inner_destination.value, budget)
 
 ## Create the parent directories of a relative path below `root`.
 func ensure_parents(root: str, relative: str) -> !:
@@ -100,7 +106,7 @@ func ensure_parents(root: str, relative: str) -> !:
     var start: usize
     for end in 0..<relative.length:
         if relative.bytes[end] != '/': continue
-        let next = try paths.join(current, (str)relative.bytes[start..<end])
+        let next = try join(current, (str)relative.bytes[start..<end])
         strings.release(current)
         current = next
         try ensure_directory(current)
@@ -116,15 +122,15 @@ func release_arguments(arguments: c.str[], filled: usize*):
     for i in 0..<*filled: strings.release((str)arguments[i])
 
 ## Run the package's install script in the sandbox and return its plan. The caller
-## releases it with process.release.
+## releases it with strings.release.
 pub func scripted_plan(luce: str, package_root: str, script: str, name: str, version: str) -> str!:
     let program = try strings.copy(luce)
     defer strings.release(program)
     let script_path = try paths.join(package_root, script)
-    defer strings.release(script_path)
+    defer script_path.release()
     let system = "macos" if os.macos else ("linux" if os.linux else "windows")
     let machine = "arm64" if os.arm64 else "x86_64"
-    let words = ["run", "--sandbox", package_root, script_path, "--", system, machine, name, version]
+    let words = ["run", "--sandbox", package_root, script_path.value, "--", system, machine, name, version]
     let argv = try alloc c.str[words.length] in memory.heap
     defer free(argv) in memory.heap
     var filled: usize
@@ -132,12 +138,11 @@ pub func scripted_plan(luce: str, package_root: str, script: str, name: str, ver
     while filled < words.length:
         argv[filled] = (c.str)try strings.copy(words[filled])
         filled += 1
-    let (status, out, err) = try process.run((c.str)program, argv)
-    defer process.release(err)
-    if status != 0:
-        process.release(out)
+    let ran = try process.run((c.str)program, argv)
+    defer ran.release()
+    if ran.value.exit_code != 0:
         error(invalid, "the install script failed or the sandbox is unavailable on this system")
-    return out
+    return try strings.copy(ran.value.output)
 
 ## Apply a plan: copies into `staging`, then the command links it declares into `links`
 ## (one `name<TAB>relative-target` line each), which the caller turns into ~/.luce/bin entries.
@@ -156,12 +161,12 @@ pub func apply(plan: str, package_root: str, staging: str, links: u8[], links_us
         if verb == "copy":
             if not path_valid(first) or not path_valid(second): error(invalid, "an install plan path must be relative and stay inside its directory")
             let source = try paths.join(package_root, first)
-            defer strings.release(source)
+            defer source.release()
             let destination = try paths.join(staging, second)
-            defer strings.release(destination)
-            if try exists(destination): error(invalid, "an install plan writes the same path twice")
+            defer destination.release()
+            if try exists(destination.value): error(invalid, "an install plan writes the same path twice")
             try ensure_parents(staging, second)
-            try copy_tree(source, destination, &budget)
+            try copy_tree(source.value, destination.value, &budget)
         elif verb == "link":
             if not command_valid(first) or not path_valid(second): error(invalid, "an install plan link needs a command name and a relative path")
             let needed = first.length + second.length + 2
@@ -214,15 +219,16 @@ pub func unlink_command(commands: str, command: str) -> !:
     if os.windows:
         if files.exists((c.str)link_z): try files.remove_file((c.str)link_z)
         return
-    let linked = files.read_symlink((c.str)link_z) catch: recover ""
-    if linked.length > 0:
-        try files.remove_file((c.str)link_z)
+    # Only a link is removed; anything else of that name stays.
+    let linked = files.read_symlink((c.str)link_z) catch: return
+    linked.release()
+    try files.remove_file((c.str)link_z)
 
 func command_path(commands: str, command: str) -> str!:
     if not os.windows:
-        return try paths.join(commands, command)
+        return try join(commands, command)
     var name: u8[96]
-    return try paths.join(commands, try format(name, f"{command}.cmd"))
+    return try join(commands, try format(name, f"{command}.cmd"))
 
 # mark: Desktop bundles ========================================================================
 
@@ -233,12 +239,10 @@ func write_text(path: str, text: str) -> !:
 
 func copy_into(source: str, directory: str, name: str, permissions: u32) -> !:
     let destination = try paths.join(directory, name)
-    defer strings.release(destination)
+    defer destination.release()
     let origin = try strings.copy(source)
     defer strings.release(origin)
-    let target = try strings.copy(destination)
-    defer strings.release(target)
-    discard(try files.copy_file((c.str)origin, (c.str)target, permissions = permissions))
+    discard(try files.copy_file((c.str)origin, (c.str)destination.value, permissions = permissions))
 
 func fresh_directory(path: str) -> !:
     let terminated = try strings.copy(path)
@@ -259,59 +263,57 @@ pub func bundle(root: str, definition: pkg.Definition*) -> !:
     var name_buffer: u8[96]
     let directory_name = try bundle_name(definition, name_buffer)
     let build = try paths.join(root, "build")
-    defer strings.release(build)
+    defer build.release()
     var executable_name: u8[128]
     let built_name = try format(executable_name, f"{definition.name}.exe") if os.windows else definition.name
-    let executable = try paths.join(build, built_name)
-    defer strings.release(executable)
-    let bundle_root = try paths.join(build, directory_name)
-    defer strings.release(bundle_root)
-    try fresh_directory(bundle_root)
+    let executable = try paths.join(build.value, built_name)
+    defer executable.release()
+    let bundle_root = try paths.join(build.value, directory_name)
+    defer bundle_root.release()
+    try fresh_directory(bundle_root.value)
     var icon_name = ""
     if definition.application.icon.length > 0: icon_name = paths.base(definition.application.icon)
     let icon_source = try paths.join(root, definition.application.icon)
-    defer strings.release(icon_source)
+    defer icon_source.release()
     let text = try alloc u8[8192] in memory.heap
     defer free(text) in memory.heap
     if os.macos:
-        let contents = try child(bundle_root, "Contents")
+        let contents = try child(bundle_root.value, "Contents")
         defer strings.release(contents)
         let binaries = try child(contents, "MacOS")
         defer strings.release(binaries)
         let resources = try child(contents, "Resources")
         defer strings.release(resources)
-        try copy_into(executable, binaries, definition.name, 0o755)
-        if icon_name.length > 0: try copy_into(icon_source, resources, icon_name, 0o644)
+        try copy_into(executable.value, binaries, definition.name, 0o755)
+        if icon_name.length > 0: try copy_into(icon_source.value, resources, icon_name, 0o644)
         let plist = try paths.join(contents, "Info.plist")
-        defer strings.release(plist)
+        defer plist.release()
         let icon_entry = try format(text[4096..], f"    <key>CFBundleIconFile</key>\n    <string>{icon_name}</string>\n") if icon_name.length > 0 else ""
-        try write_text(plist, try format(text[..<4096], f"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n    <key>CFBundleName</key>\n    <string>{definition.application.name}</string>\n    <key>CFBundleDisplayName</key>\n    <string>{definition.application.name}</string>\n    <key>CFBundleIdentifier</key>\n    <string>{definition.application.identifier}</string>\n    <key>CFBundleExecutable</key>\n    <string>{definition.name}</string>\n    <key>CFBundleVersion</key>\n    <string>{definition.version}</string>\n    <key>CFBundleShortVersionString</key>\n    <string>{definition.version}</string>\n    <key>CFBundlePackageType</key>\n    <string>APPL</string>\n    <key>CFBundleInfoDictionaryVersion</key>\n    <string>6.0</string>\n{icon_entry}    <key>NSHighResolutionCapable</key>\n    <true/>\n    <key>NSPrincipalClass</key>\n    <string>NSApplication</string>\n</dict>\n</plist>\n"))
+        try write_text(plist.value, try format(text[..<4096], f"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n    <key>CFBundleName</key>\n    <string>{definition.application.name}</string>\n    <key>CFBundleDisplayName</key>\n    <string>{definition.application.name}</string>\n    <key>CFBundleIdentifier</key>\n    <string>{definition.application.identifier}</string>\n    <key>CFBundleExecutable</key>\n    <string>{definition.name}</string>\n    <key>CFBundleVersion</key>\n    <string>{definition.version}</string>\n    <key>CFBundleShortVersionString</key>\n    <string>{definition.version}</string>\n    <key>CFBundlePackageType</key>\n    <string>APPL</string>\n    <key>CFBundleInfoDictionaryVersion</key>\n    <string>6.0</string>\n{icon_entry}    <key>NSHighResolutionCapable</key>\n    <true/>\n    <key>NSPrincipalClass</key>\n    <string>NSApplication</string>\n</dict>\n</plist>\n"))
         return
     if os.windows:
         # the program folder: the executable and its icon, as a Start Menu shortcut expects
-        try copy_into(executable, bundle_root, built_name, 0o755)
-        if icon_name.length > 0: try copy_into(icon_source, bundle_root, icon_name, 0o644)
+        try copy_into(executable.value, bundle_root.value, built_name, 0o755)
+        if icon_name.length > 0: try copy_into(icon_source.value, bundle_root.value, icon_name, 0o644)
         return
     # Linux AppDir: the program under its own name, so its windows' class and
     # /proc/self/exe name it, and AppRun a script that runs it (through the
     # symlink ~/.luce/bin keeps too), with a desktop entry and the icon beside.
-    try copy_into(executable, bundle_root, definition.name, 0o755)
-    let staged = try paths.join(bundle_root, ".AppRun.new")
-    defer strings.release(staged)
-    try write_text(staged, try format(text[..<4096], f"#!/bin/sh\nexec \"$(dirname \"$(readlink -f \"$0\")\")/{definition.name}\" \"$@\"\n"))
-    try copy_into(staged, bundle_root, "AppRun", 0o755)
-    let staged_path = try strings.copy(staged)
-    defer strings.release(staged_path)
-    try files.remove_file((c.str)staged_path)
-    if icon_name.length > 0: try copy_into(icon_source, bundle_root, icon_name, 0o644)
+    try copy_into(executable.value, bundle_root.value, definition.name, 0o755)
+    let staged = try paths.join(bundle_root.value, ".AppRun.new")
+    defer staged.release()
+    try write_text(staged.value, try format(text[..<4096], f"#!/bin/sh\nexec \"$(dirname \"$(readlink -f \"$0\")\")/{definition.name}\" \"$@\"\n"))
+    try copy_into(staged.value, bundle_root.value, "AppRun", 0o755)
+    try files.remove_file((c.str)staged.value)
+    if icon_name.length > 0: try copy_into(icon_source.value, bundle_root.value, icon_name, 0o644)
     var entry_name: u8[96]
-    let desktop = try paths.join(bundle_root, try format(entry_name, f"{definition.name}.desktop"))
-    defer strings.release(desktop)
+    let desktop = try paths.join(bundle_root.value, try format(entry_name, f"{definition.name}.desktop"))
+    defer desktop.release()
     var stem = icon_name
     for i in 0..<icon_name.length:
         if icon_name.bytes[i] == '.': stem = (str)icon_name.bytes[..<i]
     let icon_line = try format(text[4096..], f"Icon={stem}\n") if stem.length > 0 else ""
-    try write_text(desktop, try format(text[..<4096], f"[Desktop Entry]\nType=Application\nName={definition.application.name}\nExec=AppRun\n{icon_line}Terminal=false\nStartupWMClass={definition.name}\nX-Luce-Identifier={definition.application.identifier}\nX-Luce-Version={definition.version}\n"))
+    try write_text(desktop.value, try format(text[..<4096], f"[Desktop Entry]\nType=Application\nName={definition.application.name}\nExec=AppRun\n{icon_line}Terminal=false\nStartupWMClass={definition.name}\nX-Luce-Identifier={definition.application.identifier}\nX-Luce-Version={definition.version}\n"))
 
 # mark: Where applications are installed ======================================================
 
@@ -348,8 +350,8 @@ pub func shelf() -> str!:
         return try child(user, "Applications")
     if os.windows:
         let fallback = try paths.join(user, "AppData/Local")
-        defer strings.release(fallback)
-        let data = try environment_or((c.str)"LOCALAPPDATA", fallback)
+        defer fallback.release()
+        let data = try environment_or((c.str)"LOCALAPPDATA", fallback.value)
         defer strings.release(data)
         return try child(data, "Programs")
     let dot_local = try child(user, ".local")
@@ -375,10 +377,10 @@ func launcher() -> str!:
     let user = try user_home()
     defer strings.release(user)
     let roaming = try paths.join(user, "AppData/Roaming")
-    defer strings.release(roaming)
-    let data = try environment_or((c.str)"APPDATA", roaming)
+    defer roaming.release()
+    let data = try environment_or((c.str)"APPDATA", roaming.value)
     defer strings.release(data)
-    return try paths.join(data, "Microsoft/Windows/Start Menu/Programs")
+    return try join(data, "Microsoft/Windows/Start Menu/Programs")
 
 ## Append `path` and a newline to a record of what an install created.
 func note(record: u8[], used: usize*, path: str) -> !:
@@ -396,10 +398,9 @@ func shortcut(link: str, target: str, directory: str) -> !:
     let text = try strings.copy(command)
     defer strings.release(text)
     let arguments: c.str[4] = ["-NoProfile", "-NonInteractive", "-Command", (c.str)text]
-    let (status, out, err) = try process.run("powershell", arguments)
-    process.release(out)
-    process.release(err)
-    if status != 0: error(invalid, "could not create the Start Menu shortcut")
+    let ran = try process.run("powershell", arguments)
+    defer ran.release()
+    if ran.value.exit_code != 0: error(invalid, "could not create the Start Menu shortcut")
 
 ## Install the bundle luc built (`built`) where the system keeps applications and make the
 ## desktop find it. Returns the executable to link commands to; every path created is
@@ -414,45 +415,45 @@ pub func place(definition: pkg.Definition*, built: str, record: u8[], used: usiz
     var name: u8[128]
     if os.macos:
         let target = try paths.join(directory, try format(name, f"{definition.application.name}.app"))
-        defer strings.release(target)
-        try refuse_foreign(target, definition.application.identifier)
-        try replace_tree(built, target, &budget)
-        try note(record, used, target)
+        defer target.release()
+        try refuse_foreign(target.value, definition.application.identifier)
+        try replace_tree(built, target.value, &budget)
+        try note(record, used, target.value)
         var inner: u8[256]
-        return try paths.join(target, try format(inner, f"Contents/MacOS/{definition.name}"))
+        return try join(target.value, try format(inner, f"Contents/MacOS/{definition.name}"))
     if os.linux:
         let store = try linux_store()
         defer strings.release(store)
         let target = try paths.join(store, paths.base(built))
-        defer strings.release(target)
-        try replace_tree(built, target, &budget)
-        try note(record, used, target)
+        defer target.release()
+        try replace_tree(built, target.value, &budget)
+        try note(record, used, target.value)
         let entries = try launcher()
         defer strings.release(entries)
         let entry = try paths.join(entries, try format(name, f"{definition.name}.desktop"))
-        defer strings.release(entry)
+        defer entry.release()
         let text = try alloc u8[5120] in memory.heap
         defer free(text) in memory.heap
         # No Icon= without an icon: a directory there fails desktop-file-validate.
-        let icon = try format(text[4096..], f"Icon={target}/{paths.base(definition.application.icon)}\n") if definition.application.icon.length > 0 else ""
+        let icon = try format(text[4096..], f"Icon={target.value}/{paths.base(definition.application.icon)}\n") if definition.application.icon.length > 0 else ""
         # StartupWMClass matches the window's WM_CLASS (the program's name) to this entry.
-        try write_text(entry, try format(text[..<4096], f"[Desktop Entry]\nType=Application\nName={definition.application.name}\nExec=\"{target}/AppRun\"\n{icon}Terminal=false\nStartupWMClass={definition.name}\nX-Luce-Identifier={definition.application.identifier}\nX-Luce-Version={definition.version}\n"))
-        try note(record, used, entry)
-        return try paths.join(target, "AppRun")
+        try write_text(entry.value, try format(text[..<4096], f"[Desktop Entry]\nType=Application\nName={definition.application.name}\nExec=\"{target.value}/AppRun\"\n{icon}Terminal=false\nStartupWMClass={definition.name}\nX-Luce-Identifier={definition.application.identifier}\nX-Luce-Version={definition.version}\n"))
+        try note(record, used, entry.value)
+        return try join(target.value, "AppRun")
     let target = try paths.join(directory, definition.application.name)
-    defer strings.release(target)
-    try replace_tree(built, target, &budget)
-    try note(record, used, target)
+    defer target.release()
+    try replace_tree(built, target.value, &budget)
+    try note(record, used, target.value)
     var executable_name: u8[128]
-    let executable = try paths.join(target, try format(executable_name, f"{definition.name}.exe"))
+    let executable = try join(target.value, try format(executable_name, f"{definition.name}.exe"))
     errdefer strings.release(executable)
     let menu = try launcher()
     defer strings.release(menu)
     try ensure_directory(menu)
     let link = try paths.join(menu, try format(name, f"{definition.application.name}.lnk"))
-    defer strings.release(link)
-    try shortcut(link, executable, target)
-    try note(record, used, link)
+    defer link.release()
+    try shortcut(link.value, executable, target.value)
+    try note(record, used, link.value)
     return executable
 
 ## luc's own directory for Linux AppDirs, inside the data directory, so an application's
@@ -467,14 +468,12 @@ func linux_store() -> str!:
 ## An application of the same name that luc did not install (another identifier) stays.
 func refuse_foreign(target: str, identifier: str) -> !:
     let plist = try paths.join(target, "Contents/Info.plist")
-    defer strings.release(plist)
-    let terminated = try strings.copy(plist)
-    defer strings.release(terminated)
-    if not files.exists((c.str)terminated): return
-    let text = try files.read_limit((c.str)terminated, 65536)
-    defer free(text) in memory.heap
+    defer plist.release()
+    if not files.exists((c.str)plist.value): return
+    let text = try files.read((c.str)plist.value, limit = 65536)
+    defer text.release()
     var wanted: u8[320]
-    if not strings.contains((str)text, try format(wanted, f"<string>{identifier}</string>")):
+    if not strings.contains((str)text.value, try format(wanted, f"<string>{identifier}</string>")):
         error(invalid, "another application of that name is installed there; luc will not replace it")
 
 ## Put `source` at `target`, replacing what is there. The old tree is moved aside

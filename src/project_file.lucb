@@ -1,7 +1,6 @@
 ## package.prisma is the one project file; the compilers read it directly.
 import c
 from luce_std import files
-import memory
 from luce_std import paths
 import strings
 from luce_pkg import pkg
@@ -13,20 +12,16 @@ pub let invalid = pkg.invalid
 
 pub func exists_in(directory: str) -> bool!:
     let path = try paths.join(directory, file_name)
-    defer strings.release(path)
-    let terminated = try strings.copy(path)
-    defer strings.release(terminated)
-    return files.exists((c.str)terminated)
+    defer path.release()
+    return files.exists((c.str)path.value)
 
 ## Decoded package.prisma of `directory`; the caller closes it.
 pub func read(directory: str) -> pkg.Definition!:
     let path = try paths.join(directory, file_name)
-    defer strings.release(path)
-    let terminated = try strings.copy(path)
-    defer strings.release(terminated)
-    let bytes = try files.read((c.str)terminated)
-    defer free(bytes) in memory.heap
-    return try pkg.decode_package(bytes)
+    defer path.release()
+    let bytes = try files.read((c.str)path.value)
+    defer bytes.release()
+    return try pkg.decode_package(bytes.value)
 
 ## The compilers read package.prisma themselves. A luce.toml left behind by an earlier luc
 ## is removed so nothing stale sits beside the real definition.
@@ -35,20 +30,16 @@ pub func generate(directory: str, root: str, registry: bool = false, depth: usiz
     discard(registry)
     discard(depth)
     let target = try paths.join(directory, generated_name)
-    defer strings.release(target)
-    let terminated = try strings.copy(target)
-    defer strings.release(terminated)
-    if files.exists((c.str)terminated): try files.remove_file((c.str)terminated)
+    defer target.release()
+    if files.exists((c.str)target.value): try files.remove_file((c.str)target.value)
 
 func save(document: prism.Document*, directory: str) -> !:
     let encoded = try document.encode(prism.Encoding.text)
     defer encoded.release()
     discard(try pkg.decode_package(encoded.value().bytes()))
     let path = try paths.join(directory, file_name)
-    defer strings.release(path)
-    let terminated = try strings.copy(path)
-    defer strings.release(terminated)
-    try files.write((c.str)terminated, encoded.value().bytes())
+    defer path.release()
+    try files.write((c.str)path.value, encoded.value().bytes())
 
 func set_text(document: prism.Document*, path: str, name: str, text: str) -> !:
     let value = try prism.Value.text(text)
@@ -61,15 +52,15 @@ func element(root: str, name: str, output: u8[]) -> str!:
 ## Add or replace a dependency on the package checked out at `location`.
 pub func add_dependency(directory: str, location: str) -> str!:
     let source = try paths.join(directory, location)
-    defer strings.release(source)
-    if not try exists_in(source): error(invalid, "no package.prisma at that path")
-    var dependency = try read(source)
+    defer source.release()
+    if not try exists_in(source.value): error(invalid, "no package.prisma at that path")
+    var dependency = try read(source.value)
     defer dependency.close()
     var current = try read(directory)
     defer current.close()
     let file = try paths.join(directory, file_name)
-    defer strings.release(file)
-    let reference = try prism.Document.load(file)
+    defer file.release()
+    let reference = try prism.Document.load(file.value)
     defer reference.release()
     let document = reference.value()
     var buffer: u8[256]
@@ -88,8 +79,8 @@ pub func add_registry_dependency(directory: str, owner: str, name: str, requirem
     var current = try read(directory)
     defer current.close()
     let file = try paths.join(directory, file_name)
-    defer strings.release(file)
-    let reference = try prism.Document.load(file)
+    defer file.release()
+    let reference = try prism.Document.load(file.value)
     defer reference.release()
     let document = reference.value()
     var buffer: u8[256]
@@ -104,8 +95,8 @@ pub func remove_dependency(directory: str, name: str) -> bool!:
     var current = try read(directory)
     defer current.close()
     let file = try paths.join(directory, file_name)
-    defer strings.release(file)
-    let reference = try prism.Document.load(file)
+    defer file.release()
+    let reference = try prism.Document.load(file.value)
     defer reference.release()
     let document = reference.value()
     var buffer: u8[256]
@@ -120,12 +111,14 @@ pub func remove_dependency(directory: str, name: str) -> bool!:
 ## declares no checkout path.
 pub func dependency_directory(root: str, name: str) -> str!:
     let hidden = try paths.join(root, ".luc")
-    defer strings.release(hidden)
-    let parent = try paths.join(hidden, "deps")
-    defer strings.release(parent)
+    defer hidden.release()
+    let parent = try paths.join(hidden.value, "deps")
+    defer parent.release()
     let identifier = try module_name(name)
     defer strings.release(identifier)
-    return try paths.join(parent, identifier)
+    let directory = try paths.join(parent.value, identifier)
+    defer directory.release()
+    return try strings.copy(directory.value)
 
 ## Module identifier for a package name: hyphens become underscores.
 pub func module_name(name: str) -> str!:

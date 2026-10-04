@@ -1,6 +1,5 @@
 ## What luc says while it works: a line for each step, and while a long child process runs,
 ## a line that keeps time, so a slow download or build never looks like a hang.
-import c
 import io
 from luce_std import process
 import thread

@@ -9,6 +9,7 @@
 ## registry only, so plain `git push pkg` and `git fetch pkg` need no password either:
 ## the helper mints a five-minute git:write password from the saved session.
 import c
+import interop
 import io
 import memory
 from luce_std import process
@@ -20,14 +21,15 @@ import registry_http
 
 pub let invalid = pkg.invalid
 
+## One git run: its status and output, borrowed from `ran`, which close releases.
 struct Output:
     var status: i32
     var out: str
     var err: str
+    var ran: interop.Owned[process.Completed]
 
     mutating func close():
-        process.release(self.out)
-        process.release(self.err)
+        self.ran.release()
 
 func git(root: str, arguments: const str[]) -> Output!:
     let argv = try alloc c.str[arguments.length] in memory.heap
@@ -39,8 +41,8 @@ func git(root: str, arguments: const str[]) -> Output!:
         filled += 1
     let directory = try strings.copy(root)
     defer strings.release(directory)
-    let (status, out, err) = try process.run((c.str)"git", argv, (c.str)directory)
-    return Output(status = status, out = out, err = err)
+    let ran = try process.run((c.str)"git", argv, (c.str)directory)
+    return Output(status = ran.value.exit_code, out = ran.value.output, err = ran.value.error_output, ran = ran)
 
 func release_arguments(arguments: c.str[], filled: usize*):
     for i in 0..<*filled: strings.release((str)arguments[i])
