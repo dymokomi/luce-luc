@@ -35,7 +35,7 @@ from luce_git import git
 from luce_crypto import native as crypto_native
 
 ## The luc version, kept in step with package.prisma.
-pub let luc_version: str = "0.20.7"
+pub let luc_version: str = "0.21.0"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"
@@ -65,7 +65,7 @@ struct Project:
     var tasks: Task[]
     var task_count: usize
 
-    mutating func close():
+    func close():
         strings.release(self.root)
         strings.release(self.name)
         strings.release(self.language)
@@ -131,7 +131,7 @@ func load_project(prepare: bool = true, directory_hint: str = "", registry: bool
     var project = Project(root = try strings.copy(start), name = try strings.copy("app"),
         language = try strings.copy("luce-base"), entry = try strings.copy(""))
     errdefer project.close()
-    project.tasks = try alloc Task[128]
+    project.tasks = try new Task[128] ---
     var directory = start
     while true:
         if try project_file.exists_in(directory):
@@ -257,7 +257,7 @@ func string_array(value: str) -> str[]!:
 func spawn(program: str, arguments: str[]) -> i32!:
     let program_text = try strings.copy(program)
     defer strings.release(program_text)
-    let argv = try alloc c.str[arguments.length]
+    let argv = try new c.str[arguments.length] ---
     var index: usize = 0
     defer release_spawn_arguments(argv, index)
     while index < arguments.length:
@@ -303,7 +303,7 @@ func build(project: Project*, release: bool, extra: str[]) -> i32!:
     let combined = try concat(arguments, extra)
     defer release_string_array(combined)
     var label: u8[160]
-    let status = try progress.run(try format(label, f"compiling {project.name}"), try project.compiler(), combined)
+    let status = try progress.run(try strings.format(label, f"compiling {project.name}"), try project.compiler(), combined)
     if status != 0 or not try project_file.exists_in(project.root): return status
     # A declared application is also wrapped as Name.app / Name.AppDir beside the executable.
     var definition = try project_file.read(project.root)
@@ -340,8 +340,8 @@ struct Runner:
 ## the named target. Fails on an unknown task or a dependency cycle.
 func run_task(project: Project*, name: str, passthrough: str[]) -> i32!:
     var runner = Runner(project = project)
-    runner.done = try alloc str[project.task_count + 1]
-    runner.active = try alloc str[project.task_count + 1]
+    runner.done = try new str[project.task_count + 1] ---
+    runner.active = try new str[project.task_count + 1] ---
     return try run_graph(&runner, name, passthrough, true)
 
 func run_graph(runner: Runner*, name: str, passthrough: str[], target: bool) -> i32!:
@@ -353,9 +353,9 @@ func run_graph(runner: Runner*, name: str, passthrough: str[], target: bool) -> 
     index = 0
     while index < runner.active_count:
         if runner.active[index] == name:
-            error(usage_error, try format(message_buffer[0..], f"task dependency cycle at '{name}'"))
+            error(usage_error, try strings.format(message_buffer[0..], f"task dependency cycle at '{name}'"))
         index += 1
-    let task = runner.project.find_task(name) else error(usage_error, try format(message_buffer[0..], f"no task named '{name}'"))
+    let task = runner.project.find_task(name) else error(usage_error, try strings.format(message_buffer[0..], f"no task named '{name}'"))
     runner.active[runner.active_count] = name
     runner.active_count += 1
     for dependency in task.depends:
@@ -385,7 +385,7 @@ func run_command(command: str, args: str[]) -> i32!:
     var script = command
     if args.length > 0:
         var buffer: u8[2048]
-        script = try strings.copy(try format(buffer[0..], f"{command} \"$@\""))
+        script = try strings.copy(try strings.format(buffer[0..], f"{command} \"$@\""))
     var argv: str[]
     for word in ["-c", script, "sh"]:
         argv = try append(argv, word)
@@ -431,7 +431,7 @@ var coordinate_buffer: u8[256]
 func qualified(wanted: str) -> str!:
     if strings.contains(wanted, "/"): return wanted
     let owner = try packages.owner_of(wanted, owner_buffer[0..], message_buffer[0..])
-    return try format(coordinate_buffer[0..], f"{owner}/{wanted}")
+    return try strings.format(coordinate_buffer[0..], f"{owner}/{wanted}")
 
 ## `luc latest [owner/]name`: the newest released version, alone on a line, for
 ## applications that tell their users of an update.
@@ -464,7 +464,7 @@ func install_command(own: str[], updating: bool = false) -> i32!:
     defer work_path.release()
     let work = work_path.value
     if files.exists((c.str)work): try files.remove_tree((c.str)work)
-    defer discard(files.remove_tree((c.str)work) catch: recover ())
+    defer _ = files.remove_tree((c.str)work) catch: recover ()
     var version_buffer: u8[64]
     try progress.step(f"fetching {coordinate}")
     let version = try packages.download(owner, name, requirement, work, version_buffer, development = development)
@@ -497,7 +497,7 @@ func install_command(own: str[], updating: bool = false) -> i32!:
     var plan_buffer: u8[1024]
     var bundle_buffer: u8[96]
     let bundled = try apps.bundle_name(&definition, bundle_buffer) if definition.is_bundled() else ""
-    var plan = try format(plan_buffer, f"copy build/{project.name} -> bin/{name}\nlink {name} -> bin/{name}\n")
+    var plan = try strings.format(plan_buffer, f"copy build/{project.name} -> bin/{name}\nlink {name} -> bin/{name}\n")
     if bundled.length > 0 and definition.install.length == 0:
         let built_build = try paths.join(work, "build")
         defer built_build.release()
@@ -516,7 +516,7 @@ func install_command(own: str[], updating: bool = false) -> i32!:
     defer staging.release()
     if files.exists((c.str)staging.value): try files.remove_tree((c.str)staging.value)
     try files.create_directory((c.str)staging.value)
-    errdefer discard(files.remove_tree((c.str)staging.value) catch: recover ())
+    errdefer _ = files.remove_tree((c.str)staging.value) catch: recover ()
     var links: u8[16384]
     var links_used: usize
     try apps.apply(plan, work, staging.value, links[0..], &links_used)
@@ -569,14 +569,14 @@ func install_application(definition: pkg.Definition*, built: str, application: s
     defer staging.release()
     if files.exists((c.str)staging.value): try files.remove_tree((c.str)staging.value)
     try files.create_directory((c.str)staging.value)
-    errdefer discard(files.remove_tree((c.str)staging.value) catch: recover ())
+    errdefer _ = files.remove_tree((c.str)staging.value) catch: recover ()
     let placed_note = try paths.join(staging.value, ".luc-placed")
     defer placed_note.release()
     try files.write((c.str)placed_note.value, record[..<used])
     var link_line: u8[1200]
     let links_note = try paths.join(staging.value, ".luc-links")
     defer links_note.release()
-    try files.write((c.str)links_note.value, (try format(link_line, f"{name}\t{executable}\n")).bytes)
+    try files.write((c.str)links_note.value, (try strings.format(link_line, f"{name}\t{executable}\n")).bytes)
     let placed_z = try strings.copy(placed)
     defer strings.release(placed_z)
     try files.rename((c.str)staging.value, (c.str)placed_z, replace = false)
@@ -716,7 +716,7 @@ func remove_recorded(inner: str, commands: str) -> !:
     for end in 0..<links.length:
         if links[end] != '\n': continue
         let (command, target) = strings.split_once((str)links[start..<end], "\t") else (strings.trim((str)links[start..<end]), "")
-        discard(target)
+        _ = target
         start = end + 1
         try apps.unlink_command(commands, command)
 
@@ -755,9 +755,9 @@ func add_command(project: Project*, own: str[]) -> i32!:
         var newest: u8[64]
         let version = try packages.latest(owner, name, newest)
         var requirement: u8[80]
-        try project_file.add_registry_dependency(project.root, owner, name, try format(requirement, f"^{version}"))
-        discard(try packages.lock(project.root))
-        discard(try packages.sync(project.root))
+        try project_file.add_registry_dependency(project.root, owner, name, try strings.format(requirement, f"^{version}"))
+        _ = try packages.lock(project.root)
+        _ = try packages.sync(project.root)
         try project_file.generate(project.root, project.root)
         try io.stdout().write(f"added dependency {coordinate} ^{version}\n")
         return 0
@@ -815,7 +815,7 @@ func require_manifest(project: Project*) -> str!:
 func package_name_at(manifest: str) -> str!:
     var probe = Project(root = try strings.copy(""), name = try strings.copy(""),
         language = try strings.copy("luce-base"), entry = try strings.copy(""))
-    probe.tasks = try alloc Task[1]
+    probe.tasks = try new Task[1] ---
     defer probe.close()
     let filename = try strings.copy(manifest)
     defer strings.release(filename)
@@ -823,7 +823,7 @@ func package_name_at(manifest: str) -> str!:
     defer contents.release()
     try parse_manifest(&probe, (str)contents.value)
     if probe.name.length == 0:
-        error(usage_error, try format(message_buffer[0..], f"the package at {manifest} has no [package] name"))
+        error(usage_error, try strings.format(message_buffer[0..], f"the package at {manifest} has no [package] name"))
     if probe.name.length > 128: error(usage_error, "dependency package name is too long")
     for i in 0..<probe.name.length:
         let byte = probe.name.bytes[i]
@@ -909,7 +909,7 @@ func dependency_key(line: str) -> str:
 
 func toml_line(key: str, value: str) -> str!:
     var buffer: u8[1024]
-    return try strings.copy(try format(buffer[0..], f"{key} = \"{value}\""))
+    return try strings.copy(try strings.format(buffer[0..], f"{key} = \"{value}\""))
 
 # mark: Updating the toolchain ================================================================
 
@@ -946,8 +946,8 @@ func update_command(own: str[]) -> i32!:
 func installer_command(site: str) -> str!:
     var buffer: u8[512]
     if platform.windows:
-        return try strings.copy(try format(buffer[0..], f"irm https://{site}.luciaos.com/install.ps1 | iex"))
-    return try strings.copy(try format(buffer[0..], f"curl -fsSL https://{site}.luciaos.com/install.sh | sh"))
+        return try strings.copy(try strings.format(buffer[0..], f"irm https://{site}.luciaos.com/install.ps1 | iex"))
+    return try strings.copy(try strings.format(buffer[0..], f"curl -fsSL https://{site}.luciaos.com/install.sh | sh"))
 
 ## Run a shell pipeline through the host shell.
 func run_shell(command: str) -> i32!:
@@ -1004,7 +1004,7 @@ func scaffold(target: str, name: str, language: str, kind: str) -> !:
         try write_file(source, try join_name(module, suffix), try library_source(module, language))
     elif kind == "application":
         var window: u8[1024]
-        try write_file(source, "main.luc", try format(window, f"from luce_ui.ui import Application, Button, Text, VStack\n\npub func main(arguments: list[str]) -> int!:\n    let button = Button(\"Continue\")\n    let content = VStack([Text(\"Hello from {name}\"), button], padding = 24.0)\n    let app = Application(content, title = \"{name}\")\n    app.run()\n    return 0\n"))
+        try write_file(source, "main.luc", try strings.format(window, f"from luce_ui.ui import Application, Button, Text, VStack\n\npub func main(arguments: list[str]) -> int!:\n    let button = Button(\"Continue\")\n    let content = VStack([Text(\"Hello from {name}\"), button], padding = 24.0)\n    let app = Application(content, title = \"{name}\")\n    app.run()\n    return 0\n"))
     else:
         try write_file(source, try join_name("main", suffix), try program_source(name, language))
 
@@ -1022,22 +1022,22 @@ func write_file(directory: str, name: str, content: str) -> !:
 
 func join_name(stem: str, suffix: str) -> str!:
     var buffer: u8[128]
-    return try strings.copy(try format(buffer[0..], f"{stem}{suffix}"))
+    return try strings.copy(try strings.format(buffer[0..], f"{stem}{suffix}"))
 
 func program_source(name: str, language: str) -> str!:
     var buffer: u8[512]
     if language == "luce":
-        return try strings.copy(try format(buffer[0..], f"pub func main(arguments: list[str]) -> int!:\n    print(\"hello from {name}\")\n    return 0\n"))
-    return try strings.copy(try format(buffer[0..], f"pub func main(arguments: str[]) -> i32:\n    print(\"hello from {name}\")\n    return 0\n"))
+        return try strings.copy(try strings.format(buffer[0..], f"pub func main(arguments: list[str]) -> int!:\n    print(\"hello from {name}\")\n    return 0\n"))
+    return try strings.copy(try strings.format(buffer[0..], f"pub func main(arguments: str[]) -> i32:\n    print(\"hello from {name}\")\n    return 0\n"))
 
 func library_source(name: str, language: str) -> str!:
     var buffer: u8[512]
-    return try strings.copy(try format(buffer[0..], f"## The {name} package.\npub func greeting() -> str:\n    return \"hello from {name}\"\n"))
+    return try strings.copy(try strings.format(buffer[0..], f"## The {name} package.\npub func greeting() -> str:\n    return \"hello from {name}\"\n"))
 
 # mark: The command line =======================================================================
 
 func append(items: str[], value: str) -> str[]!:
-    let grown = try alloc str[items.length + 1]
+    let grown = try new str[items.length + 1] ---
     var index: usize = 0
     while index < items.length:
         grown[index] = items[index]
@@ -1047,7 +1047,7 @@ func append(items: str[], value: str) -> str[]!:
     return grown
 
 func concat(left: str[], right: str[]) -> str[]!:
-    let grown = try alloc str[left.length + right.length]
+    let grown = try new str[left.length + right.length] ---
     var index: usize = 0
     while index < left.length:
         grown[index] = left[index]
@@ -1237,7 +1237,7 @@ pub func main(arguments: c.str[]) -> i32!:
                 return try run_task(&project, own[0], passthrough)
             try io.stderr().write(f"luc: no task named '{own[0]}'\n")
             list_tasks(&project) catch failure:
-                discard(failure)
+                _ = failure
             return 1
         try io.stderr().write(f"luc: unknown command '{command}'; run 'luc help'\n")
         return 1
@@ -1279,14 +1279,14 @@ func toolchain_compiler(name: str, variable: str) -> str!:
     if let chosen = os.env((c.str)variable):
         return chosen
     let exe = os.executable() catch failure:
-        discard(failure)
+        _ = failure
         return name
     let joined = try paths.join(paths.directory(exe), name)
     defer joined.release()
     # a copy, so the path ends in the zero the file system call reads
     let candidate = try strings.join([joined.value, ".exe" if os.windows else ""], "")
     let info = files.metadata((c.str)candidate) catch failure:
-        discard(failure)
+        _ = failure
         strings.release(candidate)
         return name
     if info.kind == files.FileKind.regular:

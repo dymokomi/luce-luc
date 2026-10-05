@@ -26,9 +26,9 @@ pub func read(directory: str) -> pkg.Definition!:
 ## The compilers read package.prisma themselves. A luce.toml left behind by an earlier luc
 ## is removed so nothing stale sits beside the real definition.
 pub func generate(directory: str, root: str, registry: bool = false, depth: usize = 0) -> !:
-    discard(root)
-    discard(registry)
-    discard(depth)
+    _ = root
+    _ = registry
+    _ = depth
     let target = try paths.join(directory, generated_name)
     defer target.release()
     if files.exists((c.str)target.value): try files.remove_file((c.str)target.value)
@@ -36,7 +36,7 @@ pub func generate(directory: str, root: str, registry: bool = false, depth: usiz
 func save(document: prism.Document*, directory: str) -> !:
     let encoded = try document.encode(prism.Encoding.text)
     defer encoded.release()
-    discard(try pkg.decode_package(encoded.value().bytes()))
+    _ = try pkg.decode_package(encoded.value().bytes())
     let path = try paths.join(directory, file_name)
     defer path.release()
     try files.write((c.str)path.value, encoded.value().bytes())
@@ -47,7 +47,7 @@ func set_text(document: prism.Document*, path: str, name: str, text: str) -> !:
     try document.set(path, name, value)
 
 func element(root: str, name: str, output: u8[]) -> str!:
-    return try format(output, f"/{root}/{name}")
+    return try strings.format(output, f"/{root}/{name}")
 
 ## Add or replace a dependency on the package checked out at `location`.
 pub func add_dependency(directory: str, location: str) -> str!:
@@ -69,7 +69,7 @@ pub func add_dependency(directory: str, location: str) -> str!:
     try document.add(path, "dependency")
     try set_text(document, path, "owner", dependency.owner)
     var requirement: u8[80]
-    try set_text(document, path, "version", try format(requirement, f"^{dependency.version}"))
+    try set_text(document, path, "version", try strings.format(requirement, f"^{dependency.version}"))
     try set_text(document, path, "path", location)
     try save(document, directory)
     return try strings.copy(dependency.name)
@@ -146,9 +146,9 @@ pub func scaffold(name: str, owner: str, language: str, kind: str, output: u8[])
     let module = try library_module(name)
     defer strings.release(module)
     if kind == "package":
-        return try format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str kind = \"package\"\n    str language = \"{language}\"\n    str[] public = [\"{module}\"]\n}}\n")
+        return try strings.format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str kind = \"package\"\n    str language = \"{language}\"\n    str[] public = [\"{module}\"]\n}}\n")
     if kind == "tool":
-        return try format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str kind = \"tool\"\n    str language = \"{language}\"\n    str entry = \"src/main{suffix}\"\n}}\n")
+        return try strings.format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str kind = \"tool\"\n    str language = \"{language}\"\n    str entry = \"src/main{suffix}\"\n}}\n")
     # The display name is the package name in words: my-editor -> "My Editor".
     var display: u8[64]
     var length: usize
@@ -169,4 +169,4 @@ pub func scaffold(name: str, owner: str, language: str, kind: str, output: u8[])
         if byte == '_': continue
         label[label_length] = byte
         label_length += 1
-    return try format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str kind = \"application\"\n    str language = \"luce\"\n    str entry = \"src/main.luc\"\n    def application \"bundle\" {{\n        str name = \"{(str)display[..<length]}\"\n        str identifier = \"com.{owner}.{(str)label[..<label_length]}\"\n    }}\n    def dependency \"luce-ui\" {{\n        str owner = \"dymokomi\"\n    }}\n}}\n")
+    return try strings.format(output, f"#prisma 4.0\ndef package \"{name}\" {{\n    str owner = \"{owner}\"\n    str version = \"0.1.0\"\n    str kind = \"application\"\n    str language = \"luce\"\n    str entry = \"src/main.luc\"\n    def application \"bundle\" {{\n        str name = \"{(str)display[..<length]}\"\n        str identifier = \"com.{owner}.{(str)label[..<label_length]}\"\n    }}\n    def dependency \"luce-ui\" {{\n        str owner = \"dymokomi\"\n    }}\n}}\n")

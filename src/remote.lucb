@@ -18,7 +18,7 @@ func revoke_managed(managed: bool, origin: str, session: crypto_native.Secret*, 
     if not managed: return
     let session_bytes = session.bytes() catch: return
     let credential_bytes = credential.bytes() catch: return
-    discard(credentials.revoke_credential(session_bytes, origin, credential_bytes) catch: recover ())
+    _ = credentials.revoke_credential(session_bytes, origin, credential_bytes) catch: recover ()
 
 func component(value: str, owner: bool) -> bool:
     if value.length == 0 or value.length > (32 if owner else 64): return false
@@ -114,23 +114,23 @@ pub func fetch_into(url: str, commit: str, session: const u8[], incoming: u8[]) 
     defer crypto_native.wipe(authorization_buffer)
     let authorization = try credentials.basic_authorization(owner, token, authorization_buffer)
     var target_buffer: u8[256]
-    let target = try format(target_buffer, f"{path}/info/refs?service=git-upload-pack")
-    let discovery = try alloc u8[4194304] in memory.heap
+    let target = try strings.format(target_buffer, f"{path}/info/refs?service=git-upload-pack")
+    let discovery = try new u8[4194304] --- in memory.heap
     defer free(discovery) in memory.heap
     let advertised = try registry.request(origin, "GET", target, authorization, "", b"", discovery)
     if advertised.status != 200: error(invalid, "registry discovery request failed")
     if not try advertisement(discovery[..<advertised.count], false, requested):
         error(invalid, "requested commit is not advertised")
     var encoded: u8[40]
-    discard(try git.hex_id(requested, encoded))
+    _ = try git.hex_id(requested, encoded)
     var line_buffer: u8[64]
-    let line = try format(line_buffer, f"want {(str)encoded}\n")
+    let line = try strings.format(line_buffer, f"want {(str)encoded}\n")
     var request: u8[128]
     var size = try git.encode_packet(git.PacketKind.data, line.bytes, request)
     size += try git.encode_packet(git.PacketKind.flush, b"", request[size..])
     size += try git.encode_packet(git.PacketKind.data, b"done\n", request[size..])
     var fetch_target: u8[256]
-    let endpoint = try format(fetch_target, f"{path}/git-upload-pack")
+    let endpoint = try strings.format(fetch_target, f"{path}/git-upload-pack")
     let response = try registry.request(origin, "POST", endpoint, authorization,
         "application/x-git-upload-pack-request", request[..<size], incoming)
     if response.status != 200: error(invalid, "registry fetch request failed")
@@ -174,30 +174,30 @@ func run(url: str, commit: str, destination: str, vault_path: str) -> i32!:
     else:
         token = os.env((c.str)"LUCE_REGISTRY_TOKEN") else error(invalid, "LUCE_REGISTRY_TOKEN is required")
     var target_buffer: u8[256]
-    let target = try format(target_buffer, f"{path}/info/refs?service=git-upload-pack")
+    let target = try strings.format(target_buffer, f"{path}/info/refs?service=git-upload-pack")
     var authorization_buffer: u8[160]
     defer crypto_native.wipe(authorization_buffer)
     let authorization = try credentials.basic_authorization(owner, token.bytes, authorization_buffer)
-    let output = try alloc u8[4194304] in memory.heap
+    let output = try new u8[4194304] --- in memory.heap
     defer free(output) in memory.heap
     let result = try registry.request(origin, "GET", target, authorization, "", b"", output)
     if result.status != 200: error(invalid, "registry discovery request failed")
     if commit.length == 0:
-        discard(try advertisement(output[..<result.count], false, b""))
-        discard(try advertisement(output[..<result.count], true, b""))
+        _ = try advertisement(output[..<result.count], false, b"")
+        _ = try advertisement(output[..<result.count], true, b"")
         return 0
     if not try advertisement(output[..<result.count], false, requested): error(invalid, "requested commit is not advertised")
     var encoded: u8[40]
-    discard(try git.hex_id(requested, encoded))
+    _ = try git.hex_id(requested, encoded)
     var line_buffer: u8[64]
-    let line = try format(line_buffer, f"want {(str)encoded}\n")
+    let line = try strings.format(line_buffer, f"want {(str)encoded}\n")
     var request: u8[128]
     var size = try git.encode_packet(git.PacketKind.data, line.bytes, request)
     size += try git.encode_packet(git.PacketKind.flush, b"", request[size..])
     size += try git.encode_packet(git.PacketKind.data, b"done\n", request[size..])
     var fetch_target: u8[256]
-    let endpoint = try format(fetch_target, f"{path}/git-upload-pack")
-    let incoming = try alloc u8[67108864] in memory.heap
+    let endpoint = try strings.format(fetch_target, f"{path}/git-upload-pack")
+    let incoming = try new u8[67108864] --- in memory.heap
     defer free(incoming) in memory.heap
     let response = try registry.request(origin, "POST", endpoint, authorization,
         "application/x-git-upload-pack-request", request[..<size], incoming)

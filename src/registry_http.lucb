@@ -34,9 +34,9 @@ pub func parse(origin: str) -> Origin!:
     return Origin(secure = false, host = (str)origin.bytes[7..], port = (u16)port)
 
 pub func valid(origin: str) -> bool:
-    discard(parse(origin) catch failure:
-        discard(failure)
-        return false)
+    _ = parse(origin) catch failure:
+        _ = failure
+        return false
     return true
 
 ## Return the canonical origin-prefix length of a full repository URL. A slash
@@ -53,7 +53,7 @@ pub func url_origin_length(url: str) -> usize!:
     var at = prefix.length
     while at < url.length and url.bytes[at] != '/': at += 1
     if at == url.length: error(invalid, "registry repository URL has no path")
-    discard(try parse((str)url.bytes[..<at]))
+    _ = try parse((str)url.bytes[..<at])
     return at
 
 ## Perform one bounded registry request. Request headers are validated before

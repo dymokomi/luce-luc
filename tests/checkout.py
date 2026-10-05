@@ -28,7 +28,7 @@ def check(binary, compiler):
         output = root / 'project'
         manifest = (b'#prisma 4.0\ndef package "hello" {\n    str owner = "acme"\n    str version = "0.1.0"\n'
                     b'    str kind = "tool"\n    str language = "luce-base"\n    str entry = "main.lucb"\n}\n')
-        main = b'pub func main(arguments: str[]) -> i32:\n    discard(arguments)\n    return 0\n'
+        main = b'pub func main(arguments: str[]) -> i32:\n    _ = arguments\n    return 0\n'
         wire, oid = fixture([(b'100644', b'main.lucb', main), (b'100644', b'package.prisma', manifest),
                              (b'100755', b'run.sh', b'#!/bin/sh\nexit 0\n')])
         source.write_bytes(wire)

@@ -54,9 +54,9 @@ func cleanup(stage: str, entries: Entry[], made: usize*):
         left -= 1
         let path = paths.join(stage, entries[left].path) catch: continue
         defer path.release()
-        if entries[left].kind == "tree": discard(files.remove_directory((c.str)path.value) catch: recover ())
-        else: discard(files.remove_file((c.str)path.value) catch: recover ())
-    discard(files.remove_directory((c.str)stage) catch: recover ())
+        if entries[left].kind == "tree": _ = files.remove_directory((c.str)path.value) catch: recover ()
+        else: _ = files.remove_file((c.str)path.value) catch: recover ()
+    _ = files.remove_directory((c.str)stage) catch: recover ()
 
 ## The definition in the root tree's package.prisma, for its development paths.
 func root_definition(pack: git.Pack*, root: const u8[], budget: usize*) -> pkg.Definition!:
@@ -88,7 +88,7 @@ pub func materialize(pack: git.Pack*, requested: const u8[], destination: str, h
     defer definition.close()
     if not development:
         definition = try root_definition(pack, root.payload, &budget)
-    let entries = try alloc Entry[4096] in memory.heap
+    let entries = try new Entry[4096] --- in memory.heap
     defer free(entries) in memory.heap
     var count: usize = 1
     entries[0] = Entry(path = try strings.copy(""), kind = "tree", payload = root.payload)
@@ -129,7 +129,7 @@ pub func materialize(pack: git.Pack*, requested: const u8[], destination: str, h
         suffix[i * 2] = digits[random[i] >> 4]
         suffix[i * 2 + 1] = digits[random[i] & 15]
     var name_buffer: u8[64]
-    let name = try format(name_buffer, f".luc-checkout-{(str)suffix}")
+    let name = try strings.format(name_buffer, f".luc-checkout-{(str)suffix}")
     let stage = try paths.join(parent if parent.length > 0 else ".", name)
     defer stage.release()
     try files.create_directory((c.str)stage.value, 448)
@@ -145,7 +145,7 @@ pub func materialize(pack: git.Pack*, requested: const u8[], destination: str, h
         else:
             var file = try files.File.open((c.str)path.value, files.OpenMode.create_new, 493 if entry.executable else 420)
             made += 1
-            defer discard(file.close() catch: recover ())
+            defer _ = file.close() catch: recover ()
             try io.write_all(&file, entry.payload)
             try file.sync()
     try files.rename((c.str)stage.value, (c.str)filename, replace = false)

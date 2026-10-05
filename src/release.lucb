@@ -28,11 +28,11 @@ struct Output:
     var err: str
     var ran: interop.Owned[process.Completed]
 
-    mutating func close():
+    func close():
         self.ran.release()
 
 func git(root: str, arguments: const str[]) -> Output!:
-    let argv = try alloc c.str[arguments.length] in memory.heap
+    let argv = try new c.str[arguments.length] --- in memory.heap
     defer free(argv) in memory.heap
     var filled: usize
     defer release_arguments(argv, &filled)
@@ -79,7 +79,7 @@ func push_branch(root: str) -> !:
     while done < commits.length:
         let last = (done + step if done + step < commits.length else commits.length) - 1
         var spelled: u8[512]
-        let refspec = try format(spelled, f"{commits[last]}:refs/heads/{branch}")
+        let refspec = try strings.format(spelled, f"{commits[last]}:refs/heads/{branch}")
         var pushed = try git(root, ["push", "pkg", refspec])
         defer pushed.close()
         if pushed.status == 0:
@@ -101,7 +101,7 @@ func lines_of(text: str) -> str[]!:
     var count: usize = 0
     for byte in text.bytes:
         if byte == '\n': count += 1
-    let lines = try alloc str[count + 1] in memory.heap
+    let lines = try new str[count + 1] --- in memory.heap
     var used: usize = 0
     var start: usize = 0
     for i in 0..<text.length:
@@ -138,7 +138,7 @@ pub func credential_helper(action: str, session: str) -> i32!:
         elif key == "host": host = value
         elif key == "path": path = value
     var origin_buffer: u8[300]
-    let origin = try format(origin_buffer, f"{protocol}://{host}")
+    let origin = try strings.format(origin_buffer, f"{protocol}://{host}")
     # Answer only for a registry, and only for /git/<owner>/<name>; say nothing otherwise.
     if not registry_http.valid(origin) or not strings.starts_with(path, "git/"): return 0
     let (owner, tail) = strings.split_once((str)path.bytes[4..], "/") else return 0
@@ -158,22 +158,22 @@ pub func credential_helper(action: str, session: str) -> i32!:
 ## as the macOS keychain, which would otherwise cache a password that expires in minutes.
 func configure(root: str, origin: str, owner: str, name: str) -> !:
     var url_buffer: u8[400]
-    let url = try format(url_buffer, f"{origin}/git/{owner}/{name}")
+    let url = try strings.format(url_buffer, f"{origin}/git/{owner}/{name}")
     var existing = try git(root, ["remote", "get-url", "pkg"])
     let present = existing.status == 0
     existing.close()
     if present: try must(root, ["remote", "set-url", "pkg", url], "could not update the pkg remote")
     else: try must(root, ["remote", "add", "pkg", url], "could not add the pkg remote")
     var key_buffer: u8[400]
-    let helper = try format(key_buffer, f"credential.{origin}.helper")
+    let helper = try strings.format(key_buffer, f"credential.{origin}.helper")
     try must(root, ["config", "--local", "--replace-all", helper, ""], "could not configure Git credentials")
     try must(root, ["config", "--local", "--add", helper, "!luc git-credential"], "could not configure Git credentials")
     var path_buffer: u8[400]
-    try must(root, ["config", "--local", try format(path_buffer, f"credential.{origin}.useHttpPath"), "true"], "could not configure Git credentials")
+    try must(root, ["config", "--local", try strings.format(path_buffer, f"credential.{origin}.useHttpPath"), "true"], "could not configure Git credentials")
     # Send a push as one request with a known length. Above Git's default 1 MiB buffer it
     # would switch to a probe request followed by chunked transfer.
     var buffer_key: u8[400]
-    try must(root, ["config", "--local", try format(buffer_key, f"http.{origin}.postBuffer"), "67108864"], "could not configure Git transfer")
+    try must(root, ["config", "--local", try strings.format(buffer_key, f"http.{origin}.postBuffer"), "67108864"], "could not configure Git transfer")
 
 pub func publish(root: str, origin: str, session: str, notes: str) -> i32!:
     if strings.trim(notes).length == 0:
@@ -181,7 +181,7 @@ pub func publish(root: str, origin: str, session: str, notes: str) -> i32!:
     var definition = try project_file.read(root)
     defer definition.close()
     var tag_buffer: u8[96]
-    let tag = try format(tag_buffer, f"v{definition.version}")
+    let tag = try strings.format(tag_buffer, f"v{definition.version}")
 
     var inside = try git(root, ["rev-parse", "--is-inside-work-tree"])
     let repository = inside.status == 0
@@ -192,7 +192,7 @@ pub func publish(root: str, origin: str, session: str, notes: str) -> i32!:
     state.close()
     if dirty: error(invalid, "there are uncommitted changes; commit them before publishing")
     var tag_ref: u8[128]
-    var tagged = try git(root, ["rev-parse", "-q", "--verify", try format(tag_ref, f"refs/tags/{tag}")])
+    var tagged = try git(root, ["rev-parse", "-q", "--verify", try strings.format(tag_ref, f"refs/tags/{tag}")])
     let exists = tagged.status == 0
     tagged.close()
     if exists: error(invalid, "this version is already tagged; raise `version` in package.prisma and commit")

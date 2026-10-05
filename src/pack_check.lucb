@@ -14,11 +14,11 @@ struct Index:
     var pack: git.Pack*
     var slots: u32[]
 
-    static func over(pack: git.Pack*) -> Index!:
+    func over(pack: git.Pack*) -> Index!:
         var size: usize = 16
         while size < pack.items.length * 2:
             size *= 2
-        var slots = try alloc u32[size] in memory.heap
+        var slots = try new u32[size] --- in memory.heap
         for i in 0..<size: slots[i] = 0
         var index = Index(pack = pack, slots = slots)
         for i in 0..<pack.items.length:
@@ -31,7 +31,7 @@ struct Index:
             index.slots[slot] = u32(i + 1)
         return index
 
-    mutating func release():
+    func release():
         free(self.slots) in memory.heap
 
     ## The first slot of `id`'s probe sequence: its leading bytes, which a SHA-1 spreads.
@@ -52,7 +52,7 @@ struct Index:
         error(invalid, "download graph object is missing")
 
     func require(id: const u8[], kind: str) -> !:
-        discard(try self.lookup(id, kind))
+        _ = try self.lookup(id, kind)
 
     func require_hex(text: str, kind: str) -> !:
         var id: u8[20]
@@ -67,7 +67,7 @@ pub func validate(pack: git.Pack*, requested: const u8[], history: bool = true) 
     try index.require(requested, "commit")
     for item in pack.items:
         if item.kind == "tree":
-            discard(try git.validate_tree(item.payload))
+            _ = try git.validate_tree(item.payload)
             var at: usize = 0
             while at < item.payload.length:
                 let entry = try git.decode_tree_entry(item.payload[at..])
