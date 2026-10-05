@@ -35,7 +35,7 @@ from luce_git import git
 from luce_crypto import native as crypto_native
 
 ## The luc version, kept in step with package.prisma.
-pub let luc_version: str = "0.22.0"
+pub let luc_version: str = "0.22.1"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"
