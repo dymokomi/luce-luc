@@ -12,9 +12,17 @@ luc="$PWD/build/luc"
 # The version luc prints is the one package.prisma declares.
 expected=$(sed -n 's/^    str version = "\(.*\)"$/\1/p' package.prisma | head -1)
 [ "$("$luc" --version)" = "luc $expected" ] || { echo "FAIL: version"; exit 1; }
-# update/upgrade name the official installers (dry-run so nothing is installed)
-[ "$("$luc" update --dry-run)" = "curl -fsSL https://luce.luciaos.com/install.sh | sh" ] || { echo "FAIL: update --dry-run"; exit 1; }
-[ "$("$luc" upgrade --dry-run | tail -1)" = "curl -fsSL https://luce.luciaos.com/install.sh | sh" ] || { echo "FAIL: upgrade alias"; exit 1; }
+# update/upgrade run the official installer into the release tree luc runs from, reached
+# through a link as ~/.local/bin/luc would be (dry-run so nothing is installed); a luc
+# outside a release tree has nothing to update in place
+tree="$PWD/build/release-tree"
+rm -rf "$tree"; mkdir -p "$tree/bin" "$tree/share/luce" "$tree/links"
+cp "$luc" "$tree/bin/luc"; echo 0.0.0 > "$tree/share/luce/VERSION"; ln -s "$tree/bin/luc" "$tree/links/luc"
+real_tree=$(cd "$tree" && pwd -P)
+[ "$("$tree/links/luc" update --dry-run)" = "curl -fsSL https://luce.luciaos.com/install.sh | LUCE_INSTALL_DIR='$real_tree' sh" ] || { echo "FAIL: update --dry-run"; exit 1; }
+[ "$("$tree/bin/luc" upgrade --dry-run | tail -1)" = "curl -fsSL https://luce.luciaos.com/install.sh | LUCE_INSTALL_DIR='$real_tree' sh" ] || { echo "FAIL: upgrade alias"; exit 1; }
+if "$luc" update --dry-run > /dev/null 2>&1; then echo "FAIL: update outside a release tree"; exit 1; fi
+rm -rf "$tree"
 # with no LUCE_BASE, the compiler installed beside luc wins over one earlier on the path, so
 # an old luce-base built from source never stands in for the release's own
 sib="$PWD/build/sibling"
@@ -118,9 +126,20 @@ BASE
 ( cd "$work" && "$luc" test --diagnostic ) | grep -q "1 passed" || { echo "FAIL: test --diagnostic"; exit 1; }
 ( cd "$work" && "$luc" build --diagnostics ) 2>/dev/null && { echo "FAIL: an unknown build flag must be refused"; exit 1; } || true
 ( cd "$work" && "$luc" test --release ) 2>/dev/null && { echo "FAIL: an unknown test flag must be refused"; exit 1; } || true
+# `luc test` runs the tests of every module of the project the entry imports, module by module
+printf 'pub func two() -> i64:\n    return 2\n\ntest "in helper":\n    assert(two() == 2)\n' > "$work/src/helper.lucb"
+printf 'import helper\n\npub func main(arguments: str[]) -> i32:\n    _ = arguments\n    return i32(helper.two())\n\ntest "in main":\n    assert(helper.two() == 2)\n' > "$work/src/main.lucb"
+[ "$( cd "$work" && "$luc" test )" = "$(printf 'ok    in helper\nok    in main\n2 passed')" ] || { echo "FAIL: luc test runs every module's tests"; exit 1; }
+# a package may state its license as an SPDX expression; a property set twice is refused
+licensed() { awk -v line="    str license = \"$1\"" '{ print } /^    str kind = "tool"$/ { print line }' "$work/package.prisma" > "$work/package.next" && mv "$work/package.next" "$work/package.prisma"; }
+licensed "MIT OR Apache-2.0"
+( cd "$work" && "$luc" check ) || { echo "FAIL: a license is a package property"; exit 1; }
+licensed "MIT"
+twice=$( cd "$work" && "$luc" check 2>&1 ) && { echo "FAIL: a property set twice was accepted"; exit 1; }
+case "$twice" in *"package.prisma:"*" set twice in one element"*) ;; *) echo "FAIL: a property set twice: [$twice]"; exit 1;; esac
 rm -rf "$work"
 # registry packages: anonymous add/lock/sync against static release files
 # LUCE names the high-level compiler whose sandbox runs install scripts
 [ -n "${LUCE:-}" ] || { [ -x ../luce/build/luce ] && export LUCE="$PWD/../luce/build/luce"; } || true
 python3 tests/packages.py "$luc"
-echo "ok luc: new/init, add/remove, task DAG, clean, --diagnostic, update, cross-platform tasks, and a project-local cache"
+echo "ok luc: new/init, add/remove, task DAG, clean, --diagnostic, every module's tests, license, update, cross-platform tasks, and a project-local cache"

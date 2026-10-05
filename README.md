@@ -33,6 +33,11 @@ def package "hello" {
 | `tool` | a program run in a terminal | `luc new <dir> --tool` (the default) | a command on your PATH |
 | `application` | a windowed desktop program | `luc new <dir> --application` | `Name.app` on macOS, a desktop entry on Linux |
 
+A package published to the registry can also say what it is for and how it may be used:
+`str description = "..."` (one line), `str license = "MIT OR Apache-2.0"` (an SPDX
+expression) and `str readme = "README.md"`; the registry shows them on the package's page.
+Each property is set once in its element: luc refuses a repeated one at its line and column.
+
 `luc init` does the same as `luc new` in the current directory. Every project file
 is described in [luce-pkg/docs/PACKAGE_PRISMA.md](https://github.com/dymokomi/luce-pkg/blob/main/docs/PACKAGE_PRISMA.md).
 
@@ -121,7 +126,12 @@ extra `copy` and `link` steps; the format is in the package.prisma document abov
 | `LUC_REGISTRY` | another registry, for testing (default `https://pkg.luciaos.com`) |
 
 `luc update` reinstalls the latest `luce`, `luce-base` and `luc` together, through the
-installer at luce.luciaos.com; installed applications stay.
+installer at luce.luciaos.com, into the release tree this `luc` runs from (following a link
+to it), so a toolchain installed somewhere else stays there; installed applications stay.
+The installer edits the shell's startup file (the user PATH on Windows) only for its default
+place, `~/.local/luce` (`%LOCALAPPDATA%\luce`) with `~/.luce`, so an update in another tree, or with `LUC_HOME` set elsewhere, leaves
+every startup file alone; its `env` file (`<tree>/env`) puts that tree's `bin` and
+`LUC_HOME/bin` on PATH and keeps `LUC_HOME` set.
 
 ## License
 
