@@ -96,9 +96,31 @@ export LUCE_BASE="$base"
 [ ! -d "$work/build/.cache" ] && [ -f "$work/build/hello" ] || { echo "FAIL: clean cache should drop the cache but keep the binary"; exit 1; }
 ( cd "$work" && "$luc" clean ) > /dev/null || { echo "FAIL: clean"; exit 1; }
 [ ! -d "$work/build" ] || { echo "FAIL: clean should remove build/"; exit 1; }
+# --diagnostic builds with the diagnostic profile into build/<name>-diagnostic, beside the
+# normal build: unwritten storage reads as 0xAA, in the program and in its tests
+cat > "$work/src/main.lucb" <<'BASE'
+pub func main(arguments: str[]) -> i32!:
+    let raw = try new u8[4] ---
+    print(f"{raw[3]:x}")
+    free(raw)
+    return 0
+
+test "unwritten storage is filled":
+    let raw = try new u8[4] ---
+    assert(raw[3] == 0xAA)
+    free(raw)
+BASE
+( cd "$work" && "$luc" build ) > /dev/null || { echo "FAIL: build before a diagnostic build"; exit 1; }
+[ "$( cd "$work" && "$luc" run --diagnostic )" = "aa" ] || { echo "FAIL: run --diagnostic"; exit 1; }
+[ -f "$work/build/hello-diagnostic" ] && [ -f "$work/build/hello" ] || { echo "FAIL: build --diagnostic must write build/hello-diagnostic beside build/hello"; exit 1; }
+[ "$( "$work/build/hello-diagnostic" )" = "aa" ] || { echo "FAIL: build/hello-diagnostic"; exit 1; }
+( cd "$work" && "$luc" build --release --diagnostic ) > /dev/null || { echo "FAIL: build --release --diagnostic"; exit 1; }
+( cd "$work" && "$luc" test --diagnostic ) | grep -q "1 passed" || { echo "FAIL: test --diagnostic"; exit 1; }
+( cd "$work" && "$luc" build --diagnostics ) 2>/dev/null && { echo "FAIL: an unknown build flag must be refused"; exit 1; } || true
+( cd "$work" && "$luc" test --release ) 2>/dev/null && { echo "FAIL: an unknown test flag must be refused"; exit 1; } || true
 rm -rf "$work"
 # registry packages: anonymous add/lock/sync against static release files
 # LUCE names the high-level compiler whose sandbox runs install scripts
 [ -n "${LUCE:-}" ] || { [ -x ../luce/build/luce ] && export LUCE="$PWD/../luce/build/luce"; } || true
 python3 tests/packages.py "$luc"
-echo "ok luc: new/init, add/remove, task DAG, clean, update, cross-platform tasks, and a project-local cache"
+echo "ok luc: new/init, add/remove, task DAG, clean, --diagnostic, update, cross-platform tasks, and a project-local cache"

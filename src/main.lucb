@@ -35,7 +35,7 @@ from luce_git import git
 from luce_crypto import native as crypto_native
 
 ## The luc version, kept in step with package.prisma.
-pub let luc_version: str = "0.22.2"
+pub let luc_version: str = "0.22.3"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"
@@ -281,30 +281,59 @@ func join(left: str, right: str) -> str!:
     defer joined.release()
     return try strings.copy(joined.value)
 
-## The project's build output path, build/<name> under its root.
-func output_path(project: Project*) -> str!:
+## How `luc build` and `luc run` build: `--release` optimises; `--diagnostic` builds with
+## the compiler's diagnostic profile, which fills unwritten storage with 0xAA and makes the
+## allocators catch double frees and writes after free.
+struct BuildMode:
+    var release: bool
+    var diagnostic: bool
+
+## The build flags among `words`, `--release` and `--diagnostic`; `command` names the
+## command in the usage error any other word gets.
+func build_mode(words: str[], command: str) -> BuildMode!:
+    var mode = BuildMode(release = false, diagnostic = false)
+    for word in words:
+        if word == "--release":
+            mode.release = true
+        elif word == "--diagnostic":
+            mode.diagnostic = true
+        else:
+            error(usage_error, try strings.format(message_buffer[0..], f"usage: luc {command} [--release] [--diagnostic] [-- args]"))
+    return mode
+
+## The project's build output path under its root: build/<name>, or build/<name>-diagnostic
+## for the diagnostic profile, so the two builds never replace each other.
+func output_path(project: Project*, diagnostic: bool) -> str!:
     let directory = try paths.join(project.root, "build")
     defer directory.release()
-    return try join(directory.value, project.name)
+    if not diagnostic:
+        return try join(directory.value, project.name)
+    let name = try join_name(project.name, "-diagnostic")
+    defer strings.release(name)
+    return try join(directory.value, name)
 
-## Build the project's entry into build/<name> under the project root.
-func build(project: Project*, release: bool, extra: str[]) -> i32!:
+## Build the project's entry into build/<name> under the project root, or with `--diagnostic`
+## into build/<name>-diagnostic, which is never bundled as an application.
+func build(project: Project*, mode: BuildMode, extra: str[]) -> i32!:
     let entry = try project.entry_path()
     defer strings.release(entry)
     try ensure_build(project)
-    let output = try output_path(project)
+    let output = try output_path(project, mode.diagnostic)
     defer strings.release(output)
     var arguments: str[]
     defer release_string_array(arguments)
     for word in ["build", entry, "--native", "-o", output]:
         arguments = try append(arguments, word)
-    if release:
+    if mode.release:
         arguments = try append(arguments, "--release")
+    if mode.diagnostic:
+        arguments = try append(arguments, "--profile")
+        arguments = try append(arguments, "diagnostic")
     let combined = try concat(arguments, extra)
     defer release_string_array(combined)
     var label: u8[160]
     let status = try progress.run(try strings.format(label, f"compiling {project.name}"), try project.compiler(), combined)
-    if status != 0 or not try project_file.exists_in(project.root): return status
+    if status != 0 or mode.diagnostic or not try project_file.exists_in(project.root): return status
     # A declared application is also wrapped as Name.app / Name.AppDir beside the executable.
     var definition = try project_file.read(project.root)
     defer definition.close()
@@ -318,12 +347,12 @@ func ensure_build(project: Project*) -> !:
         try files.create_directory((c.str)directory.value)
 
 ## Build, then run the produced binary with `arguments`.
-func run_app(project: Project*, release: bool, arguments: str[]) -> i32!:
+func run_app(project: Project*, mode: BuildMode, arguments: str[]) -> i32!:
     var no_extra: str[]
-    let status = try build(project, release, no_extra)
+    let status = try build(project, mode, no_extra)
     if status != 0:
         return status
-    let executable = try output_path(project)
+    let executable = try output_path(project, mode.diagnostic)
     defer strings.release(executable)
     return try spawn(executable, arguments)
 
@@ -491,7 +520,7 @@ func install_command(own: str[], updating: bool = false) -> i32!:
     defer project.close()
     try progress.step(f"building {coordinate} {version} from source")
     var no_extra: str[]
-    let status = try build(&project, true, no_extra)
+    let status = try build(&project, BuildMode(release = true, diagnostic = false), no_extra)
     if status != 0: error(usage_error, "the application did not build")
 
     var plan_buffer: u8[1024]
@@ -1219,9 +1248,15 @@ pub func main(arguments: c.str[]) -> i32!:
         if command == "clean":
             return try clean_command(&project, own)
         if command == "build":
-            return try build(&project, has(own, "--release"), passthrough)
+            return try build(&project, try build_mode(own, "build"), passthrough)
         if command == "test":
-            let base = try two("test", try project.entry_path())
+            var base = try two("test", try project.entry_path())
+            for word in own:
+                if word != "--diagnostic": error(usage_error, "usage: luc test [--diagnostic] [-- args]")
+                # Luce's tests are interpreted unless built, and only a build has a profile
+                if project.language == "luce": base = try append(base, "--build")
+                base = try append(base, "--profile")
+                base = try append(base, "diagnostic")
             return try spawn(try project.compiler(), try concat(base, passthrough))
         if command == "check":
             return try spawn(try project.compiler(), try two("check", try project.entry_path()))
@@ -1231,8 +1266,8 @@ pub func main(arguments: c.str[]) -> i32!:
                 formatted = try append(formatted, "--check")
             return try spawn(try project.compiler(), formatted)
         if command == "run":
-            if own.length == 0 or own[0] == "--release":
-                return try run_app(&project, has(own, "--release"), passthrough)
+            if own.length == 0 or own[0] == "--release" or own[0] == "--diagnostic":
+                return try run_app(&project, try build_mode(own, "run"), passthrough)
             if project.find_task(own[0]) != none:
                 return try run_task(&project, own[0], passthrough)
             try io.stderr().write(f"luc: no task named '{own[0]}'\n")
@@ -1248,10 +1283,13 @@ func usage(out: io.Writer) -> !:
     try out.write("  new <dir> [--package|--tool|--application] [--luce]   create a project\n")
     try out.write("  init [same options]    create one in this directory\n\n")
     try out.write("Building and running\n")
-    try out.write("  build [--release]      build into build/<name>\n")
-    try out.write("  run [--release] [-- args]   build and run\n")
+    try out.write("  build [--release] [--diagnostic]   build into build/<name>\n")
+    try out.write("  run [--release] [--diagnostic] [-- args]   build and run\n")
     try out.write("  run <task> [-- args]   run a task from package.prisma\n")
-    try out.write("  test                   build and run the tests\n")
+    try out.write("  test [--diagnostic]    build and run the tests\n")
+    try out.write("                         --diagnostic: the diagnostic profile, which fills unwritten\n")
+    try out.write("                         storage with 0xAA and traps on double frees and writes\n")
+    try out.write("                         after free; it builds into build/<name>-diagnostic\n")
     try out.write("  check                  type-check without building\n")
     try out.write("  fmt [--check]          format the sources\n")
     try out.write("  clean [cache]          remove build/, or only its cache\n\n")

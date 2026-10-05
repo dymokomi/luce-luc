@@ -40,13 +40,21 @@ is described in [luce-pkg/docs/PACKAGE_PRISMA.md](https://github.com/dymokomi/lu
 
 | Command | Does |
 | --- | --- |
-| `luc build [--release]` | builds into `build/<name>`; an application also gets `build/Name.app` |
-| `luc run [--release] [-- args]` | builds and runs the program |
-| `luc test` | builds and runs the project's tests |
+| `luc build [--release] [--diagnostic]` | builds into `build/<name>`; an application also gets `build/Name.app` |
+| `luc run [--release] [--diagnostic] [-- args]` | builds and runs the program |
+| `luc test [--diagnostic]` | builds and runs the project's tests |
 | `luc check` | type-checks without building |
 | `luc fmt [--check]` | formats the sources |
 | `luc clean [cache]` | removes `build/`, or only its cache |
 | `luc run <task>` | runs a named task from `package.prisma`, after the tasks it depends on |
+
+`--diagnostic` builds with the compiler's diagnostic profile (`--profile diagnostic`): storage
+the program has not written yet (`---`, `new T[n] ---`, `memory.allocate`, `memory.frame`)
+reads as `0xAA`, and the allocators trap on a double free or a write after free, so a
+half-initialised value or a use after free fails the same way on every run. The build goes
+to `build/<name>-diagnostic`, beside the normal one, and is never bundled as an application.
+For a Luce project, `luc test --diagnostic` runs the tests as a built program, since the
+interpreter has no profile.
 
 A task is a `def task "name" { str cmd = "..." }` entry, optionally with `str[]
 depends`. `luc run <task> -- a b` passes `a b` through to the command.
