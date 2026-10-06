@@ -147,9 +147,9 @@ if [ -n "${LUCE:-}" ]; then
     ( cd "$luce_work" && "$luc" new demo --tool --luce ) > /dev/null || { echo "FAIL: new Luce tool"; exit 1; }
     printf 'test "in main":\n    assert(true)\n' >> "$luce_work/demo/src/main.luc"
     printf 'test "in an orphan":\n    assert(1 + 1 == 3)\n\ntest "after the failure":\n    assert(true)\n' > "$luce_work/demo/src/orphan.luc"
-    real_demo=$(cd "$luce_work/demo" && pwd -P)
+    # positions are relative to the project root, as Base's are, and name the condition
     got=$( cd "$luce_work/demo" && "$luc" test ) && { echo "FAIL: luc test of a Luce project with a failing test exited 0"; exit 1; }
-    [ "$got" = "$(printf 'ok    in main\nFAIL  in an orphan\n      %s/src/orphan.luc:2:5: assert failed\nok    after the failure\n2 passed\n1 failed' "$real_demo")" ] || { echo "FAIL: luc test of a Luce project: [$got]"; exit 1; }
+    [ "$got" = "$(printf 'ok    in main\nFAIL  in an orphan\n      src/orphan.luc:2:5: assert failed: 1 + 1 == 3\nok    after the failure\n2 passed\n1 failed')" ] || { echo "FAIL: luc test of a Luce project: [$got]"; exit 1; }
     rm -rf "$luce_work"
 fi
 # a package may state its license as an SPDX expression; a property set twice is refused
