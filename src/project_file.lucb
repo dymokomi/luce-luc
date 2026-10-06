@@ -68,13 +68,12 @@ pub func add_dependency(directory: str, location: str) -> str!:
     if document.contains(path): try document.remove(path)
     try document.add(path, "dependency")
     try set_text(document, path, "owner", dependency.owner)
-    var requirement: u8[80]
-    try set_text(document, path, "version", try strings.format(requirement, f"^{dependency.version}"))
     try set_text(document, path, "path", location)
     try save(document, directory)
     return try strings.copy(dependency.name)
 
-## Add or replace a dependency on a released registry package.
+## Add or replace a dependency on a released registry package: `requirement` is a caret
+## requirement or a version, or empty for the newest release.
 pub func add_registry_dependency(directory: str, owner: str, name: str, requirement: str) -> !:
     var current = try read(directory)
     defer current.close()
@@ -88,7 +87,7 @@ pub func add_registry_dependency(directory: str, owner: str, name: str, requirem
     if document.contains(path): try document.remove(path)
     try document.add(path, "dependency")
     try set_text(document, path, "owner", owner)
-    try set_text(document, path, "version", requirement)
+    if requirement.length > 0: try set_text(document, path, "version", requirement)
     try save(document, directory)
 
 pub func remove_dependency(directory: str, name: str) -> bool!:

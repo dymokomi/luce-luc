@@ -68,7 +68,8 @@ depends`. `luc run <task> -- a b` passes `a b` through to the command.
 
 | Command | Does |
 | --- | --- |
-| `luc add owner/name` | adds the newest release of a registry package and locks it |
+| `luc add owner/name` | adds a registry package with no version (its newest release) and locks it |
+| `luc add owner/name@^1.2.0` | the same, held to a caret requirement (or an exact version) |
 | `luc add ../path` | adds a package checked out beside this one, for working on both |
 | `luc remove name` | removes a dependency |
 | `luc lock` | resolves every dependency against the registry and writes `luc.lock` |

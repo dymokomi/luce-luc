@@ -775,20 +775,24 @@ func add_command(project: Project*, own: str[]) -> i32!:
     for word in own:
         if not strings.starts_with(word, "--"): location = word
     if location.length == 0:
-        error(usage_error, "luc add needs a package: luc add [<owner>/]<name> or luc add <path-to-package>")
+        error(usage_error, "luc add needs a package: luc add [<owner>/]<name>[@<requirement>] or luc add <path-to-package>")
     if not try project_file.exists_in(location):
-        # Not a local package: a registry package, pinned to its newest release; a bare
-        # name is the one registry package of that name, as `luc install` takes it
-        let coordinate = try qualified(location)
+        # Not a local package: a registry package. With no requirement it means the newest
+        # release (luc.lock records the one chosen); `name@^1.2.0` holds a project back. A
+        # bare name is the one registry package of that name, as `luc install` takes it.
+        let (wanted, requirement) = strings.split_once(location, "@") else (location, "")
+        let coordinate = try qualified(wanted)
         let (owner, name) = strings.split_once(coordinate, "/") else error(usage_error, "no package.prisma at that path, and not a registry package")
         var newest: u8[64]
         let version = try packages.latest(owner, name, newest)
-        var requirement: u8[80]
-        try project_file.add_registry_dependency(project.root, owner, name, try strings.format(requirement, f"^{version}"))
+        try project_file.add_registry_dependency(project.root, owner, name, requirement)
         _ = try packages.lock(project.root)
         _ = try packages.sync(project.root)
         try project_file.generate(project.root, project.root)
-        try io.stdout().write(f"added dependency {coordinate} ^{version}\n")
+        if requirement.length > 0:
+            try io.stdout().write(f"added dependency {coordinate} {requirement}\n")
+        else:
+            try io.stdout().write(f"added dependency {coordinate} (newest release, {version})\n")
         return 0
     let name = try project_file.add_dependency(project.root, location)
     defer strings.release(name)

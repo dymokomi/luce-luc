@@ -233,7 +233,10 @@ def main():
         app = root
         run('new', 'app')
         app = root / 'app'
-        assert 'added dependency acme/polite-kit ^1.0.0' in run('add', 'acme/polite-kit')
+        # a registry package is added with no version: its newest release, which the lock records
+        assert 'added dependency acme/polite-kit (newest release, 1.0.0)' in run('add', 'acme/polite-kit')
+        added = (app / 'package.prisma').read_text()
+        assert 'def dependency "polite-kit" {\n        str owner = "acme"\n    }' in added, added
         (app / 'src' / 'main.lucb').write_text('import polite_kit.polite_kit\n\npub func main(arguments: str[]) -> i32:\n'
                                                '    print(polite_kit.welcome())\n    return 0\n')
         lock = (app / 'luc.lock').read_text()
@@ -255,7 +258,7 @@ def main():
         assert 'no registry package is called missing-kit' in refused, refused
         before = (app / 'package.prisma').read_text()
         run('remove', 'polite-kit')
-        assert 'added dependency acme/polite-kit ^1.0.0' in run('add', 'polite-kit')
+        assert 'added dependency acme/polite-kit (newest release, 1.0.0)' in run('add', 'polite-kit')
         assert (app / 'package.prisma').read_text() == before
         # a dependency without a version is the newest release, which the lock records
         app = root
@@ -283,7 +286,7 @@ def main():
         # a checkout path that is not there resolves from the registry by owner and version.
         manifest = app / 'package.prisma'
         authored = manifest.read_text()
-        manifest.write_text(authored.replace('str version = "^1.0.0"', 'str version = "^1.0.0"\n        str path = "../polite-kit-checkout"', 1))
+        manifest.write_text(authored.replace('def dependency "polite-kit" {', 'def dependency "polite-kit" {\n        str path = "../polite-kit-checkout"', 1))
         subprocess.run(['rm', '-rf', str(app / '.luc'), str(app / 'build'), str(app / 'luc.lock')], check=True)
         assert 'hello 0.1.1' in run('run').splitlines()
         assert 'def package "polite-kit"' in (app / 'luc.lock').read_text()

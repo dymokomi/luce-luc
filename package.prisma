@@ -10,37 +10,31 @@ def package "luc" {
 
     def dependency "luce-pkg" {
         str owner = "dymokomi"
-        str version = "^0.6.0"
         str path = "../luce-pkg"
     }
 
     def dependency "luce-crypto" {
         str owner = "dymokomi"
-        str version = "^0.5.0"
         str path = "../luce-crypto"
     }
 
     def dependency "luce-git" {
         str owner = "dymokomi"
-        str version = "^0.5.0"
         str path = "../luce-git"
     }
 
     def dependency "luce-http-client" {
         str owner = "dymokomi"
-        str version = "^0.5.0"
         str path = "../luce-http-client"
     }
 
     def dependency "luce-prism" {
         str owner = "dymokomi"
-        str version = "^0.5.0"
         str path = "../luce-prism"
     }
 
     def dependency "luce-std" {
         str owner = "dymokomi"
-        str version = "^0.6.0"
         str path = "../luce-std"
     }
 }
