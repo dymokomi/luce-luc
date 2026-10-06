@@ -1,0 +1,21 @@
+# What the gate runs on each platform (luce-base tools/gate.py, docs/CI.md): bash commands
+# in this checkout, in order, beside its dependencies at main, with LUCE_BASE and LUCE
+# naming the toolchain the gate built. luc is part of the toolchain: change it with --full.
+
+[macos]
+steps = ["./test.sh"]
+# the heap tool's process lifecycle, the release verification modes and sanitizers
+full = [
+    "python3 tests/test_heap_process.py",
+    "python3 tests/release_modes.py --base ../luce-base/build/luce-base",
+]
+
+[linux]
+steps = ["./test.sh"]
+full = [
+    "python3 tests/test_heap_process.py",
+    "python3 tests/release_modes.py --base ../luce-base/build/luce-base",
+]
+
+[windows]
+steps = ["./test.sh"]
