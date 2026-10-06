@@ -47,7 +47,7 @@ is described in [luce-pkg/docs/PACKAGE_PRISMA.md](https://github.com/dymokomi/lu
 | --- | --- |
 | `luc build [--release] [--diagnostic]` | builds into `build/<name>`; an application also gets `build/Name.app` |
 | `luc run [--release] [--diagnostic] [-- args]` | builds and runs the program |
-| `luc test [--diagnostic]` | builds and runs the project's tests |
+| `luc test [--diagnostic]` | runs the tests of every module of the project, imported or not |
 | `luc check` | type-checks without building |
 | `luc fmt [--check]` | formats the sources |
 | `luc clean [cache]` | removes `build/`, or only its cache |
@@ -131,7 +131,9 @@ to it), so a toolchain installed somewhere else stays there; installed applicati
 The installer edits the shell's startup file (the user PATH on Windows) only for its default
 place, `~/.local/luce` (`%LOCALAPPDATA%\luce`) with `~/.luce`, so an update in another tree, or with `LUC_HOME` set elsewhere, leaves
 every startup file alone; its `env` file (`<tree>/env`) puts that tree's `bin` and
-`LUC_HOME/bin` on PATH and keeps `LUC_HOME` set.
+`LUC_HOME/bin` on PATH and keeps `LUC_HOME` set. `luc update --dry-run` prints the
+installer's command instead of running it; a `LUC_HOME` other than `~/.luce` is named in
+it, so it installs the same way from a shell that does not have it set.
 
 ## License
 

@@ -35,7 +35,7 @@ from luce_git import git
 from luce_crypto import native as crypto_native
 
 ## The luc version, kept in step with package.prisma.
-pub let luc_version: str = "0.23.0"
+pub let luc_version: str = "0.23.1"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"
@@ -945,7 +945,8 @@ func toml_line(key: str, value: str) -> str!:
 ## `luc update` (alias `upgrade`): the whole toolset (luce, luce-base and luc, one release
 ## archive) through the Luce installer, which replaces the tree this luc runs from, where
 ## it was installed, and leaves the shell's startup files as they are unless that is the
-## installer's default place. LUC_HOME, where luc keeps what it installs, passes through.
+## installer's default place. LUC_HOME, where luc keeps what it installs, is named in the
+## installer's command when it is not the default ~/.luce.
 ## `--dry-run` prints the command without running it. `luc update [owner/]name`: that
 ## application or tool at its newest version, replacing what is installed.
 func update_command(own: str[]) -> i32!:
@@ -989,12 +990,20 @@ func toolchain_root() -> str!:
     return try strings.copy(root)
 
 ## The one-line installer pipeline for a site, installing into `root`: curl|sh on POSIX,
-## irm|iex on Windows, whose command `update_command` passes on inside single quotes.
+## irm|iex on Windows, whose command `update_command` passes on inside single quotes. A
+## LUC_HOME other than the default is named in it, so the command means the same when it
+## is run from a shell that does not have it set.
 func installer_command(site: str, root: str) -> str!:
-    var buffer: u8[1024]
+    var buffer: u8[2048]
+    let chosen = try apps.chosen_home()
+    let home = chosen else ""
+    if strings.contains(home, "'") or strings.contains(home, "\""):
+        error(usage_error, "LUC_HOME holds a quote, which the installer's command cannot carry")
     if platform.windows:
-        return try strings.copy(try strings.format(buffer[0..], f"$env:LUCE_INSTALL_DIR=\"{root}\"; irm https://{site}.luciaos.com/install.ps1 | iex"))
-    return try strings.copy(try strings.format(buffer[0..], f"curl -fsSL https://{site}.luciaos.com/install.sh | LUCE_INSTALL_DIR='{root}' sh"))
+        let setting = try strings.join(["$env:LUC_HOME=\"", home, "\"; "], "") if home.length > 0 else ""
+        return try strings.copy(try strings.format(buffer[0..], f"$env:LUCE_INSTALL_DIR=\"{root}\"; {setting}irm https://{site}.luciaos.com/install.ps1 | iex"))
+    let setting = try strings.join(["LUC_HOME='", home, "' "], "") if home.length > 0 else ""
+    return try strings.copy(try strings.format(buffer[0..], f"curl -fsSL https://{site}.luciaos.com/install.sh | LUCE_INSTALL_DIR='{root}' {setting}sh"))
 
 ## Run a shell pipeline through the host shell.
 func run_shell(command: str) -> i32!:
@@ -1268,7 +1277,8 @@ pub func main(arguments: c.str[]) -> i32!:
         if command == "build":
             return try build(&project, try build_mode(own, "build"), passthrough)
         if command == "test":
-            var base = try two("test", try project.entry_path())
+            # every module of the package, imported by the entry or not (§16.5, Luce §17.3)
+            var base = try append(try two("test", try project.entry_path()), "--package")
             for word in own:
                 if word != "--diagnostic": error(usage_error, "usage: luc test [--diagnostic] [-- args]")
                 # Luce's tests are interpreted unless built, and only a build has a profile

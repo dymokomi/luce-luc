@@ -19,8 +19,11 @@ tree="$PWD/build/release-tree"
 rm -rf "$tree"; mkdir -p "$tree/bin" "$tree/share/luce" "$tree/links"
 cp "$luc" "$tree/bin/luc"; echo 0.0.0 > "$tree/share/luce/VERSION"; ln -s "$tree/bin/luc" "$tree/links/luc"
 real_tree=$(cd "$tree" && pwd -P)
-[ "$("$tree/links/luc" update --dry-run)" = "curl -fsSL https://luce.luciaos.com/install.sh | LUCE_INSTALL_DIR='$real_tree' sh" ] || { echo "FAIL: update --dry-run"; exit 1; }
-[ "$("$tree/bin/luc" upgrade --dry-run | tail -1)" = "curl -fsSL https://luce.luciaos.com/install.sh | LUCE_INSTALL_DIR='$real_tree' sh" ] || { echo "FAIL: upgrade alias"; exit 1; }
+[ "$(env -u LUC_HOME "$tree/links/luc" update --dry-run)" = "curl -fsSL https://luce.luciaos.com/install.sh | LUCE_INSTALL_DIR='$real_tree' sh" ] || { echo "FAIL: update --dry-run"; exit 1; }
+[ "$(env -u LUC_HOME "$tree/bin/luc" upgrade --dry-run | tail -1)" = "curl -fsSL https://luce.luciaos.com/install.sh | LUCE_INSTALL_DIR='$real_tree' sh" ] || { echo "FAIL: upgrade alias"; exit 1; }
+# a LUC_HOME other than ~/.luce is named in the command, which a fresh shell would not have
+[ "$(LUC_HOME="$tree/home" "$tree/links/luc" update --dry-run)" = "curl -fsSL https://luce.luciaos.com/install.sh | LUCE_INSTALL_DIR='$real_tree' LUC_HOME='$tree/home' sh" ] || { echo "FAIL: update --dry-run with LUC_HOME"; exit 1; }
+[ "$(LUC_HOME="$HOME/.luce" "$tree/links/luc" update --dry-run)" = "curl -fsSL https://luce.luciaos.com/install.sh | LUCE_INSTALL_DIR='$real_tree' sh" ] || { echo "FAIL: update --dry-run with the default LUC_HOME"; exit 1; }
 if "$luc" update --dry-run > /dev/null 2>&1; then echo "FAIL: update outside a release tree"; exit 1; fi
 rm -rf "$tree"
 # with no LUCE_BASE, the compiler installed beside luc wins over one earlier on the path, so
@@ -130,6 +133,25 @@ BASE
 printf 'pub func two() -> i64:\n    return 2\n\ntest "in helper":\n    assert(two() == 2)\n' > "$work/src/helper.lucb"
 printf 'import helper\n\npub func main(arguments: str[]) -> i32:\n    _ = arguments\n    return i32(helper.two())\n\ntest "in main":\n    assert(helper.two() == 2)\n' > "$work/src/main.lucb"
 [ "$( cd "$work" && "$luc" test )" = "$(printf 'ok    in helper\nok    in main\n2 passed')" ] || { echo "FAIL: luc test runs every module's tests"; exit 1; }
+# a module nothing imports has its tests run too; a false `assert` fails its test alone, the
+# run goes on, counts the failure and ends with status 1
+printf 'test "in an orphan":\n    assert(1 + 1 == 3, "arithmetic")\n\ntest "after the failure":\n    assert(true)\n' > "$work/src/orphan.lucb"
+got=$( cd "$work" && "$luc" test ) && { echo "FAIL: luc test with a failing test exited 0"; exit 1; }
+[ "$got" = "$(printf 'ok    in helper\nok    in main\nFAIL  in an orphan\n      src/orphan.lucb:2:5: assert failed: 1 + 1 == 3: arithmetic\nok    after the failure\n3 passed\n1 failed')" ] || { echo "FAIL: luc test runs an unimported module's tests: [$got]"; exit 1; }
+rm "$work/src/orphan.lucb"
+# the same for a Luce project, through the interpreter
+[ -n "${LUCE:-}" ] || { [ -x ../luce/build/luce ] && export LUCE="$PWD/../luce/build/luce"; } || true
+if [ -n "${LUCE:-}" ]; then
+    luce_work="build/lucetest"
+    rm -rf "$luce_work"; mkdir -p "$luce_work"
+    ( cd "$luce_work" && "$luc" new demo --tool --luce ) > /dev/null || { echo "FAIL: new Luce tool"; exit 1; }
+    printf 'test "in main":\n    assert(true)\n' >> "$luce_work/demo/src/main.luc"
+    printf 'test "in an orphan":\n    assert(1 + 1 == 3)\n\ntest "after the failure":\n    assert(true)\n' > "$luce_work/demo/src/orphan.luc"
+    real_demo=$(cd "$luce_work/demo" && pwd -P)
+    got=$( cd "$luce_work/demo" && "$luc" test ) && { echo "FAIL: luc test of a Luce project with a failing test exited 0"; exit 1; }
+    [ "$got" = "$(printf 'ok    in main\nFAIL  in an orphan\n      %s/src/orphan.luc:2:5: assert failed\nok    after the failure\n2 passed\n1 failed' "$real_demo")" ] || { echo "FAIL: luc test of a Luce project: [$got]"; exit 1; }
+    rm -rf "$luce_work"
+fi
 # a package may state its license as an SPDX expression; a property set twice is refused
 licensed() { awk -v line="    str license = \"$1\"" '{ print } /^    str kind = "tool"$/ { print line }' "$work/package.prisma" > "$work/package.next" && mv "$work/package.next" "$work/package.prisma"; }
 licensed "MIT OR Apache-2.0"
@@ -140,6 +162,5 @@ case "$twice" in *"package.prisma:"*" set twice in one element"*) ;; *) echo "FA
 rm -rf "$work"
 # registry packages: anonymous add/lock/sync against static release files
 # LUCE names the high-level compiler whose sandbox runs install scripts
-[ -n "${LUCE:-}" ] || { [ -x ../luce/build/luce ] && export LUCE="$PWD/../luce/build/luce"; } || true
 python3 tests/packages.py "$luc"
-echo "ok luc: new/init, add/remove, task DAG, clean, --diagnostic, every module's tests, license, update, cross-platform tasks, and a project-local cache"
+echo "ok luc: new/init, add/remove, task DAG, clean, --diagnostic, every module's tests and failures, license, update with LUC_HOME, cross-platform tasks, and a project-local cache"
