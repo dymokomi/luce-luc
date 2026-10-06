@@ -31,47 +31,15 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: luce-luc
-      - name: Check out pinned package dependencies
+      # luce-base, luce and every package luc depends on, at main (luce-base docs/CI.md)
+      - name: Check out dependencies at main
         run: |
-          for dependency in PKG CRYPTO GIT HTTP_CLIENT TLS COMPRESS PRISM; do
-            case "$dependency" in PKG) repo=luce-pkg ;; CRYPTO) repo=luce-crypto ;; GIT) repo=luce-git ;; HTTP_CLIENT) repo=luce-http-client ;; TLS) repo=luce-tls ;; COMPRESS) repo=luce-compress ;; PRISM) repo=luce-prism ;; esac
-            revision=$(cat "bootstrap/$dependency")
-            [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || exit 1
-            git init "../$repo"
-            git -C "../$repo" remote add origin "https://github.com/dymokomi/$repo.git"
-            git -C "../$repo" fetch --depth 1 origin "$revision"
-            git -C "../$repo" checkout --detach FETCH_HEAD
-            test "$(git -C "../$repo" rev-parse HEAD)" = "$revision"
-          done
-      - name: Build the pinned Base compiler
+          git clone -q --depth 1 https://github.com/dymokomi/luce-base.git ../luce-base
+          python3 ../luce-base/tools/checkout_main.py . ../luce
+      - name: Build the Base and Luce compilers
         run: |
-          revision=$(cat bootstrap/BASE)
-          [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo "Base revision must be a full commit SHA"; exit 1; }
-          git init ../luce-base
-          git -C ../luce-base remote add origin https://github.com/dymokomi/luce-base.git
-          git -C ../luce-base fetch --depth 1 origin "$revision"
-          git -C ../luce-base checkout --detach FETCH_HEAD
-          test "$(git -C ../luce-base rev-parse HEAD)" = "$revision"
-          # the library packages Base and this repository depend on, beside them
-          while read -r name pin; do
-            pin=${pin%$'\r'}
-            [ -n "$name" ] || continue
-            [ -d "../$name" ] && continue
-            git init -q "../$name"
-            git -C "../$name" fetch -q --depth 1 "https://github.com/dymokomi/$name.git" "$pin"
-            git -C "../$name" checkout -q --detach FETCH_HEAD
-          done < bootstrap/PACKAGES
           (cd ../luce-base && ./build.sh)
-      - name: Build the pinned Luce compiler
-        run: |
-          revision=$(cat bootstrap/LUCE)
-          [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo "Luce revision must be a full commit SHA"; exit 1; }
-          git init ../luce
-          git -C ../luce remote add origin https://github.com/dymokomi/luce.git
-          git -C ../luce fetch --depth 1 origin "$revision"
-          git -C ../luce checkout --detach FETCH_HEAD
-          test "$(git -C ../luce rev-parse HEAD)" = "$revision"
-          (cd ../luce && LUCE_BASE_COMPILER="$PWD/../luce-base/build/luce-base" ./build.sh)
+          (cd ../luce && ./build.sh)
       - name: Select Clang for generated C
         run: |
           mkdir -p "$RUNNER_TEMP/luce-bin"

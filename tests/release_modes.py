@@ -37,7 +37,7 @@ generated = out / 'sanitize.c'
 binary = out / 'sanitize'
 run([base, 'build', 'src/main.lucb', '--emit=c', '-o', generated])
 sanitizers = ['-fsanitize=address,undefined']
-# The pinned Base compiler emits allocator callbacks with ABI-compatible but
+# The Base compiler emits allocator callbacks with ABI-compatible but
 # type-incompatible function pointers on Linux. Clang's function UBSan
 # alone rejects that compiler-generated call before luc runs. Keep every other
 # undefined-behavior check and ASan enabled until the language audit is fixed.
