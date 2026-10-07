@@ -71,7 +71,8 @@ pytest collects both test functions and test files without being told where they
   (`tests/<module>/TESTS`). `luc test` hands the `.luc` modules to `luce test --package` and
   the `.lucb` modules to `luce-base test --package`, so a package that mixes the two runs
   both. Each run starts from the entry when it is in that language, and otherwise from the
-  first module, so a library needs no module named after the package to be tested. If the
+  first module, so a library needs no module named after the package to be tested; a run
+  that finds no test block shows nothing, and the total line counts both. If the
   sources declare tests and no run reported any, `luc test` says so and fails rather than
   passing on `0 passed`.
 - **Test programs**: every directory `tests/<name>/` that holds a `main.luc` or `main.lucb`
@@ -88,7 +89,9 @@ pytest collects both test functions and test files without being told where they
   does. The programs run in parallel, as many as the machine has cores, each with `HOME`
   and `LUC_HOME` pointing at a fresh scratch directory that is removed afterwards, so no
   test touches your settings, libraries, crash reports or keychain, and with `LUCE` and
-  `LUCE_BASE` naming the compilers `luc test` uses; each builds into `build/tests/<name>/`.
+  `LUCE_BASE` naming the compilers `luc test` uses. luc builds each into
+  `build/luc-test/<name>/`; `build/tests/<name>/` is the program's own scratch space, which
+  luc makes a directory (replacing a file left there) and otherwise leaves to the program.
   A directory under `tests/` without a `main`, or with an `ORDER` or `TESTS` file, is not a
   program and stays as it is.
 

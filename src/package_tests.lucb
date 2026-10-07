@@ -136,10 +136,13 @@ func test_with(compiler: str, start: str, request: Request) -> Outcome!:
     defer strings.release(program)
     let ran = try process.run((c.str)program, argv)
     defer ran.release()
-    if ran.value.output.length > 0: try io.stdout().write(ran.value.output)
-    if ran.value.error_output.length > 0: try io.stderr().write(ran.value.error_output)
     var outcome = Outcome(status = ran.value.exit_code, passed = 0, failed = 0)
     read_counts(ran.value.output, &outcome)
+    # a run that found no test block (the Base half of a Luce package with none, say) has
+    # nothing to show but its `0 passed`: luc's total speaks for it
+    let empty = outcome.status == 0 and outcome.passed + outcome.failed == 0
+    if ran.value.output.length > 0 and not empty: try io.stdout().write(ran.value.output)
+    if ran.value.error_output.length > 0: try io.stderr().write(ran.value.error_output)
     return outcome
 
 func release_arguments(arguments: c.str[], count: usize):

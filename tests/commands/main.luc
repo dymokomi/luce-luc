@@ -280,6 +280,27 @@ func program_checks(project: str, luc: str) -> unit!:
     let failing = refused("failing test programs", project, luc, ["test", "--diagnostic"])
     check(f"failing test programs: [{failing}]", failing == "ok    in helper\nok    in main\n2 passed\nFAIL  tests/exits\n      exit status 5\n      about to fail\nFAIL  tests/greets\n      its standard output differs from its expected file\n      2\ntotal: 2 passed, 2 failed (2 test blocks, 2 programs)")
     files.remove_tree(paths.join(project, "tests"))
+    scratch_checks(project, luc)
+
+# A program's own scratch space is build/tests/<name>/, which luc makes a directory, replacing
+# a file an older layout left there, and builds the program apart from it, in
+# build/luc-test/<name>/, so a scratch directory named like the program cannot collide with
+# its binary; the package's module named like the package imports by that name.
+func scratch_checks(project: str, luc: str) -> unit!:
+    files.write_text(paths.join(project, "src/hello.lucb"), "pub func seven() -> i32:\n    return 7\n")
+    write(paths.join(project, "tests/scratch/main.lucb"), "import hello\nfrom luce_std import files\n\npub func main(arguments: str[]) -> i32!:\n    _ = arguments\n    try files.ensure_directory(\"build/tests/scratch/scratch/inner\")\n    return hello.seven() - 7\n")
+    write(paths.join(project, "build/tests/scratch"), "an old binary\n")
+    let passing = "ok    in helper\nok    in main\n2 passed\nok    tests/scratch\ntotal: 3 passed, 0 failed (2 test blocks, 1 program)"
+    expect("a program's scratch space", project, luc, ["test"], passing)
+    expect("a program's scratch space, again", project, luc, ["test"], passing)
+    # a directory luc cannot make is named in the report
+    files.remove_tree(paths.join(project, "build/luc-test"))
+    write(paths.join(project, "build/luc-test"), "in the way\n")
+    let blocked = refused("a blocked build directory", project, luc, ["test"])
+    check(f"a blocked build directory is named: [{blocked}]", "cannot make the directory " in blocked and "build/luc-test/scratch" in blocked)
+    files.remove_file(paths.join(project, "build/luc-test"))
+    files.remove_file(paths.join(project, "src/hello.lucb"))
+    files.remove_tree(paths.join(project, "tests"))
 
 # The same for a Luce project, through the interpreter.
 func luce_checks(work: str, luc: str) -> unit!:
@@ -295,10 +316,11 @@ func luce_checks(work: str, luc: str) -> unit!:
     check(f"luc test of a Luce project: [{failing}]", failing == "ok    in main\nFAIL  in an orphan\n      src/orphan.luc:2:5: assert failed: 1 + 1 == 3\nok    after the failure\n2 passed\n1 failed")
     files.remove_file(paths.join(demo, "src/orphan.luc"))
     # a Luce program importing a Base module is tested built, and the Base modules' own
-    # tests run too, counted with the Luce ones
+    # tests run too, counted with the Luce ones; the Base run, with no test block of its
+    # own yet, shows nothing
     files.write_text(paths.join(demo, "src/native.lucb"), "pub func two() -> i64:\n    return 2\n")
     files.write_text(paths.join(demo, "src/user.luc"), "import native\n\ntest \"through Base\":\n    assert(native.two() == 2)\n")
-    expect("luc test of a Luce project importing Base", demo, luc, ["test"], "ok    in main\nok    through Base\n2 passed\n0 passed\ntotal: 2 passed, 0 failed (2 test blocks, 0 programs)")
+    expect("luc test of a Luce project importing Base", demo, luc, ["test"], "ok    in main\nok    through Base\n2 passed\ntotal: 2 passed, 0 failed (2 test blocks, 0 programs)")
     files.write_text(paths.join(demo, "src/native.lucb"), "pub func two() -> i64:\n    return 2\n\ntest \"in Base\":\n    assert(two() == 2)\n")
     let mixed = output_of("luc test of a mixed package", demo, luc, ["test", "--diagnostic"])
     check(f"luc test of a mixed package runs its Base tests: [{mixed}]", "ok    in Base" in mixed and mixed.ends_with("total: 3 passed, 0 failed (3 test blocks, 0 programs)"))

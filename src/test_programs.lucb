@@ -201,19 +201,30 @@ func worker(raw: void*?):
                 recover false
             program.done.store(true, .release)
 
-## Build `program` into build/tests/<name>/ and run it from the package root with a fresh
-## home there; answer whether it passed, leaving in its report what to show if not.
+## Build `program` into build/luc-test/<name>/ and run it from the package root with a fresh
+## home there; answer whether it passed, leaving in its report what to show if not. The
+## program's own scratch space, build/tests/<name>/, is made a directory (whatever stood
+## there that was not one is replaced) and otherwise left to it: what luc writes lives apart,
+## so the program cannot remove its own binary by clearing its scratch.
 func run_one(program: Program*, settings: Settings) -> bool!:
     let build = try paths.join(settings.root, "build")
     defer build.release()
-    let under = try paths.join(build.value, "tests")
+    let under = try paths.join(build.value, "luc-test")
     defer under.release()
     let output = try paths.join(under.value, program.name)
     defer output.release()
+    let scratch_root = try paths.join(build.value, "tests")
+    defer scratch_root.release()
+    let scratch = try paths.join(scratch_root.value, program.name)
+    defer scratch.release()
     let home = try paths.join(output.value, "home")
     defer home.release()
-    if files.exists((c.str)home.value): try files.remove_tree((c.str)home.value)
-    try files.ensure_directory(home.value)
+    if try is_directory(home.value): try files.remove_tree((c.str)home.value)
+    for directory in [output.value, home.value, scratch.value]:
+        let problem = try make_directory(directory)
+        if problem.length > 0:
+            program.report = problem
+            return false
     let binary = try paths.join(output.value, program.name)
     defer binary.release()
     var words: str[]
@@ -253,6 +264,25 @@ func run_one(program: Program*, settings: Settings) -> bool!:
             program.report = try tail("its standard output differs from its expected file", completed.output, completed.error_output)
             return false
     return true
+
+## Make `path` a directory, replacing whatever stands there that is not one (a binary an
+## older layout built, say); answer an empty text, or an owned report naming the path when
+## it cannot be made.
+func make_directory(path: str) -> str!:
+    if try is_directory(path): return ""
+    let terminated = try strings.copy(path)
+    defer strings.release(terminated)
+    var reason = ""
+    if files.exists((c.str)terminated):
+        _ = files.remove_file((c.str)terminated) catch failure:
+            reason = failure.message
+            recover ()
+    if reason.length == 0:
+        _ = files.ensure_directory(path) catch failure:
+            reason = failure.message
+            recover ()
+    if reason.length == 0: return ""
+    return try strings.join(["cannot make the directory ", path, ": ", reason], "")
 
 ## What a test program runs with beyond the toolchain: its scratch home and its own
 ## directory.
