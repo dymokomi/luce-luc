@@ -139,6 +139,20 @@ printf 'test "in an orphan":\n    assert(1 + 1 == 3, "arithmetic")\n\ntest "afte
 got=$( cd "$work" && "$luc" test ) && { echo "FAIL: luc test with a failing test exited 0"; exit 1; }
 [ "$got" = "$(printf 'ok    in helper\nok    in main\nFAIL  in an orphan\n      src/orphan.lucb:2:5: assert failed: 1 + 1 == 3: arithmetic\nok    after the failure\n3 passed\n1 failed')" ] || { echo "FAIL: luc test runs an unimported module's tests: [$got]"; exit 1; }
 rm "$work/src/orphan.lucb"
+# a library with no module named after the package tests every module it has
+rm -rf build/my-tools
+( cd build && "$luc" new my-tools --package ) > /dev/null || { echo "FAIL: new my-tools"; exit 1; }
+rm build/my-tools/src/tools.lucb
+printf 'test "in alpha":\n    assert(true)\n' > build/my-tools/src/alpha.lucb
+printf 'test "in beta":\n    assert(true)\n' > build/my-tools/src/beta.lucb
+[ "$( cd build/my-tools && "$luc" test )" = "$(printf 'ok    in alpha\nok    in beta\n2 passed')" ] || { echo "FAIL: luc test of a library without a starter module"; exit 1; }
+# ... and one whose only module is a directory module, its files listed in an ORDER
+rm build/my-tools/src/alpha.lucb build/my-tools/src/beta.lucb
+mkdir -p build/my-tools/src/parts
+echo first.lucb > build/my-tools/src/parts/ORDER
+printf 'test "in a fragment":\n    assert(true)\n' > build/my-tools/src/parts/first.lucb
+[ "$( cd build/my-tools && "$luc" test )" = "$(printf 'ok    in a fragment\n1 passed')" ] || { echo "FAIL: luc test of a library made of a directory module"; exit 1; }
+rm -rf build/my-tools
 # the same for a Luce project, through the interpreter
 [ -n "${LUCE:-}" ] || { [ -x ../luce/build/luce ] && export LUCE="$PWD/../luce/build/luce"; } || true
 if [ -n "${LUCE:-}" ]; then
@@ -150,6 +164,16 @@ if [ -n "${LUCE:-}" ]; then
     # positions are relative to the project root, as Base's are, and name the condition
     got=$( cd "$luce_work/demo" && "$luc" test ) && { echo "FAIL: luc test of a Luce project with a failing test exited 0"; exit 1; }
     [ "$got" = "$(printf 'ok    in main\nFAIL  in an orphan\n      src/orphan.luc:2:5: assert failed: 1 + 1 == 3\nok    after the failure\n2 passed\n1 failed')" ] || { echo "FAIL: luc test of a Luce project: [$got]"; exit 1; }
+    rm "$luce_work/demo/src/orphan.luc"
+    # a Luce program importing a Base module is tested built, and the Base modules' own
+    # tests run too, counted with the Luce ones
+    printf 'pub func two() -> i64:\n    return 2\n' > "$luce_work/demo/src/native.lucb"
+    printf 'import native\n\ntest "through Base":\n    assert(native.two() == 2)\n' > "$luce_work/demo/src/user.luc"
+    got=$( cd "$luce_work/demo" && "$luc" test ) || { echo "FAIL: luc test of a Luce project importing Base: [$got]"; exit 1; }
+    [ "$got" = "$(printf 'ok    in main\nok    through Base\n2 passed\n0 passed\nLuce and Base together: 2 passed, 0 failed')" ] || { echo "FAIL: luc test of a Luce project importing Base: [$got]"; exit 1; }
+    printf '\ntest "in Base":\n    assert(two() == 2)\n' >> "$luce_work/demo/src/native.lucb"
+    got=$( cd "$luce_work/demo" && "$luc" test --diagnostic ) || { echo "FAIL: luc test of a mixed package: [$got]"; exit 1; }
+    case "$got" in *"ok    in Base"*"Luce and Base together: 3 passed, 0 failed") ;; *) echo "FAIL: luc test of a mixed package runs its Base tests: [$got]"; exit 1;; esac
     rm -rf "$luce_work"
 fi
 # a package may state its license as an SPDX expression; a property set twice is refused
@@ -163,4 +187,4 @@ rm -rf "$work"
 # registry packages: anonymous add/lock/sync against static release files
 # LUCE names the high-level compiler whose sandbox runs install scripts
 python3 tests/packages.py "$luc"
-echo "ok luc: new/init, add/remove, task DAG, clean, --diagnostic, every module's tests and failures, license, update with LUC_HOME, cross-platform tasks, and a project-local cache"
+echo "ok luc: new/init, add/remove, task DAG, clean, --diagnostic, every module's tests and failures, libraries without a starter module, mixed Luce/Base packages, license, update with LUC_HOME, cross-platform tasks, and a project-local cache"

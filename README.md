@@ -61,6 +61,14 @@ to `build/<name>-diagnostic`, beside the normal one, and is never bundled as an 
 For a Luce project, `luc test --diagnostic` runs the tests as a built program, since the
 interpreter has no profile.
 
+`luc test` hands the `.luc` modules under the source root to `luce test --package` and the
+`.lucb` modules to `luce-base test --package`, so a package that mixes the two runs both and
+ends with one total (`Luce and Base together: 5 passed, 0 failed`). Each run starts from the
+entry when it is in that language, and otherwise from the first module, the way pytest
+collects every test file without a starting point: a library needs no module named after
+the package to be tested. If the sources declare tests and no run reported any, `luc test`
+says so and fails rather than passing on `0 passed`.
+
 A task is a `def task "name" { str cmd = "..." }` entry, optionally with `str[]
 depends`. `luc run <task> -- a b` passes `a b` through to the command.
 

@@ -1,0 +1,195 @@
+## `luc test`: every module of the package, each run by the compiler of its language. The
+## Luce modules go to `luce test --package` and the Base modules to `luce-base test
+## --package`, whatever the package's language, so a mixed package runs both halves and
+## reports one total. Each run starts from the package's entry when it is in that language
+## and otherwise from its first module, since `--package` takes every module under the
+## source root either way.
+import c
+import io
+import memory
+import strings
+from luce_std import files, paths, process
+
+## What `luc test` was asked to test, as main loaded it.
+pub struct Request:
+    ## The project's root directory.
+    pub var root: str
+    ## The source root under it, `src` unless the manifest says otherwise.
+    pub var source: str
+    ## The entry's path, or empty for a library with no starter module.
+    pub var entry: str
+    ## The two compilers.
+    pub var luce: str
+    pub var base: str
+    ## `--diagnostic`: the diagnostic profile, which builds the tests.
+    pub var diagnostic: bool
+    ## What followed `--`, given to every compiler run.
+    pub var passthrough: str[]
+
+## The modules a run can start from and the tests the sources declare: the first Luce
+## module and the first Base module under the source root, a `.lucb` file or a directory
+## module (one with an ORDER), as full paths the caller releases; empty when there is none.
+struct Sources:
+    var luce: str
+    var base: str
+    var declared: u64
+
+    func release():
+        if self.luce.length > 0: strings.release(self.luce)
+        if self.base.length > 0: strings.release(self.base)
+
+## One compiler's run: its status and the counts its report ended with.
+struct Outcome:
+    var status: i32
+    var passed: u64
+    var failed: u64
+
+## Test the package and answer the exit status: the worst of the runs, or 1 when the
+## sources declare tests and no run reported any.
+pub func run(request: Request) -> i32!:
+    var sources = try scan(request.root, request.source)
+    defer sources.release()
+    # each compiler starts from the entry when it is in its language, else its first module
+    let luce_start = request.entry if strings.ends_with(request.entry, ".luc") else sources.luce
+    let base_start = request.entry if strings.ends_with(request.entry, ".lucb") else sources.base
+    if luce_start.length == 0 and base_start.length == 0:
+        try io.stderr().write(f"luc test: no module under {request.source} to test\n")
+        return 1
+    var total = Outcome(status = 0, passed = 0, failed = 0)
+    var luce_outcome = Outcome(status = 0, passed = 0, failed = 0)
+    var base_outcome = Outcome(status = 0, passed = 0, failed = 0)
+    if luce_start.length > 0:
+        luce_outcome = try test_with(request.luce, luce_start, request)
+    if base_start.length > 0:
+        base_outcome = try test_with(request.base, base_start, request)
+    for outcome in [luce_outcome, base_outcome]:
+        if outcome.status != 0 and total.status == 0: total.status = outcome.status
+        total.passed += outcome.passed
+        total.failed += outcome.failed
+    if luce_start.length > 0 and base_start.length > 0:
+        try io.stdout().write(f"Luce and Base together: {total.passed} passed, {total.failed} failed\n")
+    # a report of no tests from sources that declare some means a run missed them
+    if total.status == 0 and total.passed + total.failed == 0 and sources.declared > 0:
+        try io.stderr().write(f"luc test: the sources declare {sources.declared} test(s) but none ran\n")
+        return 1
+    return total.status
+
+## Run `compiler test start --package` with the request's profile and arguments, show what
+## it wrote, and read the counts from its report.
+func test_with(compiler: str, start: str, request: Request) -> Outcome!:
+    var words: str[8] = ---
+    var count: usize = 0
+    for word in ["test", start, "--package"]:
+        words[count] = word
+        count += 1
+    if request.diagnostic:
+        words[count] = "--profile"
+        words[count + 1] = "diagnostic"
+        count += 2
+    let argv = try new c.str[count + request.passthrough.length] ---
+    var made: usize = 0
+    defer release_arguments(argv, made)
+    for i in 0..<count:
+        argv[made] = (c.str)try strings.copy(words[i])
+        made += 1
+    for word in request.passthrough:
+        argv[made] = (c.str)try strings.copy(word)
+        made += 1
+    let program = try strings.copy(compiler)
+    defer strings.release(program)
+    let ran = try process.run((c.str)program, argv)
+    defer ran.release()
+    if ran.value.output.length > 0: try io.stdout().write(ran.value.output)
+    if ran.value.error_output.length > 0: try io.stderr().write(ran.value.error_output)
+    var outcome = Outcome(status = ran.value.exit_code, passed = 0, failed = 0)
+    read_counts(ran.value.output, &outcome)
+    return outcome
+
+func release_arguments(arguments: c.str[], count: usize):
+    for i in 0..<count: strings.release((str)arguments[i])
+    if arguments.length > 0: free(arguments) in memory.heap
+
+## The report's closing counts, the lines `N passed` and `N failed`; the last of each wins.
+func read_counts(output: str, outcome: Outcome*):
+    var start: usize = 0
+    while start < output.length:
+        let end = strings.find_from(output, "\n", start) else output.length
+        let line = (str)output.bytes[start..<end]
+        start = end + 1
+        let (number, word) = strings.split_once(line, " ") else continue
+        let value = strings.parse_u64(number) else continue
+        if word == "passed": outcome.passed = value
+        elif word == "failed": outcome.failed = value
+
+# mark: The sources ============================================================================
+
+## The package's modules under `root`/`source`, in the order of their paths, and how many
+## tests they declare. A hidden directory and one holding a package of its own are left out,
+## as the compilers leave them out of `--package`.
+func scan(root: str, source: str) -> Sources!:
+    var sources = Sources(luce = "", base = "", declared = 0)
+    errdefer sources.release()
+    let joined = try paths.join(root, source)
+    defer joined.release()
+    let directory = try strings.copy(joined.value)
+    defer strings.release(directory)
+    if not files.exists((c.str)directory): return sources
+    let listing = try files.walk((c.str)directory)
+    defer listing.release()
+    for relative in listing.value:
+        if hidden(relative) or try in_nested_package(directory, relative): continue
+        let path = try paths.join(directory, relative)
+        defer path.release()
+        let luce_module = strings.ends_with(relative, ".luc")
+        let base_file = strings.ends_with(relative, ".lucb")
+        if luce_module or base_file:
+            sources.declared += try declared_tests(path.value)
+        if luce_module and sources.luce.length == 0:
+            sources.luce = try strings.copy(path.value)
+        # the walk lists a directory before its files, so a directory module comes first
+        let base_module = base_file or try has_file(path.value, "ORDER")
+        if base_module and sources.base.length == 0 and not try in_ancestor(directory, relative, "ORDER"):
+            sources.base = try strings.copy(path.value)
+    return sources
+
+## Whether a part of `relative` starts with a dot.
+func hidden(relative: str) -> bool:
+    if relative.length > 0 and relative.bytes[0] == '.': return true
+    return strings.contains(relative, "/.")
+
+## Whether a directory between `directory` and the entry `relative` has a package.prisma:
+## that package's modules are its own.
+func in_nested_package(directory: str, relative: str) -> bool!:
+    return try in_ancestor(directory, relative, "package.prisma")
+
+## Whether a directory between `directory` and the entry `relative`, not counting `relative`
+## itself, holds a file `name`: an ORDER makes everything below it part of one module.
+func in_ancestor(directory: str, relative: str, name: str) -> bool!:
+    for i in 0..<relative.length:
+        if relative.bytes[i] != '/': continue
+        let below = try paths.join(directory, (str)relative.bytes[..<i])
+        defer below.release()
+        if try has_file(below.value, name): return true
+    return false
+
+func has_file(directory: str, name: str) -> bool!:
+    let joined = try paths.join(directory, name)
+    defer joined.release()
+    let terminated = try strings.copy(joined.value)
+    defer strings.release(terminated)
+    return files.exists((c.str)terminated)
+
+## How many top-level `test "..."` declarations the source at `path` holds.
+func declared_tests(path: str) -> u64!:
+    let terminated = try strings.copy(path)
+    defer strings.release(terminated)
+    let contents = try files.read((c.str)terminated)
+    defer contents.release()
+    let text = (str)contents.value
+    var count: u64 = 0
+    var start: usize = 0
+    while start < text.length:
+        if strings.starts_with((str)text.bytes[start..], "test \""): count += 1
+        let next = strings.find_from(text, "\n", start) else break
+        start = next + 1
+    return count

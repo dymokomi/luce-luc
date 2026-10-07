@@ -30,6 +30,7 @@ import packages
 import registry_http
 import apps
 import progress
+import package_tests
 import release as releasing
 from luce_git import git
 from luce_crypto import native as crypto_native
@@ -62,6 +63,8 @@ struct Project:
     var name: str
     var language: str
     var entry: str
+    ## The source root under `root`, `src` unless the manifest names another.
+    var source: str
     var tasks: Task[]
     var task_count: usize
 
@@ -70,6 +73,7 @@ struct Project:
         strings.release(self.name)
         strings.release(self.language)
         strings.release(self.entry)
+        strings.release(self.source)
         for i in 0..<self.task_count:
             strings.release(self.tasks[i].name)
             strings.release(self.tasks[i].command)
@@ -88,6 +92,12 @@ struct Project:
     ## The entry source: the manifest's `entry`, else the conventional app main, else the
     ## library's starter module (src/<module>.<ext>) so `check` works on a package.
     func entry_path() -> str!:
+        let found = try self.starter()
+        return found else error(usage_error, "no entry source found (expected src/main or src/<module>, the last word of the package's name); set entry in package.prisma")
+
+    ## The entry source as `entry_path` finds it, or none for a library without a module
+    ## named after the package.
+    func starter() -> str?!:
         if self.entry.length > 0:
             return try join(self.root, self.entry)
         let suffix = ".luc" if self.language == "luce" else ".lucb"
@@ -108,7 +118,7 @@ struct Project:
             strings.release(terminated)
             if exists: return candidate
             strings.release(candidate)
-        error(usage_error, "no entry source found (expected src/main or src/<module>, the last word of the package's name); set entry in package.prisma")
+        return none
 
     func find_task(name: str) -> Task?:
         var index: usize = 0
@@ -129,7 +139,7 @@ func load_project(prepare: bool = true, directory_hint: str = "", registry: bool
     let start = try strings.copy(directory_hint) if directory_hint.length > 0 else try os.cwd()
     defer strings.release(start)
     var project = Project(root = try strings.copy(start), name = try strings.copy("app"),
-        language = try strings.copy("luce-base"), entry = try strings.copy(""))
+        language = try strings.copy("luce-base"), entry = try strings.copy(""), source = try strings.copy("src"))
     errdefer project.close()
     project.tasks = try new Task[128] ---
     var directory = start
@@ -152,6 +162,7 @@ func apply_definition(project: Project*) -> !:
     try replace_text(&project.name, definition.name)
     try replace_text(&project.language, definition.language)
     try replace_text(&project.entry, definition.entry)
+    try replace_text(&project.source, definition.source)
     for i in 0..<definition.task_count:
         let declared = try definition.task_at(i)
         let slot = try task_slot(project, declared.name)
@@ -847,7 +858,7 @@ func require_manifest(project: Project*) -> str!:
 
 func package_name_at(manifest: str) -> str!:
     var probe = Project(root = try strings.copy(""), name = try strings.copy(""),
-        language = try strings.copy("luce-base"), entry = try strings.copy(""))
+        language = try strings.copy("luce-base"), entry = try strings.copy(""), source = try strings.copy("src"))
     probe.tasks = try new Task[1] ---
     defer probe.close()
     let filename = try strings.copy(manifest)
@@ -1282,14 +1293,16 @@ pub func main(arguments: c.str[]) -> i32!:
             return try build(&project, try build_mode(own, "build"), passthrough)
         if command == "test":
             # every module of the package, imported by the entry or not (§16.5, Luce §17.3)
-            var base = try append(try two("test", try project.entry_path()), "--package")
             for word in own:
                 if word != "--diagnostic": error(usage_error, "usage: luc test [--diagnostic] [-- args]")
-                # Luce's tests are interpreted unless built, and only a build has a profile
-                if project.language == "luce": base = try append(base, "--build")
-                base = try append(base, "--profile")
-                base = try append(base, "diagnostic")
-            return try spawn(try project.compiler(), try concat(base, passthrough))
+            let starter = try project.starter()
+            let entry = starter else try strings.copy("")
+            defer strings.release(entry)
+            let luce = try toolchain_compiler("luce", "LUCE")
+            let base = try toolchain_compiler("luce-base", "LUCE_BASE")
+            return try package_tests.run(package_tests.Request(root = project.root, source = project.source,
+                entry = entry, luce = luce, base = base,
+                diagnostic = own.length > 0, passthrough = passthrough))
         if command == "check":
             return try spawn(try project.compiler(), try two("check", try project.entry_path()))
         if command == "fmt":
