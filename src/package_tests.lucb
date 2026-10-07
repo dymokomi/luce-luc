@@ -72,23 +72,26 @@ pub func run(request: Request) -> i32!:
         try io.stderr().write(f"luc test: the sources declare {sources.declared} test(s) but none ran\n")
         return 1
     let blocks = total.passed + total.failed
-    let (programs_passed, programs_failed) = try test_programs.run(test_programs.Settings(root = request.root,
+    let programs = try test_programs.run(test_programs.Settings(root = request.root,
         luce = request.luce, base = request.base, diagnostic = request.diagnostic))
-    let programs = programs_passed + programs_failed
-    if programs_failed > 0 and total.status == 0: total.status = 1
-    total.passed += programs_passed
-    total.failed += programs_failed
-    if blocks + programs == 0 and total.status == 0:
+    let program_count = programs.passed + programs.failed + programs.skipped
+    if programs.failed > 0 and total.status == 0: total.status = 1
+    total.passed += programs.passed
+    total.failed += programs.failed
+    if blocks + program_count == 0 and total.status == 0:
         try io.stderr().write("luc test: no tests found: add a `test` block or a tests/<name>/main program\n")
         return 1
+    var skipped_text: u8[48]
+    let skipped = try strings.format(skipped_text, f", {programs.skipped} skipped") if programs.skipped > 0 else ""
     # one total when more than one run contributed
-    if runs > 1 or (runs > 0 and programs > 0):
+    if runs > 1 or (runs > 0 and program_count > 0):
         let block_word = "test block" if blocks == 1 else "test blocks"
-        let program_word = "program" if programs == 1 else "programs"
-        try io.stdout().write(f"total: {total.passed} passed, {total.failed} failed ({blocks} {block_word}, {programs} {program_word})\n")
-    elif programs > 0:
-        try io.stdout().write(f"{programs_passed} passed\n")
-        if programs_failed > 0: try io.stdout().write(f"{programs_failed} failed\n")
+        let program_word = "program" if program_count == 1 else "programs"
+        try io.stdout().write(f"total: {total.passed} passed, {total.failed} failed{skipped} ({blocks} {block_word}, {program_count} {program_word})\n")
+    elif program_count > 0:
+        try io.stdout().write(f"{programs.passed} passed\n")
+        if programs.failed > 0: try io.stdout().write(f"{programs.failed} failed\n")
+        if programs.skipped > 0: try io.stdout().write(f"{programs.skipped} skipped\n")
     return total.status
 
 ## `luc test --list`: the test programs, then the test blocks the sources declare, one per

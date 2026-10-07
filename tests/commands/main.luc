@@ -7,9 +7,9 @@ from luce_std import files, paths, process
 
 let failed = ErrorCode.package(1)
 
-# The checkout's root, two levels up from tests/commands where this runs.
+# The checkout's root, where `luc test` runs its programs.
 func root() -> str!:
-    return paths.directory(paths.directory(process.current_directory()))
+    return process.current_directory()
 
 # Run `program` with `arguments` from `directory`; its output, without the trailing newlines
 # a shell's `$(...)` would drop too, and its exit status.
@@ -260,13 +260,20 @@ func test_checks(work: str, luc: str, luce: str) -> unit!:
 # Test programs: tests/<name>/main.* built and run from their directory, passing on exit 0
 # and, with an `expected` file, on printing exactly it; a directory without a main is data.
 func program_checks(project: str, luc: str) -> unit!:
-    write(paths.join(project, "tests/greets/main.lucb"), "import c\nimport helper\nimport os\nfrom luce_std import files\n\npub func main(arguments: str[]) -> i32:\n    _ = arguments\n    print(f\"{helper.two()}\")\n    let home = os.env(\"LUC_HOME\") else return 2\n    if not files.exists((c.str)home): return 3\n    return 0 if files.exists(\"fixture.txt\") else 4\n")
+    write(paths.join(project, "tests/greets/main.lucb"), "import c\nimport helper\nimport os\nfrom luce_std import files, paths\n\npub func main(arguments: str[]) -> i32!:\n    _ = arguments\n    print(f\"{helper.two()}\")\n    let home = os.env(\"LUC_HOME\") else return 2\n    if not files.exists((c.str)home) or os.env(\"HOME\") != home: return 3\n    if not files.exists(\"package.prisma\"): return 4\n    let here = os.env(\"LUC_TEST_DIR\") else return 5\n    let fixture = try paths.join(here, \"fixture.txt\")\n    defer fixture.release()\n    return 0 if files.exists((c.str)fixture.value) else 6\n")
     files.write_text(paths.join(project, "tests/greets/fixture.txt"), "data\n")
     files.write_text(paths.join(project, "tests/greets/expected"), "2\n")
     write(paths.join(project, "tests/data/notes.txt"), "not a program\n")
+    # a directory module under tests/, its files listed in an ORDER, is not a program either
+    write(paths.join(project, "tests/parts/ORDER"), "main.lucb\n")
+    write(paths.join(project, "tests/parts/main.lucb"), "pub func main(arguments: str[]) -> i32:\n    return undefined_name\n")
     write(paths.join(project, "package.prisma"), tasks_manifest.replace("    str entry = \"src/main.lucb\"\n", f"    str entry = \"src/main.lucb\"\n    def dependency \"luce-std\" {{\n        str owner = \"dymokomi\"\n        str path = \"{paths.join(root(), "../luce-std")}\"\n    }}\n"))
     expect("a test program", project, luc, ["test"], "ok    in helper\nok    in main\n2 passed\nok    tests/greets\ntotal: 3 passed, 0 failed (2 test blocks, 1 program)")
     expect("luc test --list names the programs", project, luc, ["test", "--list"], "tests/greets\nin helper\nin main")
+    # a program that prints `skip: reason` and exits 0 is skipped, and counted apart
+    write(paths.join(project, "tests/later/main.lucb"), "pub func main(arguments: str[]) -> i32:\n    _ = arguments\n    print(\"skip: no device here\")\n    return 0\n")
+    expect("a skipped test program", project, luc, ["test"], "ok    in helper\nok    in main\n2 passed\nok    tests/greets\nskip  tests/later: no device here\ntotal: 3 passed, 0 failed, 1 skipped (2 test blocks, 2 programs)")
+    files.remove_tree(paths.join(project, "tests/later"))
     # a wrong output and a failing exit status each fail their program, shown with its output
     files.write_text(paths.join(project, "tests/greets/expected"), "3\n")
     write(paths.join(project, "tests/exits/main.lucb"), "pub func main(arguments: str[]) -> i32:\n    _ = arguments\n    print(\"about to fail\")\n    return 5\n")

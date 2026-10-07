@@ -77,25 +77,31 @@ pytest collects both test functions and test files without being told where they
 - **Test programs**: every directory `tests/<name>/` that holds a `main.luc` or `main.lucb`
   (with `pub func main`). It suits a check that needs a process of its own: fixtures read
   from disk, a server, a window or the GPU, a comparison with another tool. `luc test` builds
-  each with the package's dependencies, runs it from its own directory, and counts it passed
-  when it exits 0 and, if the directory has a file named `expected`, when its standard
-  output is exactly that file. A program may import the package's modules by their names,
-  as code under `src/` does; one with a `package.prisma` of its own is a package of its own,
-  with dependencies only it needs, and imports the package's public modules as any
-  dependent does. The programs run in parallel, as many as the machine has cores, with
-  `LUC_HOME` set to a scratch directory and `LUCE` and `LUCE_BASE` naming the compilers
-  `luc test` uses; each builds into `build/tests/<name>/`. A directory under `tests/`
-  without a `main` is data, and stays as it is.
+  each with the package's dependencies and runs it from the package root, as `luc test`
+  itself runs, with `LUC_TEST_DIR` naming the program's own directory for the files beside
+  it. It counts as passed when it exits 0 and, if its directory has a file named
+  `expected`, when its standard output is exactly that file; one that exits 0 after
+  printing a line `skip: reason` (no GPU here, say) counts as skipped. A program may import
+  any module of the package, private ones too, as code under `src/` does, and the package's
+  dependencies; one with a `package.prisma` of its own is a package of its own, with
+  dependencies only it needs, and imports the package's public modules as any dependent
+  does. The programs run in parallel, as many as the machine has cores, each with `HOME`
+  and `LUC_HOME` pointing at a fresh scratch directory that is removed afterwards, so no
+  test touches your settings, libraries, crash reports or keychain, and with `LUCE` and
+  `LUCE_BASE` naming the compilers `luc test` uses; each builds into `build/tests/<name>/`.
+  A directory under `tests/` without a `main`, or with an `ORDER` or `TESTS` file, is not a
+  program and stays as it is.
 
 ```text
 ok    parses a header
 ok    rejects a bad header
 2 passed
 ok    tests/roundtrip
+skip  tests/gpu: no Metal device
 FAIL  tests/vectors
       exit status 1
       case 17: expected 3f, got 3e
-total: 3 passed, 1 failed (2 test blocks, 2 programs)
+total: 3 passed, 1 failed, 1 skipped (2 test blocks, 3 programs)
 ```
 
 A failed program is shown with the end of its output. A package with no test at all, no
