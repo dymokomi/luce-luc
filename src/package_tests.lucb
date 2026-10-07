@@ -78,7 +78,7 @@ pub func run(request: Request) -> i32!:
     if programs_failed > 0 and total.status == 0: total.status = 1
     total.passed += programs_passed
     total.failed += programs_failed
-    if blocks + programs == 0:
+    if blocks + programs == 0 and total.status == 0:
         try io.stderr().write("luc test: no tests found: add a `test` block or a tests/<name>/main program\n")
         return 1
     # one total when more than one run contributed
