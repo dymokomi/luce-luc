@@ -89,6 +89,29 @@ func find(root: str) -> Program[]!:
         found[found.length - 1].source = try strings.copy(source.value)
     return found
 
+## Whether the package.prisma in `directory`, if any, declares a dependency without a
+## `path`, one luc fetches from the registry. A test program's manifest names little more
+## than its dependencies, which the compiler reads as they are, so it is not checked as a
+## package to publish: each dependency element holds at most one `path`, and fewer paths
+## than dependencies leave one to fetch.
+func registry_dependencies(directory: str) -> bool!:
+    let manifest = try paths.join(directory, "package.prisma")
+    defer manifest.release()
+    if not files.exists((c.str)manifest.value): return false
+    let contents = try files.read((c.str)manifest.value)
+    defer contents.release()
+    let text = (str)contents.value
+    var dependencies: usize = 0
+    var with_path: usize = 0
+    var start: usize = 0
+    while start < text.length:
+        let end = strings.find_from(text, "\n", start) else text.length
+        let line = strings.trim((str)text.bytes[start..<end])
+        if strings.starts_with(line, "def dependency "): dependencies += 1
+        elif strings.starts_with(line, "str path "): with_path += 1
+        start = end + 1
+    return with_path < dependencies
+
 func release_all(programs: Program[]):
     for i in 0..<programs.length: programs[i].release()
     if programs.length > 0: free(programs) in memory.heap
@@ -120,7 +143,7 @@ pub func run(settings: Settings) -> (u64, u64)!:
     # a program with a package.prisma of its own may declare registry dependencies the
     # package lacks; fetch them before any build, one program at a time
     for program in shared.programs:
-        if try exists_in(program.directory, "package.prisma"): try packages.prepare(program.directory)
+        if try registry_dependencies(program.directory): try packages.prepare(program.directory)
     var wanted = (usize)os.cpus()
     if wanted > shared.programs.length: wanted = shared.programs.length
     if wanted == 0: wanted = 1
@@ -312,6 +335,18 @@ test "a long report shows the last lines":
     defer strings.release(report)
     assert(strings.starts_with(report, "exit status 2\n...\n10\n11\n"))
     assert(strings.ends_with(report, "\n29\n"))
+
+test "only a dependency without a path is fetched":
+    let directory = try files.create_temporary_directory("/tmp")
+    defer _ = files.remove_tree((c.str)directory.value) catch: recover ()
+    defer directory.release()
+    assert(not try registry_dependencies(directory.value))
+    let manifest = try paths.join(directory.value, "package.prisma")
+    defer manifest.release()
+    try files.write((c.str)manifest.value, b"#prisma 4.0\ndef package \"t\" {\n    def dependency \"a\" {\n        str path = \"../a\"\n    }\n}\n")
+    assert(not try registry_dependencies(directory.value))
+    try files.write((c.str)manifest.value, b"#prisma 4.0\ndef package \"t\" {\n    def dependency \"a\" {\n        str path = \"../a\"\n    }\n    def dependency \"b\" {\n        str owner = \"acme\"\n    }\n}\n")
+    assert(try registry_dependencies(directory.value))
 
 test "a program named by its path is not looked for":
     let found = try located("/opt/luce/bin/luce-base")
