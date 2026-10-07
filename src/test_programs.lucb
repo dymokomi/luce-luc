@@ -1,0 +1,319 @@
+## `luc test`'s test programs: every directory `tests/<name>/` holding a `main.luc` or a
+## `main.lucb` is a program, built with the package's dependencies and run from its own
+## directory with a scratch LUC_HOME. It passes when it exits 0 and, when the directory has
+## an `expected` file, its standard output is that file's text exactly. The programs build
+## and run in parallel, as many at once as the machine has cores, and are reported in the
+## order of their names.
+import c
+import interop
+import io
+import memory
+import os
+import strings
+import thread
+from luce_std import files, paths, process
+import packages
+
+## What the programs are built and run with, as `luc test` was asked.
+pub struct Settings:
+    ## The project's root directory.
+    pub var root: str
+    ## The two compilers: `luce` builds a main.luc, `luce-base` a main.lucb.
+    pub var luce: str
+    pub var base: str
+    ## `--diagnostic`: build with the diagnostic profile.
+    pub var diagnostic: bool
+
+## One program: where it lives and, once it ran, how it went.
+struct Program:
+    ## Its directory's name under tests/, which names it in the report.
+    var name: str
+    ## Its directory and its main source, full paths.
+    var directory: str
+    var source: str
+    ## Whether it is a Luce program (main.luc) rather than a Base one.
+    var luce: bool
+    ## Whether it passed, and what to show when it did not.
+    var passed: bool
+    var report: str
+    var done: @bool
+
+    func release():
+        strings.release(self.name)
+        strings.release(self.directory)
+        strings.release(self.source)
+        if self.report.length > 0: strings.release(self.report)
+
+## The programs a run works through, shared by its workers: each takes the next index.
+struct Run:
+    var programs: Program[]
+    var settings: Settings
+    var next: @u64
+
+## How many lines of a failed program's output its report shows: the end, where it failed.
+let tail_lines: usize = 20
+
+# mark: Finding the programs ===================================================================
+
+## The test programs under `root`/tests, in the order of their names; release them with
+## `release_all`.
+func find(root: str) -> Program[]!:
+    var found: Program[]
+    errdefer release_all(found)
+    let tests = try paths.join(root, "tests")
+    defer tests.release()
+    if not try is_directory(tests.value): return found
+    let names = try files.list((c.str)tests.value)
+    defer names.release()
+    for name in names.value:
+        if name.length > 0 and name.bytes[0] == '.': continue
+        let directory = try paths.join(tests.value, name)
+        defer directory.release()
+        if not try is_directory(directory.value): continue
+        # a directory of test fragments (one with a TESTS) belongs to a module, not a program
+        if try exists_in(directory.value, "TESTS"): continue
+        var luce = false
+        if try exists_in(directory.value, "main.luc"):
+            luce = true
+        elif not try exists_in(directory.value, "main.lucb"):
+            continue
+        let source = try paths.join(directory.value, "main.luc" if luce else "main.lucb")
+        defer source.release()
+        let grown = try new Program[found.length + 1] --- in memory.heap
+        for i in 0..<found.length: grown[i] = found[i]
+        if found.length > 0: free(found) in memory.heap
+        found = grown
+        found[found.length - 1] = Program(name = "", directory = "", source = "", luce = luce, passed = false, report = "")
+        found[found.length - 1].name = try strings.copy(name)
+        found[found.length - 1].directory = try strings.copy(directory.value)
+        found[found.length - 1].source = try strings.copy(source.value)
+    return found
+
+func release_all(programs: Program[]):
+    for i in 0..<programs.length: programs[i].release()
+    if programs.length > 0: free(programs) in memory.heap
+
+func is_directory(path: str) -> bool!:
+    let terminated = try strings.copy(path)
+    defer strings.release(terminated)
+    if not files.exists((c.str)terminated): return false
+    return (try files.metadata((c.str)terminated)).kind == files.FileKind.directory
+
+func exists_in(directory: str, name: str) -> bool!:
+    let joined = try paths.join(directory, name)
+    defer joined.release()
+    return files.exists((c.str)joined.value)
+
+## The names of the test programs, one per line, as `luc test --list` shows them.
+pub func list(root: str) -> !:
+    let programs = try find(root)
+    defer release_all(programs)
+    for program in programs: try io.stdout().write(f"tests/{program.name}\n")
+
+# mark: Running them ===========================================================================
+
+## Build and run every test program, report each, and answer how many passed and failed.
+pub func run(settings: Settings) -> (u64, u64)!:
+    var shared = Run(programs = try find(settings.root), settings = settings)
+    defer release_all(shared.programs)
+    if shared.programs.length == 0: return (0, 0)
+    # a program with a package.prisma of its own may declare registry dependencies the
+    # package lacks; fetch them before any build, one program at a time
+    for program in shared.programs:
+        if try exists_in(program.directory, "package.prisma"): try packages.prepare(program.directory)
+    var wanted = (usize)os.cpus()
+    if wanted > shared.programs.length: wanted = shared.programs.length
+    if wanted == 0: wanted = 1
+    let workers = try new thread.Handle[wanted] --- in memory.heap
+    defer free(workers) in memory.heap
+    var started: usize = 0
+    while started < workers.length:
+        workers[started] = thread.spawn(worker, (void*)&shared, name = "luc test") catch failure:
+            _ = failure
+            break
+        started += 1
+    # with no thread to spare, the programs run here
+    if started == 0: worker((void*)&shared)
+    # report in the order of the names, each as soon as it and those before it are done
+    var passed: u64 = 0
+    var failed: u64 = 0
+    for index in 0..<shared.programs.length:
+        let program = &shared.programs[index]
+        while not program.done.load(.acquire): thread.sleep(20)
+        if program.passed:
+            passed += 1
+            try io.stdout().write(f"ok    tests/{program.name}\n")
+        else:
+            failed += 1
+            try io.stdout().write(f"FAIL  tests/{program.name}\n")
+            try write_indented(program.report)
+    for index in 0..<started: try workers[index].join()
+    return (passed, failed)
+
+func worker(raw: void*?):
+    let shared = (Run*)(raw else return)
+    with memory.heap:
+        while true:
+            let index = (usize)shared.next.add(1, .relaxed)
+            if index >= shared.programs.length: return
+            let program = &shared.programs[index]
+            program.passed = run_one(program, shared.settings) catch failure:
+                program.report = strings.copy(failure.message) catch again:
+                    _ = again
+                    recover ""
+                recover false
+            program.done.store(true, .release)
+
+## Build `program` into build/tests/<name>/ and run it from its directory with a fresh
+## LUC_HOME there; answer whether it passed, leaving in its report what to show if not.
+func run_one(program: Program*, settings: Settings) -> bool!:
+    let build = try paths.join(settings.root, "build")
+    defer build.release()
+    let under = try paths.join(build.value, "tests")
+    defer under.release()
+    let output = try paths.join(under.value, program.name)
+    defer output.release()
+    let home = try paths.join(output.value, "home")
+    defer home.release()
+    if files.exists((c.str)home.value): try files.remove_tree((c.str)home.value)
+    try files.ensure_directory(home.value)
+    let binary = try paths.join(output.value, program.name)
+    defer binary.release()
+    var words: str[]
+    defer free_words(words)
+    for word in ["build", program.source, "--native", "-o", binary.value]:
+        words = try append(words, [word])
+    if settings.diagnostic:
+        words = try append(words, ["--profile"])
+        words = try append(words, ["diagnostic"])
+    let compiler = settings.luce if program.luce else settings.base
+    let built = try execute(compiler, words, "", settings, home.value)
+    defer built.release()
+    if built.value.exit_code != 0:
+        program.report = try tail("build failed", built.value.output, built.value.error_output)
+        return false
+    var nothing: str[]
+    let ran = try execute(binary.value, nothing, program.directory, settings, home.value)
+    defer ran.release()
+    let completed = ran.value
+    if completed.exit_code != 0:
+        var heading: u8[64]
+        program.report = try tail(try strings.format(heading, f"exit status {completed.exit_code}"), completed.output, completed.error_output)
+        return false
+    let expected = try paths.join(program.directory, "expected")
+    defer expected.release()
+    if files.exists((c.str)expected.value):
+        let wanted = try files.read((c.str)expected.value)
+        defer wanted.release()
+        if (str)wanted.value != completed.output:
+            program.report = try tail("its standard output differs from its expected file", completed.output, completed.error_output)
+            return false
+    return true
+
+## Run `program` with `words` from `directory` (empty: this one) and capture what it
+## wrote. It runs with LUC_HOME set to `home`, and LUCE and LUCE_BASE naming the compilers
+## under test, so a program that builds or runs Luce uses the same toolchain.
+func execute(program: str, words: str[], directory: str, settings: Settings, home: str) -> interop.Owned[process.Completed]!:
+    var settings_texts: str[]
+    defer free_words(settings_texts)
+    settings_texts = try append(settings_texts, ["LUC_HOME=", home])
+    let luce = try located(settings.luce)
+    defer strings.release(luce)
+    let base = try located(settings.base)
+    defer strings.release(base)
+    settings_texts = try append(settings_texts, ["LUCE=", luce])
+    settings_texts = try append(settings_texts, ["LUCE_BASE=", base])
+    var named: str[]
+    defer free_words(named)
+    named = try append(named, [program])
+    named = try append(named, [directory])
+    let arguments = try new c.str[words.length] --- in memory.heap
+    defer free(arguments) in memory.heap
+    for i in 0..<words.length: arguments[i] = (c.str)words[i]
+    let environment = try new c.str[settings_texts.length] --- in memory.heap
+    defer free(environment) in memory.heap
+    for i in 0..<settings_texts.length: environment[i] = (c.str)settings_texts[i]
+    return try process.run((c.str)named[0], arguments, (c.str)named[1], environment)
+
+## Where `program` is: itself when it names a path, else the first directory of PATH that
+## holds it, so a test program is told the very compiler luc uses whatever its directory.
+## The caller releases the answer.
+func located(program: str) -> str!:
+    if strings.contains(program, "/") or strings.contains(program, "\\"): return try strings.copy(program)
+    let search = os.env("PATH") else return try strings.copy(program)
+    let separator = ";" if os.windows else ":"
+    var start: usize = 0
+    while start <= search.length:
+        let end = strings.find_from(search, separator, start) else search.length
+        let directory = (str)search.bytes[start..<end]
+        start = end + 1
+        if directory.length == 0: continue
+        let candidate = try paths.join(directory, program)
+        defer candidate.release()
+        if files.exists((c.str)candidate.value): return try strings.copy(candidate.value)
+        if os.windows:
+            let windows = try strings.join([candidate.value, ".exe"], "")
+            if files.exists((c.str)windows): return windows
+            strings.release(windows)
+    return try strings.copy(program)
+
+## `words` with one more, `pieces` joined into a NUL-terminated text it owns.
+func append(words: str[], pieces: const str[]) -> str[]!:
+    let word = try strings.join(pieces, "")
+    errdefer strings.release(word)
+    let grown = try new str[words.length + 1] --- in memory.heap
+    for i in 0..<words.length: grown[i] = words[i]
+    grown[words.length] = word
+    if words.length > 0: free(words) in memory.heap
+    return grown
+
+func free_words(words: str[]):
+    for word in words: strings.release(word)
+    if words.length > 0: free(words) in memory.heap
+
+## A failed program's report: `heading`, then the last lines of what it wrote, its
+## standard output and then its standard error.
+func tail(heading: str, output: str, error_output: str) -> str!:
+    let combined = try strings.join([output, error_output], "")
+    defer strings.release(combined)
+    var start = combined.length
+    var lines: usize = 0
+    while start > 0:
+        if combined.bytes[start - 1] == '\n' and start < combined.length:
+            lines += 1
+            if lines >= tail_lines: break
+        start -= 1
+    let shown = (str)combined.bytes[start..]
+    let omitted = "...\n" if start > 0 else ""
+    return try strings.join([heading, "\n", omitted, shown], "")
+
+## `report` indented under its FAIL line, each line once, ending with a newline.
+func write_indented(report: str) -> !:
+    var start: usize = 0
+    while start < report.length:
+        let end = strings.find_from(report, "\n", start) else report.length
+        try io.stdout().write(f"      {(str)report.bytes[start..<end]}\n")
+        start = end + 1
+
+test "a short report shows all of the output":
+    let report = try tail("exit status 1", "a\nb\n", "c\n")
+    defer strings.release(report)
+    assert(report == "exit status 1\na\nb\nc\n")
+
+test "a long report shows the last lines":
+    var lines: str[]
+    defer free_words(lines)
+    for i in 0..<30:
+        var line: u8[16]
+        lines = try append(lines, [try strings.format(line, f"{i}\n")])
+    let output = try strings.join(lines, "")
+    defer strings.release(output)
+    let report = try tail("exit status 2", output, "")
+    defer strings.release(report)
+    assert(strings.starts_with(report, "exit status 2\n...\n10\n11\n"))
+    assert(strings.ends_with(report, "\n29\n"))
+
+test "a program named by its path is not looked for":
+    let found = try located("/opt/luce/bin/luce-base")
+    defer strings.release(found)
+    assert(found == "/opt/luce/bin/luce-base")

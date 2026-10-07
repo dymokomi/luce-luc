@@ -47,7 +47,8 @@ is described in [luce-pkg/docs/PACKAGE_PRISMA.md](https://github.com/dymokomi/lu
 | --- | --- |
 | `luc build [--release] [--diagnostic]` | builds into `build/<name>`; an application also gets `build/Name.app` |
 | `luc run [--release] [--diagnostic] [-- args]` | builds and runs the program |
-| `luc test [--diagnostic]` | runs the tests of every module of the project, imported or not |
+| `luc test [--diagnostic]` | runs the `test` blocks of every module, imported or not, and every test program under `tests/` |
+| `luc test --list` | names the test programs and the test blocks without running them |
 | `luc check` | type-checks without building |
 | `luc fmt [--check]` | formats the sources |
 | `luc clean [cache]` | removes `build/`, or only its cache |
@@ -61,13 +62,44 @@ to `build/<name>-diagnostic`, beside the normal one, and is never bundled as an 
 For a Luce project, `luc test --diagnostic` runs the tests as a built program, since the
 interpreter has no profile.
 
-`luc test` hands the `.luc` modules under the source root to `luce test --package` and the
-`.lucb` modules to `luce-base test --package`, so a package that mixes the two runs both and
-ends with one total (`Luce and Base together: 5 passed, 0 failed`). Each run starts from the
-entry when it is in that language, and otherwise from the first module, the way pytest
-collects every test file without a starting point: a library needs no module named after
-the package to be tested. If the sources declare tests and no run reported any, `luc test`
-says so and fails rather than passing on `0 passed`.
+### Testing
+
+`luc test` is the one test command of every package. It runs two kinds of test, the way
+pytest collects both test functions and test files without being told where they are:
+
+- **`test` blocks** in the modules under the source root and in their test fragments
+  (`tests/<module>/TESTS`). `luc test` hands the `.luc` modules to `luce test --package` and
+  the `.lucb` modules to `luce-base test --package`, so a package that mixes the two runs
+  both. Each run starts from the entry when it is in that language, and otherwise from the
+  first module, so a library needs no module named after the package to be tested. If the
+  sources declare tests and no run reported any, `luc test` says so and fails rather than
+  passing on `0 passed`.
+- **Test programs**: every directory `tests/<name>/` that holds a `main.luc` or `main.lucb`
+  (with `pub func main`). It suits a check that needs a process of its own: fixtures read
+  from disk, a server, a window or the GPU, a comparison with another tool. `luc test` builds
+  each with the package's dependencies, runs it from its own directory, and counts it passed
+  when it exits 0 and, if the directory has a file named `expected`, when its standard
+  output is exactly that file. A program may import the package's modules by their names,
+  as code under `src/` does; one with a `package.prisma` of its own is a package of its own,
+  with dependencies only it needs, and imports the package's public modules as any
+  dependent does. The programs run in parallel, as many as the machine has cores, with
+  `LUC_HOME` set to a scratch directory and `LUCE` and `LUCE_BASE` naming the compilers
+  `luc test` uses; each builds into `build/tests/<name>/`. A directory under `tests/`
+  without a `main` is data, and stays as it is.
+
+```text
+ok    parses a header
+ok    rejects a bad header
+2 passed
+ok    tests/roundtrip
+FAIL  tests/vectors
+      exit status 1
+      case 17: expected 3f, got 3e
+total: 3 passed, 1 failed (2 test blocks, 2 programs)
+```
+
+A failed program is shown with the end of its output. A package with no test at all, no
+`test` block and no test program, fails with "no tests found".
 
 A task is a `def task "name" { str cmd = "..." }` entry, optionally with `str[]
 depends`. `luc run <task> -- a b` passes `a b` through to the command.

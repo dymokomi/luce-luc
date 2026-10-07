@@ -1,0 +1,316 @@
+# luc's commands, driven from outside: build luc from this checkout, then put throwaway
+# projects through new/init, add/remove, run and tasks, clean, --diagnostic, test (blocks,
+# failures, libraries without a starter module, mixed Luce/Base packages, test programs),
+# licenses, and update/upgrade with LUC_HOME. `luc test` runs it with LUCE and LUCE_BASE
+# naming the toolchain under test.
+from luce_std import files, paths, process
+
+let failed = ErrorCode.package(1)
+
+# The checkout's root, two levels up from tests/commands where this runs.
+func root() -> str!:
+    return paths.directory(paths.directory(process.current_directory()))
+
+# Run `program` with `arguments` from `directory`; its output, without the trailing newlines
+# a shell's `$(...)` would drop too, and its exit status.
+func run(directory: str, program: str, arguments: list[str]) -> (int, str)!:
+    let done = process.run(program, arguments, directory)
+    return (done.exit_code, done.output.trim_end())
+
+# `run`, failing unless it exits 0.
+func ok(what: str, directory: str, program: str, arguments: list[str]) -> unit!:
+    _ = output_of(what, directory, program, arguments)
+
+# `run`, failing unless it exits 0, answering its output.
+func output_of(what: str, directory: str, program: str, arguments: list[str]) -> str!:
+    let (status, output) = run(directory, program, arguments)
+    if status != 0:
+        error(failed, f"{what}: exit status {status}: {output}")
+    return output
+
+# `run`, failing unless it exits 0 and prints `wanted`.
+func expect(what: str, directory: str, program: str, arguments: list[str], wanted: str) -> unit!:
+    let output = output_of(what, directory, program, arguments)
+    if output != wanted:
+        error(failed, f"{what}: got [{output}], wanted [{wanted}]")
+
+# `run`, failing unless it fails.
+func refused(what: str, directory: str, program: str, arguments: list[str]) -> str!:
+    let (status, output) = run(directory, program, arguments)
+    if status == 0:
+        error(failed, f"{what}: should have failed")
+    return output
+
+func check(what: str, condition: bool) -> unit!:
+    if not condition:
+        error(failed, what)
+
+func write(path: str, text: str) -> unit!:
+    files.ensure_directory(paths.directory(path))
+    files.write_text(path, text)
+
+pub func main(arguments: list[str]) -> int!:
+    let top = root()
+    let base = process.variable("LUCE_BASE") else error(failed, "LUCE_BASE names no compiler")
+    let luce = process.variable("LUCE") else ""
+    let work = paths.join(top, "build/tests/commands/work")
+    if files.exists(work):
+        files.remove_tree(work)
+    files.ensure_directory(work)
+    let luc = paths.join(work, "luc")
+    ok("build luc", top, base, ["build", paths.join(top, "src/main.lucb"), "--native", "-o", luc])
+    let version = files.read_text(paths.join(top, "package.prisma")).split("str version = \"")[1].split("\"")[0]
+    expect("version", work, luc, ["--version"], f"luc {version}")
+    update_checks(work, luc)
+    sibling_checks(work, luc)
+    scaffold_checks(work, luc)
+    project_checks(work, luc)
+    test_checks(work, luc, luce)
+    license_checks(work, luc)
+    files.remove_tree(work)
+    print("ok luc: new/init, add/remove, task DAG, clean, --diagnostic, every module's tests and failures, test programs, libraries without a starter module, mixed Luce/Base packages, license, update with LUC_HOME")
+    return 0
+
+# update/upgrade run the official installer into the release tree luc runs from, reached
+# through a link as ~/.local/bin/luc would be (dry-run so nothing is installed); a luc
+# outside a release tree has nothing to update in place.
+func update_checks(work: str, luc: str) -> unit!:
+    let tree = paths.join(work, "release-tree")
+    files.ensure_directory(paths.join(tree, "bin"))
+    files.ensure_directory(paths.join(tree, "share/luce"))
+    files.ensure_directory(paths.join(tree, "links"))
+    files.copy(luc, paths.join(tree, "bin/luc"))
+    ok("chmod", work, "chmod", ["+x", paths.join(tree, "bin/luc")])
+    files.write_text(paths.join(tree, "share/luce/VERSION"), "0.0.0\n")
+    files.create_symlink(paths.join(tree, "bin/luc"), paths.join(tree, "links/luc"))
+    let real = files.canonical(tree)
+    let installer = "curl -fsSL https://luce.luciaos.com/install.sh | "
+    let linked = paths.join(tree, "links/luc")
+    expect("update --dry-run", work, "env", ["-u", "LUC_HOME", linked, "update", "--dry-run"],
+        f"{installer}LUCE_INSTALL_DIR='{real}' sh")
+    let upgrade = output_of("upgrade alias", work, "env", ["-u", "LUC_HOME", paths.join(tree, "bin/luc"), "upgrade", "--dry-run"])
+    check(f"upgrade alias: [{upgrade}]", upgrade.ends_with(f"{installer}LUCE_INSTALL_DIR='{real}' sh"))
+    # a LUC_HOME other than ~/.luce is named in the command, which a fresh shell would not have
+    let home = paths.join(tree, "home")
+    expect("update --dry-run with LUC_HOME", work, "env", [f"LUC_HOME={home}", linked, "update", "--dry-run"],
+        f"{installer}LUCE_INSTALL_DIR='{real}' LUC_HOME='{home}' sh")
+    let default_home = paths.join(files.home_directory(), ".luce")
+    expect("update --dry-run with the default LUC_HOME", work, "env", [f"LUC_HOME={default_home}", linked, "update", "--dry-run"],
+        f"{installer}LUCE_INSTALL_DIR='{real}' sh")
+    _ = refused("update outside a release tree", work, luc, ["update", "--dry-run"])
+    files.remove_tree(tree)
+
+# With no LUCE_BASE, the compiler installed beside luc wins over one earlier on the path, so
+# an old luce-base built from source never stands in for the release's own.
+func sibling_checks(work: str, luc: str) -> unit!:
+    let sibling = paths.join(work, "sibling")
+    let own = paths.join(sibling, "bin/luc")
+    files.ensure_directory(paths.join(sibling, "bin"))
+    files.ensure_directory(paths.join(sibling, "path"))
+    files.copy(luc, own)
+    write(paths.join(sibling, "bin/luce-base"), "#!/bin/sh\necho beside\n")
+    write(paths.join(sibling, "path/luce-base"), "#!/bin/sh\necho path\n")
+    ok("chmod", work, "chmod", ["+x", own, paths.join(sibling, "bin/luce-base"), paths.join(sibling, "path/luce-base")])
+    let search = f"PATH={paths.join(sibling, "path")}:{process.variable("PATH") else ""}"
+    ok("sibling scaffold", sibling, "env", ["-u", "LUCE_BASE", search, own, "new", "demo"])
+    let demo = paths.join(sibling, "demo")
+    expect("luc prefers the luce-base beside it", demo, "env", ["-u", "LUCE_BASE", search, own, "check"], "beside")
+    files.remove_file(paths.join(sibling, "bin/luce-base"))
+    expect("luc falls back to the path", demo, "env", ["-u", "LUCE_BASE", search, own, "check"], "path")
+    files.remove_tree(sibling)
+
+# Scaffolding: a new app builds and runs, a new package checks, and an app depends on a
+# local package and imports its public module.
+func scaffold_checks(work: str, luc: str) -> unit!:
+    let scaffold = paths.join(work, "scaffold")
+    files.ensure_directory(scaffold)
+    ok("new app", scaffold, luc, ["new", "demo"])
+    let demo = paths.join(scaffold, "demo")
+    check("new app layout", files.exists(paths.join(demo, "package.prisma")) and files.exists(paths.join(demo, "src/main.lucb")))
+    expect("scaffolded app run", demo, luc, ["run"], "hello from demo")
+    ok("new package", scaffold, luc, ["new", "mylib", "--package"])
+    check("new package layout", files.exists(paths.join(scaffold, "mylib/src/mylib.lucb")))
+    # a hyphenated package name scaffolds a module named by its last word, and checks
+    ok("new hyphenated package", scaffold, luc, ["new", "my-kit", "--package"])
+    let kit = paths.join(scaffold, "my-kit")
+    check("hyphenated package layout", files.exists(paths.join(kit, "src/kit.lucb")) and "public = [\"kit\"]" in files.read_text(paths.join(kit, "package.prisma")))
+    ok("hyphenated package check", kit, luc, ["check"])
+    ok("package check", paths.join(scaffold, "mylib"), luc, ["check"])
+    _ = refused("init over an existing manifest", demo, luc, ["init"])
+    ok("new app1", scaffold, luc, ["new", "app1"])
+    let app = paths.join(scaffold, "app1")
+    ok("add", app, luc, ["add", "../mylib"])
+    check("dependency written", "def dependency \"mylib\"" in files.read_text(paths.join(app, "package.prisma")))
+    check("no luce.toml", not files.exists(paths.join(app, "luce.toml")))
+    files.write_text(paths.join(app, "src/main.lucb"), "import mylib.mylib\npub func main(arguments: str[]) -> i32:\n    print(mylib.greeting())\n    return 0\n")
+    expect("dependency import/run", app, luc, ["run"], "hello from mylib")
+    ok("remove", app, luc, ["remove", "mylib"])
+    check("dependency removed", not ("mylib" in files.read_text(paths.join(app, "package.prisma"))))
+    files.remove_tree(scaffold)
+
+let tasks_manifest = """#prisma 4.0
+def package "hello" {
+    str owner = "dymokomi"
+    str version = "0.1.0"
+    str kind = "tool"
+    str language = "luce-base"
+    str entry = "src/main.lucb"
+    def task "greet" {
+        str cmd = "echo hi from a task"
+    }
+    def task "chain" {
+        str cmd = "echo a && echo b"
+    }
+    def task "first" {
+        str cmd = "echo one"
+    }
+    def task "second" {
+        str cmd = "echo two"
+        str[] depends = ["first"]
+    }
+    def task "all" {
+        str description = "run both"
+        str cmd = "echo got"
+        str[] depends = ["second", "first"]
+    }
+}
+"""
+
+let unwritten_main = """pub func main(arguments: str[]) -> i32!:
+    let raw = try new u8[4] ---
+    print(f"{raw[3]:x}")
+    free(raw)
+    return 0
+
+test "unwritten storage is filled":
+    let raw = try new u8[4] ---
+    assert(raw[3] == 0xAA)
+    free(raw)
+"""
+
+# A tool with tasks: check, run, the task DAG with passthrough, clean, and --diagnostic.
+func project_checks(work: str, luc: str) -> unit!:
+    let project = paths.join(work, "luctest")
+    write(paths.join(project, "package.prisma"), tasks_manifest)
+    write(paths.join(project, "src/main.lucb"), "pub func main(arguments: str[]) -> i32:\n    print(\"ok run\")\n    return 0\n")
+    ok("check", project, luc, ["check"])
+    expect("run app", project, luc, ["run"], "ok run")
+    expect("run task", project, luc, ["run", "greet"], "hi from a task")
+    expect("shell task", project, luc, ["run", "chain"], "a\nb")
+    _ = refused("missing task", project, luc, ["run", "missing"])
+    # deps run first (once, in order) and args pass through to the target
+    expect("task DAG / passthrough", project, luc, ["run", "all", "--", "X", "Y"], "one\ntwo\ngot X Y")
+    check("the default cache is project-local build/.cache", files.exists(paths.join(project, "build/.cache")))
+    # clean cache keeps the binary; a full clean removes build/
+    ok("clean cache", project, luc, ["clean", "cache"])
+    check("clean cache drops the cache but keeps the binary", not files.exists(paths.join(project, "build/.cache")) and files.exists(paths.join(project, "build/hello")))
+    ok("clean", project, luc, ["clean"])
+    check("clean removes build/", not files.exists(paths.join(project, "build")))
+    # --diagnostic builds with the diagnostic profile into build/<name>-diagnostic, beside the
+    # normal build: unwritten storage reads as 0xAA, in the program and in its tests
+    files.write_text(paths.join(project, "src/main.lucb"), unwritten_main)
+    ok("build before a diagnostic build", project, luc, ["build"])
+    expect("run --diagnostic", project, luc, ["run", "--diagnostic"], "aa")
+    check("build --diagnostic writes build/hello-diagnostic beside build/hello", files.exists(paths.join(project, "build/hello-diagnostic")) and files.exists(paths.join(project, "build/hello")))
+    expect("build/hello-diagnostic", project, paths.join(project, "build/hello-diagnostic"), [], "aa")
+    ok("build --release --diagnostic", project, luc, ["build", "--release", "--diagnostic"])
+    check("test --diagnostic", "1 passed" in output_of("test --diagnostic", project, luc, ["test", "--diagnostic"]))
+    _ = refused("an unknown build flag", project, luc, ["build", "--diagnostics"])
+    _ = refused("an unknown test flag", project, luc, ["test", "--release"])
+
+# `luc test`: every module's tests, failures, libraries without a starter module, Luce and
+# mixed packages, and test programs.
+func test_checks(work: str, luc: str, luce: str) -> unit!:
+    let project = paths.join(work, "luctest")
+    # every module of the project the entry imports, module by module
+    files.write_text(paths.join(project, "src/helper.lucb"), "pub func two() -> i64:\n    return 2\n\ntest \"in helper\":\n    assert(two() == 2)\n")
+    files.write_text(paths.join(project, "src/main.lucb"), "import helper\n\npub func main(arguments: str[]) -> i32:\n    _ = arguments\n    return i32(helper.two())\n\ntest \"in main\":\n    assert(helper.two() == 2)\n")
+    expect("luc test runs every module's tests", project, luc, ["test"], "ok    in helper\nok    in main\n2 passed")
+    expect("luc test --list", project, luc, ["test", "--list"], "in helper\nin main")
+    # a module nothing imports has its tests run too; a false `assert` fails its test alone,
+    # the run goes on, counts the failure and ends with status 1
+    files.write_text(paths.join(project, "src/orphan.lucb"), "test \"in an orphan\":\n    assert(1 + 1 == 3, \"arithmetic\")\n\ntest \"after the failure\":\n    assert(true)\n")
+    let failing = refused("luc test with a failing test", project, luc, ["test"])
+    check(f"luc test runs an unimported module's tests: [{failing}]", failing == "ok    in helper\nok    in main\nFAIL  in an orphan\n      src/orphan.lucb:2:5: assert failed: 1 + 1 == 3: arithmetic\nok    after the failure\n3 passed\n1 failed")
+    files.remove_file(paths.join(project, "src/orphan.lucb"))
+    program_checks(project, luc)
+    files.remove_tree(project)
+    # a library with no module named after the package tests every module it has
+    ok("new my-tools", work, luc, ["new", "my-tools", "--package"])
+    let tools = paths.join(work, "my-tools")
+    files.remove_file(paths.join(tools, "src/tools.lucb"))
+    files.write_text(paths.join(tools, "src/alpha.lucb"), "test \"in alpha\":\n    assert(true)\n")
+    files.write_text(paths.join(tools, "src/beta.lucb"), "test \"in beta\":\n    assert(true)\n")
+    expect("luc test of a library without a starter module", tools, luc, ["test"], "ok    in alpha\nok    in beta\n2 passed")
+    # ... and one whose only module is a directory module, its files listed in an ORDER
+    files.remove_file(paths.join(tools, "src/alpha.lucb"))
+    files.remove_file(paths.join(tools, "src/beta.lucb"))
+    write(paths.join(tools, "src/parts/ORDER"), "first.lucb\n")
+    files.write_text(paths.join(tools, "src/parts/first.lucb"), "test \"in a fragment\":\n    assert(true)\n")
+    expect("luc test of a library made of a directory module", tools, luc, ["test"], "ok    in a fragment\n1 passed")
+    # a package with no test at all is refused
+    files.remove_tree(paths.join(tools, "src/parts"))
+    files.write_text(paths.join(tools, "src/alpha.lucb"), "pub func one() -> i64:\n    return 1\n")
+    let (status, _) = run(tools, luc, ["test"])
+    check("a package without tests is refused", status != 0)
+    files.remove_tree(tools)
+    if luce != "":
+        luce_checks(work, luc)
+
+# Test programs: tests/<name>/main.* built and run from their directory, passing on exit 0
+# and, with an `expected` file, on printing exactly it; a directory without a main is data.
+func program_checks(project: str, luc: str) -> unit!:
+    write(paths.join(project, "tests/greets/main.lucb"), "import c\nimport helper\nimport os\nfrom luce_std import files\n\npub func main(arguments: str[]) -> i32:\n    _ = arguments\n    print(f\"{helper.two()}\")\n    let home = os.env(\"LUC_HOME\") else return 2\n    if not files.exists((c.str)home): return 3\n    return 0 if files.exists(\"fixture.txt\") else 4\n")
+    files.write_text(paths.join(project, "tests/greets/fixture.txt"), "data\n")
+    files.write_text(paths.join(project, "tests/greets/expected"), "2\n")
+    write(paths.join(project, "tests/data/notes.txt"), "not a program\n")
+    write(paths.join(project, "package.prisma"), tasks_manifest.replace("    str entry = \"src/main.lucb\"\n", f"    str entry = \"src/main.lucb\"\n    def dependency \"luce-std\" {{\n        str owner = \"dymokomi\"\n        str path = \"{paths.join(root(), "../luce-std")}\"\n    }}\n"))
+    expect("a test program", project, luc, ["test"], "ok    in helper\nok    in main\n2 passed\nok    tests/greets\ntotal: 3 passed, 0 failed (2 test blocks, 1 program)")
+    expect("luc test --list names the programs", project, luc, ["test", "--list"], "tests/greets\nin helper\nin main")
+    # a wrong output and a failing exit status each fail their program, shown with its output
+    files.write_text(paths.join(project, "tests/greets/expected"), "3\n")
+    write(paths.join(project, "tests/exits/main.lucb"), "pub func main(arguments: str[]) -> i32:\n    _ = arguments\n    print(\"about to fail\")\n    return 5\n")
+    let failing = refused("failing test programs", project, luc, ["test", "--diagnostic"])
+    check(f"failing test programs: [{failing}]", failing == "ok    in helper\nok    in main\n2 passed\nFAIL  tests/exits\n      exit status 5\n      about to fail\nFAIL  tests/greets\n      its standard output differs from its expected file\n      2\ntotal: 2 passed, 2 failed (2 test blocks, 2 programs)")
+    files.remove_tree(paths.join(project, "tests"))
+
+# The same for a Luce project, through the interpreter.
+func luce_checks(work: str, luc: str) -> unit!:
+    let place = paths.join(work, "lucetest")
+    files.ensure_directory(place)
+    ok("new Luce tool", place, luc, ["new", "demo", "--tool", "--luce"])
+    let demo = paths.join(place, "demo")
+    let entry = paths.join(demo, "src/main.luc")
+    files.write_text(entry, files.read_text(entry) + "test \"in main\":\n    assert(true)\n")
+    files.write_text(paths.join(demo, "src/orphan.luc"), "test \"in an orphan\":\n    assert(1 + 1 == 3)\n\ntest \"after the failure\":\n    assert(true)\n")
+    # positions are relative to the project root, as Base's are, and name the condition
+    let failing = refused("luc test of a Luce project with a failing test", demo, luc, ["test"])
+    check(f"luc test of a Luce project: [{failing}]", failing == "ok    in main\nFAIL  in an orphan\n      src/orphan.luc:2:5: assert failed: 1 + 1 == 3\nok    after the failure\n2 passed\n1 failed")
+    files.remove_file(paths.join(demo, "src/orphan.luc"))
+    # a Luce program importing a Base module is tested built, and the Base modules' own
+    # tests run too, counted with the Luce ones
+    files.write_text(paths.join(demo, "src/native.lucb"), "pub func two() -> i64:\n    return 2\n")
+    files.write_text(paths.join(demo, "src/user.luc"), "import native\n\ntest \"through Base\":\n    assert(native.two() == 2)\n")
+    expect("luc test of a Luce project importing Base", demo, luc, ["test"], "ok    in main\nok    through Base\n2 passed\n0 passed\ntotal: 2 passed, 0 failed (2 test blocks, 0 programs)")
+    files.write_text(paths.join(demo, "src/native.lucb"), "pub func two() -> i64:\n    return 2\n\ntest \"in Base\":\n    assert(two() == 2)\n")
+    let mixed = output_of("luc test of a mixed package", demo, luc, ["test", "--diagnostic"])
+    check(f"luc test of a mixed package runs its Base tests: [{mixed}]", "ok    in Base" in mixed and mixed.ends_with("total: 3 passed, 0 failed (3 test blocks, 0 programs)"))
+    # a Luce test program
+    write(paths.join(demo, "tests/says/main.luc"), "pub func main(arguments: list[str]) -> int!:\n    print(\"said\")\n    return 0\n")
+    files.write_text(paths.join(demo, "tests/says/expected"), "said\n")
+    let with_program = output_of("a Luce test program", demo, luc, ["test"])
+    check(f"a Luce test program: [{with_program}]", with_program.ends_with("ok    tests/says\ntotal: 4 passed, 0 failed (3 test blocks, 1 program)"))
+    files.remove_tree(place)
+
+# A package may state its license as an SPDX expression; a property set twice is refused.
+func license_checks(work: str, luc: str) -> unit!:
+    let project = paths.join(work, "licensed")
+    write(paths.join(project, "package.prisma"), tasks_manifest.replace("    str kind = \"tool\"\n", "    str kind = \"tool\"\n    str license = \"MIT OR Apache-2.0\"\n"))
+    write(paths.join(project, "src/main.lucb"), "pub func main(arguments: str[]) -> i32:\n    return 0\n")
+    ok("a license is a package property", project, luc, ["check"])
+    write(paths.join(project, "package.prisma"), tasks_manifest.replace("    str kind = \"tool\"\n", "    str kind = \"tool\"\n    str license = \"MIT OR Apache-2.0\"\n    str license = \"MIT\"\n"))
+    let (status, _) = run(project, luc, ["check"])
+    check("a property set twice is refused", status != 0)
+    let twice = process.run(luc, ["check"], project)
+    check(f"a property set twice: [{twice.error_output}]", "package.prisma:" in twice.error_output + twice.output and " set twice in one element" in twice.error_output + twice.output)
+    files.remove_tree(project)

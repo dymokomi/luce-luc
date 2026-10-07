@@ -1,0 +1,31 @@
+# luc against registries, servers and Git that Python stands up beside it: anonymous
+# packages (add, lock, sync, offline use, tamper refusal, installs), remote refs, sessions,
+# registration, fetch and checkout. Each check is a script here that serves the fixtures
+# over loopback HTTP and drives a luc built from this checkout; stock Git builds the
+# fixtures, so the oracles are independent of luc's own Git code.
+from luce_std import files, paths, process
+
+let failed = ErrorCode.package(1)
+
+pub func main(arguments: list[str]) -> int!:
+    let here = process.current_directory()
+    let top = paths.directory(paths.directory(here))
+    let base = process.variable("LUCE_BASE") else error(failed, "LUCE_BASE names no compiler")
+    let work = paths.join(top, "build/tests/registry/work")
+    files.ensure_directory(work)
+    let luc = paths.join(work, "luc")
+    let built = process.run(base, ["build", paths.join(top, "src/main.lucb"), "--native", "-o", luc], top)
+    if built.exit_code != 0:
+        error(failed, f"build luc: {built.output}{built.error_output}")
+    var failures = 0
+    for script in ["packages.py", "remote.py", "session.py", "register.py", "fetch.py", "checkout.py"]:
+        var words = [script, luc]
+        if script == "checkout.py":
+            words.append(base)
+        let ran = process.run("python3", words, here)
+        if ran.exit_code == 0:
+            print(ran.output.trim_end().split("\n")[-1])
+        else:
+            print(f"FAIL {script}: exit status {ran.exit_code}\n{ran.output}{ran.error_output}")
+            failures += 1
+    return 1 if failures > 0 else 0

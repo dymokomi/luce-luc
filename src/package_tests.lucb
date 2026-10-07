@@ -1,14 +1,16 @@
-## `luc test`: every module of the package, each run by the compiler of its language. The
-## Luce modules go to `luce test --package` and the Base modules to `luce-base test
-## --package`, whatever the package's language, so a mixed package runs both halves and
-## reports one total. Each run starts from the package's entry when it is in that language
-## and otherwise from its first module, since `--package` takes every module under the
-## source root either way.
+## `luc test`: the `test` blocks of every module of the package, each run by the compiler of
+## its language, and then the package's test programs (test_programs). The Luce modules go
+## to `luce test --package` and the Base modules to `luce-base test --package`, whatever the
+## package's language, so a mixed package runs both halves. Each run starts from the
+## package's entry when it is in that language and otherwise from its first module, since
+## `--package` takes every module under the source root either way. A package with no test
+## at all is refused: every package has tests.
 import c
 import io
 import memory
 import strings
 from luce_std import files, paths, process
+import test_programs
 
 ## What `luc test` was asked to test, as main loaded it.
 pub struct Request:
@@ -25,6 +27,8 @@ pub struct Request:
     pub var diagnostic: bool
     ## What followed `--`, given to every compiler run.
     pub var passthrough: str[]
+    ## `--list`: name the tests instead of running them.
+    pub var list: bool
 
 ## The modules a run can start from and the tests the sources declare: the first Luce
 ## module and the first Base module under the source root, a `.lucb` file or a directory
@@ -44,35 +48,65 @@ struct Outcome:
     var passed: u64
     var failed: u64
 
-## Test the package and answer the exit status: the worst of the runs, or 1 when the
-## sources declare tests and no run reported any.
+## Test the package and answer the exit status: the worst of the runs; 1 when the sources
+## declare tests and no run reported any, or when the package has no test at all.
 pub func run(request: Request) -> i32!:
+    if request.list: return try list(request)
     var sources = try scan(request.root, request.source)
     defer sources.release()
     # each compiler starts from the entry when it is in its language, else its first module
     let luce_start = request.entry if strings.ends_with(request.entry, ".luc") else sources.luce
     let base_start = request.entry if strings.ends_with(request.entry, ".lucb") else sources.base
-    if luce_start.length == 0 and base_start.length == 0:
-        try io.stderr().write(f"luc test: no module under {request.source} to test\n")
-        return 1
     var total = Outcome(status = 0, passed = 0, failed = 0)
-    var luce_outcome = Outcome(status = 0, passed = 0, failed = 0)
-    var base_outcome = Outcome(status = 0, passed = 0, failed = 0)
-    if luce_start.length > 0:
-        luce_outcome = try test_with(request.luce, luce_start, request)
-    if base_start.length > 0:
-        base_outcome = try test_with(request.base, base_start, request)
-    for outcome in [luce_outcome, base_outcome]:
+    var runs: usize = 0
+    for start in [luce_start, base_start]:
+        if start.length == 0: continue
+        let compiler = request.luce if strings.ends_with(start, ".luc") else request.base
+        let outcome = try test_with(compiler, start, request)
         if outcome.status != 0 and total.status == 0: total.status = outcome.status
         total.passed += outcome.passed
         total.failed += outcome.failed
-    if luce_start.length > 0 and base_start.length > 0:
-        try io.stdout().write(f"Luce and Base together: {total.passed} passed, {total.failed} failed\n")
+        runs += 1
     # a report of no tests from sources that declare some means a run missed them
     if total.status == 0 and total.passed + total.failed == 0 and sources.declared > 0:
         try io.stderr().write(f"luc test: the sources declare {sources.declared} test(s) but none ran\n")
         return 1
+    let blocks = total.passed + total.failed
+    let (programs_passed, programs_failed) = try test_programs.run(test_programs.Settings(root = request.root,
+        luce = request.luce, base = request.base, diagnostic = request.diagnostic))
+    let programs = programs_passed + programs_failed
+    if programs_failed > 0 and total.status == 0: total.status = 1
+    total.passed += programs_passed
+    total.failed += programs_failed
+    if blocks + programs == 0:
+        try io.stderr().write("luc test: no tests found: add a `test` block or a tests/<name>/main program\n")
+        return 1
+    # one total when more than one run contributed
+    if runs > 1 or (runs > 0 and programs > 0):
+        let block_word = "test block" if blocks == 1 else "test blocks"
+        let program_word = "program" if programs == 1 else "programs"
+        try io.stdout().write(f"total: {total.passed} passed, {total.failed} failed ({blocks} {block_word}, {programs} {program_word})\n")
+    elif programs > 0:
+        try io.stdout().write(f"{programs_passed} passed\n")
+        if programs_failed > 0: try io.stdout().write(f"{programs_failed} failed\n")
     return total.status
+
+## `luc test --list`: the test programs, then the test blocks the sources declare, one per
+## line, without building anything.
+func list(request: Request) -> i32!:
+    try test_programs.list(request.root)
+    let joined = try paths.join(request.root, request.source)
+    defer joined.release()
+    if not files.exists((c.str)joined.value): return 0
+    let listing = try files.walk((c.str)joined.value)
+    defer listing.release()
+    for relative in listing.value:
+        if hidden(relative) or try in_nested_package(joined.value, relative): continue
+        if not strings.ends_with(relative, ".luc") and not strings.ends_with(relative, ".lucb"): continue
+        let path = try paths.join(joined.value, relative)
+        defer path.release()
+        _ = try visit_tests(path.value, true)
+    return 0
 
 ## Run `compiler test start --package` with the request's profile and arguments, show what
 ## it wrote, and read the counts from its report.
@@ -181,6 +215,11 @@ func has_file(directory: str, name: str) -> bool!:
 
 ## How many top-level `test "..."` declarations the source at `path` holds.
 func declared_tests(path: str) -> u64!:
+    return try visit_tests(path, false)
+
+## The top-level `test "..."` declarations of the source at `path`, counted, and with
+## `show` written out by name, one per line.
+func visit_tests(path: str, show: bool) -> u64!:
     let terminated = try strings.copy(path)
     defer strings.release(terminated)
     let contents = try files.read((c.str)terminated)
@@ -189,7 +228,21 @@ func declared_tests(path: str) -> u64!:
     var count: u64 = 0
     var start: usize = 0
     while start < text.length:
-        if strings.starts_with((str)text.bytes[start..], "test \""): count += 1
-        let next = strings.find_from(text, "\n", start) else break
-        start = next + 1
+        let end = strings.find_from(text, "\n", start) else text.length
+        let line = (str)text.bytes[start..<end]
+        if strings.starts_with(line, "test \""):
+            count += 1
+            if show:
+                let named = (str)line.bytes[6..]
+                let close = strings.find_last(named, "\"") else named.length
+                try io.stdout().write(f"{(str)named.bytes[..<close]}\n")
+        start = end + 1
     return count
+
+test "the last counts of a report win":
+    var outcome = Outcome(status = 0, passed = 0, failed = 0)
+    read_counts("ok    a\n1 passed\nFAIL  b\n2 passed\n1 failed\n", &outcome)
+    assert(outcome.passed == 2 and outcome.failed == 1)
+
+test "a hidden path has a part starting with a dot":
+    assert(hidden(".git/x.lucb") and hidden("a/.cache/b.lucb") and not hidden("a/b.lucb"))
