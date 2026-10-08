@@ -272,17 +272,12 @@ func make_directory(path: str) -> str!:
     if try is_directory(path): return ""
     let terminated = try strings.copy(path)
     defer strings.release(terminated)
-    var reason = ""
     if files.exists((c.str)terminated):
         _ = files.remove_file((c.str)terminated) catch failure:
-            reason = failure.message
-            recover ()
-    if reason.length == 0:
-        _ = files.ensure_directory(path) catch failure:
-            reason = failure.message
-            recover ()
-    if reason.length == 0: return ""
-    return try strings.join(["cannot make the directory ", path, ": ", reason], "")
+            return try strings.join(["cannot make the directory ", path, ": ", failure.message], "")
+    _ = files.ensure_directory(path) catch failure:
+        return try strings.join(["cannot make the directory ", path, ": ", failure.message], "")
+    return ""
 
 ## What a test program runs with beyond the toolchain: its scratch home and its own
 ## directory.
