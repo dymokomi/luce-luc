@@ -35,8 +35,6 @@ import release as releasing
 from luce_git import git
 from luce_crypto import native as crypto_native
 
-## The luc version, kept in step with package.prisma.
-pub let luc_version: str = "0.24.0"
 
 ## The only registry account for now; `luc init` writes it as the package owner.
 let default_owner = "dymokomi"
@@ -1159,7 +1157,8 @@ pub func main(arguments: c.str[]) -> i32!:
             return 0
         let command = (str)arguments[1]
         if command == "--version":
-            try io.stdout().write(f"luc {luc_version}\n")
+            # the version package.prisma names, which the compiler writes in (platform)
+            try io.stdout().write(f"luc {platform.program_version}\n")
             return 0
         if command == "--help" or command == "help":
             try usage(io.stdout())
