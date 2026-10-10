@@ -105,6 +105,12 @@ runs get the same share; set `LUCE_BASE_JOBS` yourself and luc leaves it as it i
 order the programs finish in, they are reported in the order of their names, so the output
 of two runs can be compared line by line.
 
+A program that needs the machine to itself, a heavy one with time limits say, has a file
+named `serial` in its directory (what it holds is ignored). It is built with the others, and
+runs after everything else is through, one at a time, with nothing else running and every
+processor its own; it is still reported in its place by name, and `luc test --list` marks it
+`(serial)`.
+
 ```text
 ok    parses a header
 ok    rejects a bad header

@@ -9,7 +9,9 @@
 ## The programs build and run in parallel, `--jobs` at a time (half the processors unless
 ## told), and are reported in the order of their names, each with all it has to show. Each
 ## compile is itself parallel inside the compiler, so a build or a run of a program gets
-## LUCE_BASE_JOBS set to its share of the processors, unless the environment sets it.
+## LUCE_BASE_JOBS set to its share of the processors, unless the environment sets it. A
+## program whose directory holds a file named `serial` must run alone: it is built with the
+## others, and run after them, one at a time, once nothing else is running.
 import c
 import interop
 import io
@@ -41,6 +43,8 @@ struct Program:
     var source: str
     ## Whether it is a Luce program (main.luc) rather than a Base one.
     var luce: bool
+    ## Whether it must run alone, its directory holding a file named `serial`.
+    var serial: bool
     ## Whether it passed, or was skipped, and what to show when it did not pass: why it
     ## failed, or the reason it gave for skipping.
     var passed: bool
@@ -54,12 +58,17 @@ struct Program:
         strings.release(self.source)
         if self.report.length > 0: strings.release(self.report)
 
-## The programs a run works through, shared by its workers: each takes the next index and
-## builds and runs that program.
+## The programs a run works through, shared by its workers: each takes the next index,
+## builds that program and, unless it is serial, runs it. The worker that finishes the last
+## of them runs the serial programs, once the caller runs nothing else beside them.
 pub struct Run:
     var programs: Program[]
     var settings: Settings
     var next: @u64
+    ## How many programs the workers are through with.
+    var finished: @u64
+    ## Set when the caller runs nothing more beside the programs (`finish`).
+    var alone: @bool
     var workers: thread.Handle[]
     var started: usize
     ## The LUCE_BASE_JOBS each compile beside others gets (`compile_jobs`), or zero.
@@ -99,7 +108,8 @@ func find(root: str) -> Program[]!:
         for i in 0..<found.length: grown[i] = found[i]
         if found.length > 0: free(found) in memory.heap
         found = grown
-        found[found.length - 1] = Program(name = "", directory = "", source = "", luce = luce, passed = false, skipped = false, report = "")
+        found[found.length - 1] = Program(name = "", directory = "", source = "", luce = luce,
+            serial = try exists_in(directory.value, "serial"), passed = false, skipped = false, report = "")
         found[found.length - 1].name = try strings.copy(name)
         found[found.length - 1].directory = try strings.copy(directory.value)
         found[found.length - 1].source = try strings.copy(source.value)
@@ -147,7 +157,9 @@ func exists_in(directory: str, name: str) -> bool!:
 pub func list(root: str) -> !:
     let programs = try find(root)
     defer release_all(programs)
-    for program in programs: try io.stdout().write(f"tests/{program.name}\n")
+    for program in programs:
+        let note = " (serial)" if program.serial else ""
+        try io.stdout().write(f"tests/{program.name}{note}\n")
 
 # mark: Running them ===========================================================================
 
@@ -206,10 +218,12 @@ pub func launch(run: Run*):
         run.started += 1
 
 ## Report every program in the order of their names, each as soon as it and those before it
-## are done, release them, and answer how many passed, failed and were skipped.
+## are done, release them, and answer how many passed, failed and were skipped. The caller
+## runs nothing more beside the programs from here, so the serial ones may start.
 pub func finish(run: Run*) -> Counts!:
     defer stop(run)
     var counts = Counts(passed = 0, failed = 0, skipped = 0)
+    run.alone.store(true, .release)
     if run.started == 0 and run.programs.length > 0: worker((void*)run)
     for index in 0..<run.programs.length:
         let program = &run.programs[index]
@@ -229,6 +243,7 @@ pub func finish(run: Run*) -> Counts!:
 ## Wait for the workers and release the programs: at the end of `finish`, or on the way out
 ## when the caller fails between `launch` and `finish`. A second call does nothing.
 pub func stop(run: Run*):
+    run.alone.store(true, .release)
     for index in 0..<run.started:
         _ = run.workers[index].join() catch failure:
             _ = failure
@@ -241,7 +256,8 @@ pub func stop(run: Run*):
     run.programs = no_programs
     run.workers = no_workers
 
-## A worker: take the next program until none is left, and build and run it.
+## A worker: take the next program until none is left, building each and running it unless
+## it is serial. The worker that finishes the last program runs the serial ones.
 func worker(raw: void*?):
     let shared = (Run*)(raw else return)
     with memory.heap:
@@ -249,61 +265,78 @@ func worker(raw: void*?):
             let index = (usize)shared.next.add(1, .relaxed)
             if index >= shared.programs.length: return
             let program = &shared.programs[index]
-            program.passed = attempt(program, shared)
-            program.done.store(true, .release)
+            program.passed = attempt(program, shared, true, not program.serial)
+            # a serial program that built waits for its turn
+            if not program.serial or not program.passed: program.done.store(true, .release)
+            if (usize)shared.finished.add(1, .acq_rel) + 1 == shared.programs.length: run_serial(shared)
+
+## Run the serial programs one at a time, once every other program is through and the
+## caller runs nothing beside them, so each runs alone, with every processor to itself.
+func run_serial(shared: Run*):
+    while not shared.alone.load(.acquire): thread.sleep(20)
+    for index in 0..<shared.programs.length:
+        let program = &shared.programs[index]
+        if not program.serial or program.done.load(.acquire): continue
+        program.passed = attempt(program, shared, false, true)
+        program.done.store(true, .release)
 
 ## `run_one`, a failure of luc's own (a directory it cannot list, say) failing the program
 ## with its message.
-func attempt(program: Program*, shared: Run*) -> bool:
-    let passed = run_one(program, shared.settings, shared.share) catch failure:
+func attempt(program: Program*, shared: Run*, build: bool, run: bool) -> bool:
+    let passed = run_one(program, shared.settings, shared.share, build, run) catch failure:
         program.report = strings.copy(failure.message) catch again:
             _ = again
             recover ""
         recover false
     return passed
 
-## Build `program` into build/luc-test/<name>/ and run it from the package root with a fresh
-## home there, each with `share` as its LUCE_BASE_JOBS; answer whether it passed, leaving in
-## its report what to show if not. The program's own scratch space, build/tests/<name>/, is
-## made a directory (whatever stood there that was not one is replaced) and otherwise left
-## to it: what luc writes lives apart, so the program cannot remove its own binary by
-## clearing its scratch.
-func run_one(program: Program*, settings: Settings, share: usize) -> bool!:
-    let build = try paths.join(settings.root, "build")
-    defer build.release()
-    let under = try paths.join(build.value, "luc-test")
+## With `build`, build `program` into build/luc-test/<name>/; with `run`, run it from the
+## package root with a fresh home there. Answer whether it passed (or, built only, whether it
+## built), leaving in its report what to show if not. The program's own scratch space,
+## build/tests/<name>/, is made a directory (whatever stood there that was not one is
+## replaced) and otherwise left to it: what luc writes lives apart, so the program cannot
+## remove its own binary by clearing its scratch.
+func run_one(program: Program*, settings: Settings, share: usize, build: bool, run: bool) -> bool!:
+    let built_under = try paths.join(settings.root, "build")
+    defer built_under.release()
+    let under = try paths.join(built_under.value, "luc-test")
     defer under.release()
     let output = try paths.join(under.value, program.name)
     defer output.release()
-    let scratch_root = try paths.join(build.value, "tests")
-    defer scratch_root.release()
-    let scratch = try paths.join(scratch_root.value, program.name)
-    defer scratch.release()
     let home = try paths.join(output.value, "home")
     defer home.release()
-    if try is_directory(home.value): try files.remove_tree((c.str)home.value)
-    for directory in [output.value, home.value, scratch.value]:
-        let problem = try make_directory(directory)
-        if problem.length > 0:
-            program.report = problem
-            return false
     let binary = try paths.join(output.value, program.name)
     defer binary.release()
-    var words: str[]
-    defer free_words(words)
-    for word in ["build", program.source, "--native", "-o", binary.value]:
-        words = try append(words, [word])
-    if settings.diagnostic:
-        words = try append(words, ["--profile"])
-        words = try append(words, ["diagnostic"])
-    let compiler = settings.luce if program.luce else settings.base
-    let built = try execute(compiler, words, settings, none, share)
-    defer built.release()
-    if built.value.exit_code != 0:
-        program.report = try tail("build failed", built.value.output, built.value.error_output)
-        return false
+    # a build beside others gets its share of the processors; a serial program's run, alone,
+    # gets them all
+    let run_share = 0 if program.serial else share
+    if build:
+        let scratch_root = try paths.join(built_under.value, "tests")
+        defer scratch_root.release()
+        let scratch = try paths.join(scratch_root.value, program.name)
+        defer scratch.release()
+        if try is_directory(home.value): try files.remove_tree((c.str)home.value)
+        for directory in [output.value, home.value, scratch.value]:
+            let problem = try make_directory(directory)
+            if problem.length > 0:
+                program.report = problem
+                return false
+        var words: str[]
+        defer free_words(words)
+        for word in ["build", program.source, "--native", "-o", binary.value]:
+            words = try append(words, [word])
+        if settings.diagnostic:
+            words = try append(words, ["--profile"])
+            words = try append(words, ["diagnostic"])
+        let compiler = settings.luce if program.luce else settings.base
+        let built = try execute(compiler, words, settings, none, share)
+        defer built.release()
+        if built.value.exit_code != 0:
+            program.report = try tail("build failed", built.value.output, built.value.error_output)
+            return false
+    if not run: return true
     var nothing: str[]
-    let ran = try execute(binary.value, nothing, settings, Scratch(home = home.value, directory = program.directory), share)
+    let ran = try execute(binary.value, nothing, settings, Scratch(home = home.value, directory = program.directory), run_share)
     defer ran.release()
     _ = files.remove_tree((c.str)home.value) catch failure:
         _ = failure

@@ -87,7 +87,7 @@ pub func main(arguments: list[str]) -> int!:
     test_checks(work, luc, luce)
     license_checks(work, luc)
     files.remove_tree(work)
-    print("ok luc: new/init, add/remove, task DAG, clean, --diagnostic, every module's tests and failures, test programs, --jobs, a failed test-block build, libraries without a starter module, mixed Luce/Base packages, license, update with LUC_HOME")
+    print("ok luc: new/init, add/remove, task DAG, clean, --diagnostic, every module's tests and failures, test programs, --jobs, serial programs, a failed test-block build, libraries without a starter module, mixed Luce/Base packages, license, update with LUC_HOME")
     return 0
 
 # update/upgrade run the official installer into the release tree luc runs from, reached
@@ -300,6 +300,7 @@ func program_checks(project: str, luc: str) -> unit!:
     check(f"failing test programs: [{failing}]", failing == "ok    in helper\nok    in main\n2 passed\nFAIL  tests/exits\n      exit status 5\n      about to fail\nFAIL  tests/greets\n      its standard output differs from its expected file\n      2\ntotal: 2 passed, 2 failed (2 test blocks, 2 programs)")
     files.remove_tree(paths.join(project, "tests"))
     jobs_checks(project, luc)
+    serial_checks(project, luc)
     broken_block_checks(project, luc)
     scratch_checks(project, luc)
 
@@ -332,6 +333,24 @@ func jobs_checks(project: str, luc: str) -> unit!:
     check("--jobs 1 runs one program at a time", not overlap(project, "a_slow", "b_fast") and not overlap(project, "a_slow", "c_fast") and not overlap(project, "b_fast", "c_fast"))
     _ = refused("--jobs 0", project, luc, ["test", "--jobs", "0"])
     _ = refused("--jobs without a number", project, luc, ["test", "--jobs"])
+    files.remove_tree(paths.join(project, "tests"))
+
+# A program with a `serial` file is built with the others but runs after them, alone, and is
+# still reported in its place; `luc test --list` marks it.
+func serial_checks(project: str, luc: str) -> unit!:
+    write(paths.join(project, "tests/a_slow/main.lucb"), timed_program("a_slow", 1500))
+    write(paths.join(project, "tests/b_alone/main.lucb"), timed_program("b_alone", 500))
+    files.write_text(paths.join(project, "tests/b_alone/serial"), "")
+    write(paths.join(project, "tests/c_fast/main.lucb"), timed_program("c_fast", 10))
+    write(paths.join(project, "tests/d_fast/main.lucb"), timed_program("d_fast", 10))
+    expect("luc test --list marks a serial program", project, luc, ["test", "--list"], "tests/a_slow\ntests/b_alone (serial)\ntests/c_fast\ntests/d_fast\nin helper\nin main")
+    let passing = "ok    in helper\nok    in main\n2 passed\nok    tests/a_slow\nok    tests/b_alone\nok    tests/c_fast\nok    tests/d_fast\ntotal: 6 passed, 0 failed (2 test blocks, 4 programs)"
+    for jobs in ["3", "1"]:
+        expect(f"a serial program under --jobs {jobs}", project, luc, ["test", "--jobs", jobs], passing)
+        let (alone_start, alone_end) = window_of(project, "b_alone")
+        for other in ["a_slow", "c_fast", "d_fast"]:
+            let (start, end) = window_of(project, other)
+            check(f"--jobs {jobs}: the serial program runs alone, after {other} ({alone_start}..{alone_end} against {start}..{end})", end <= alone_start)
     files.remove_tree(paths.join(project, "tests"))
 
 # A run of the test blocks that fails without reporting a failed test (a module that does
