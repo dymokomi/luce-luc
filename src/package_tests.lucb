@@ -3,8 +3,9 @@
 ## to `luce test --package` and the Base modules to `luce-base test --package`, whatever the
 ## package's language, so a mixed package runs both halves. Each run starts from the
 ## package's entry when it is in that language and otherwise from its first module, since
-## `--package` takes every module under the source root either way. A package with no test
-## at all is refused: every package has tests.
+## `--package` takes every module under the source root either way. A run that fails without
+## reporting a failed test (a build error in the sources, a crash) counts as one failure,
+## named in the report. A package with no test at all is refused: every package has tests.
 import c
 import io
 import memory
@@ -48,8 +49,9 @@ struct Outcome:
     var passed: u64
     var failed: u64
 
-## Test the package and answer the exit status: the worst of the runs; 1 when the sources
-## declare tests and no run reported any, or when the package has no test at all.
+## Test the package and answer the exit status: the worst of the runs; 1 when a run failed
+## without reporting a failed test, when the sources declare tests and no run reported any,
+## or when the package has no test at all.
 pub func run(request: Request) -> i32!:
     if request.list: return try list(request)
     var sources = try scan(request.root, request.source)
@@ -59,35 +61,47 @@ pub func run(request: Request) -> i32!:
     let base_start = request.entry if strings.ends_with(request.entry, ".lucb") else sources.base
     var total = Outcome(status = 0, passed = 0, failed = 0)
     var runs: usize = 0
+    # runs that failed without reporting a failed test, each counted as one failure
+    var broken: u64 = 0
     for start in [luce_start, base_start]:
         if start.length == 0: continue
-        let compiler = request.luce if strings.ends_with(start, ".luc") else request.base
+        let luce = strings.ends_with(start, ".luc")
+        let compiler = request.luce if luce else request.base
         let outcome = try test_with(compiler, start, request)
         if outcome.status != 0 and total.status == 0: total.status = outcome.status
         total.passed += outcome.passed
         total.failed += outcome.failed
         runs += 1
+        if outcome.status != 0 and outcome.failed == 0:
+            broken += 1
+            let half = "Luce" if luce else "Base"
+            let named = "luce" if luce else "luce-base"
+            try io.stdout().write(f"FAIL  the {half} test blocks: {named} test exited with status {outcome.status} and reported no failed test\n")
     # a report of no tests from sources that declare some means a run missed them
     if total.status == 0 and total.passed + total.failed == 0 and sources.declared > 0:
-        try io.stderr().write(f"luc test: the sources declare {sources.declared} test(s) but none ran\n")
-        return 1
+        broken += 1
+        total.status = 1
+        try io.stdout().write(f"FAIL  the test blocks: the sources declare {sources.declared} test(s) but none ran\n")
     let blocks = total.passed + total.failed
     let programs = try test_programs.run(test_programs.Settings(root = request.root,
         luce = request.luce, base = request.base, diagnostic = request.diagnostic))
     let program_count = programs.passed + programs.failed + programs.skipped
     if programs.failed > 0 and total.status == 0: total.status = 1
     total.passed += programs.passed
-    total.failed += programs.failed
+    total.failed += programs.failed + broken
     if blocks + program_count == 0 and total.status == 0:
         try io.stderr().write("luc test: no tests found: add a `test` block or a tests/<name>/main program\n")
         return 1
     var skipped_text: u8[48]
     let skipped = try strings.format(skipped_text, f", {programs.skipped} skipped") if programs.skipped > 0 else ""
+    var broken_text: u8[64]
+    let run_word = "test-block run" if broken == 1 else "test-block runs"
+    let broken_runs = try strings.format(broken_text, f", {broken} failed {run_word}") if broken > 0 else ""
     # one total when more than one run contributed
     if runs > 1 or (runs > 0 and program_count > 0):
         let block_word = "test block" if blocks == 1 else "test blocks"
         let program_word = "program" if program_count == 1 else "programs"
-        try io.stdout().write(f"total: {total.passed} passed, {total.failed} failed{skipped} ({blocks} {block_word}, {program_count} {program_word})\n")
+        try io.stdout().write(f"total: {total.passed} passed, {total.failed} failed{skipped} ({blocks} {block_word}{broken_runs}, {program_count} {program_word})\n")
     elif program_count > 0:
         try io.stdout().write(f"{programs.passed} passed\n")
         if programs.failed > 0: try io.stdout().write(f"{programs.failed} failed\n")

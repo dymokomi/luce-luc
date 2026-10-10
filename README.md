@@ -72,9 +72,11 @@ pytest collects both test functions and test files without being told where they
   the `.lucb` modules to `luce-base test --package`, so a package that mixes the two runs
   both. Each run starts from the entry when it is in that language, and otherwise from the
   first module, so a library needs no module named after the package to be tested; a run
-  that finds no test block shows nothing, and the total line counts both. If the
-  sources declare tests and no run reported any, `luc test` says so and fails rather than
-  passing on `0 passed`.
+  that finds no test block shows nothing, and the total line counts both. A run that
+  fails without reporting a failed test, a module that does not build or a crash, is shown
+  as `FAIL  the Base test blocks: ...` (or Luce) and counts as one failure in the total, as
+  do sources that declare tests when no run reported any, rather than passing on
+  `0 passed`.
 - **Test programs**: every directory `tests/<name>/` that holds a `main.luc` or `main.lucb`
   (with `pub func main`). It suits a check that needs a process of its own: fixtures read
   from disk, a server, a window or the GPU, a comparison with another tool. `luc test` builds

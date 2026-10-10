@@ -87,7 +87,7 @@ pub func main(arguments: list[str]) -> int!:
     test_checks(work, luc, luce)
     license_checks(work, luc)
     files.remove_tree(work)
-    print("ok luc: new/init, add/remove, task DAG, clean, --diagnostic, every module's tests and failures, test programs, libraries without a starter module, mixed Luce/Base packages, license, update with LUC_HOME")
+    print("ok luc: new/init, add/remove, task DAG, clean, --diagnostic, every module's tests and failures, test programs, a failed test-block build, libraries without a starter module, mixed Luce/Base packages, license, update with LUC_HOME")
     return 0
 
 # update/upgrade run the official installer into the release tree luc runs from, reached
@@ -299,7 +299,18 @@ func program_checks(project: str, luc: str) -> unit!:
     let failing = refused("failing test programs", project, luc, ["test", "--diagnostic"])
     check(f"failing test programs: [{failing}]", failing == "ok    in helper\nok    in main\n2 passed\nFAIL  tests/exits\n      exit status 5\n      about to fail\nFAIL  tests/greets\n      its standard output differs from its expected file\n      2\ntotal: 2 passed, 2 failed (2 test blocks, 2 programs)")
     files.remove_tree(paths.join(project, "tests"))
+    broken_block_checks(project, luc)
     scratch_checks(project, luc)
+
+# A run of the test blocks that fails without reporting a failed test (a module that does
+# not build) counts as one failure, named, and the test programs still run.
+func broken_block_checks(project: str, luc: str) -> unit!:
+    files.write_text(paths.join(project, "src/broken.lucb"), "pub func wrong() -> i64:\n    return \"text\"\n")
+    write(paths.join(project, "tests/fine/main.lucb"), "pub func main(arguments: str[]) -> i32:\n    _ = arguments\n    return 0\n")
+    let failing = refused("a test-block build that fails", project, luc, ["test"])
+    check(f"a failed test-block build is counted: [{failing}]", failing == "FAIL  the Base test blocks: luce-base test exited with status 1 and reported no failed test\nok    tests/fine\ntotal: 1 passed, 1 failed (0 test blocks, 1 failed test-block run, 1 program)")
+    files.remove_file(paths.join(project, "src/broken.lucb"))
+    files.remove_tree(paths.join(project, "tests"))
 
 # A program's own scratch space is build/tests/<name>/, which luc makes a directory, replacing
 # a file an older layout left there, and builds the program apart from it, in
