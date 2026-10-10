@@ -7,15 +7,32 @@ from luce_std import files, paths, process
 
 let failed = ErrorCode.package(1)
 
+# Whether this is Windows, where a program's file ends in .exe and there is no POSIX shell,
+# `env` or `chmod`.
+func windows() -> bool:
+    return (process.variable("OS") else "") == "Windows_NT"
+
+# `output` with the positions in it relative to `project`, as the compilers write them
+# elsewhere. LUCE-BUG: on Windows luce-base names a test's position by its full path.
+func positions(output: str, project: str) -> str:
+    if not windows():
+        return output
+    return output.replace(project.replace("\\", "/") + "/", "")
+
+# A program's file as a build names it: `name`, with .exe on Windows.
+func executable(name: str) -> str:
+    return f"{name}.exe" if windows() else name
+
 # The checkout's root, where `luc test` runs its programs.
 func root() -> str!:
     return process.current_directory()
 
 # Run `program` with `arguments` from `directory`; its output, without the trailing newlines
-# a shell's `$(...)` would drop too, and its exit status.
+# a shell's `$(...)` would drop too and with Windows' line ends made plain ones, and its exit
+# status.
 func run(directory: str, program: str, arguments: list[str]) -> (int, str)!:
     let done = process.run(program, arguments, directory)
-    return (done.exit_code, done.output.trim_end())
+    return (done.exit_code, done.output.replace("\r\n", "\n").trim_end())
 
 # `run`, failing unless it exits 0.
 func ok(what: str, directory: str, program: str, arguments: list[str]) -> unit!:
@@ -57,12 +74,14 @@ pub func main(arguments: list[str]) -> int!:
     if files.exists(work):
         files.remove_tree(work)
     files.ensure_directory(work)
-    let luc = paths.join(work, "luc")
+    let luc = paths.join(work, executable("luc"))
     ok("build luc", top, base, ["build", paths.join(top, "src/main.lucb"), "--native", "-o", luc])
     let version = files.read_text(paths.join(top, "package.prisma")).split("str version = \"")[1].split("\"")[0]
     expect("version", work, luc, ["--version"], f"luc {version}")
-    update_checks(work, luc)
-    sibling_checks(work, luc)
+    # the installer and the sibling compilers are shell scripts run through `env`
+    if not windows():
+        update_checks(work, luc)
+        sibling_checks(work, luc)
     scaffold_checks(work, luc)
     project_checks(work, luc)
     test_checks(work, luc, luce)
@@ -159,7 +178,7 @@ def package "hello" {
         str cmd = "echo hi from a task"
     }
     def task "chain" {
-        str cmd = "echo a && echo b"
+        str cmd = "echo a&& echo b"
     }
     def task "first" {
         str cmd = "echo one"
@@ -203,7 +222,7 @@ func project_checks(work: str, luc: str) -> unit!:
     check("the default cache is project-local build/.cache", files.exists(paths.join(project, "build/.cache")))
     # clean cache keeps the binary; a full clean removes build/
     ok("clean cache", project, luc, ["clean", "cache"])
-    check("clean cache drops the cache but keeps the binary", not files.exists(paths.join(project, "build/.cache")) and files.exists(paths.join(project, "build/hello")))
+    check("clean cache drops the cache but keeps the binary", not files.exists(paths.join(project, "build/.cache")) and files.exists(paths.join(project, executable("build/hello"))))
     ok("clean", project, luc, ["clean"])
     check("clean removes build/", not files.exists(paths.join(project, "build")))
     # --diagnostic builds with the diagnostic profile into build/<name>-diagnostic, beside the
@@ -211,8 +230,8 @@ func project_checks(work: str, luc: str) -> unit!:
     files.write_text(paths.join(project, "src/main.lucb"), unwritten_main)
     ok("build before a diagnostic build", project, luc, ["build"])
     expect("run --diagnostic", project, luc, ["run", "--diagnostic"], "aa")
-    check("build --diagnostic writes build/hello-diagnostic beside build/hello", files.exists(paths.join(project, "build/hello-diagnostic")) and files.exists(paths.join(project, "build/hello")))
-    expect("build/hello-diagnostic", project, paths.join(project, "build/hello-diagnostic"), [], "aa")
+    check("build --diagnostic writes build/hello-diagnostic beside build/hello", files.exists(paths.join(project, executable("build/hello-diagnostic"))) and files.exists(paths.join(project, executable("build/hello"))))
+    expect("build/hello-diagnostic", project, paths.join(project, executable("build/hello-diagnostic")), [], "aa")
     ok("build --release --diagnostic", project, luc, ["build", "--release", "--diagnostic"])
     check("test --diagnostic", "1 passed" in output_of("test --diagnostic", project, luc, ["test", "--diagnostic"]))
     _ = refused("an unknown build flag", project, luc, ["build", "--diagnostics"])
@@ -230,7 +249,7 @@ func test_checks(work: str, luc: str, luce: str) -> unit!:
     # a module nothing imports has its tests run too; a false `assert` fails its test alone,
     # the run goes on, counts the failure and ends with status 1
     files.write_text(paths.join(project, "src/orphan.lucb"), "test \"in an orphan\":\n    assert(1 + 1 == 3, \"arithmetic\")\n\ntest \"after the failure\":\n    assert(true)\n")
-    let failing = refused("luc test with a failing test", project, luc, ["test"])
+    let failing = positions(refused("luc test with a failing test", project, luc, ["test"]), project)
     check(f"luc test runs an unimported module's tests: [{failing}]", failing == "ok    in helper\nok    in main\nFAIL  in an orphan\n      src/orphan.lucb:2:5: assert failed: 1 + 1 == 3: arithmetic\nok    after the failure\n3 passed\n1 failed")
     files.remove_file(paths.join(project, "src/orphan.lucb"))
     program_checks(project, luc)
@@ -312,7 +331,7 @@ func luce_checks(work: str, luc: str) -> unit!:
     files.write_text(entry, files.read_text(entry) + "test \"in main\":\n    assert(true)\n")
     files.write_text(paths.join(demo, "src/orphan.luc"), "test \"in an orphan\":\n    assert(1 + 1 == 3)\n\ntest \"after the failure\":\n    assert(true)\n")
     # positions are relative to the project root, as Base's are, and name the condition
-    let failing = refused("luc test of a Luce project with a failing test", demo, luc, ["test"])
+    let failing = positions(refused("luc test of a Luce project with a failing test", demo, luc, ["test"]), demo)
     check(f"luc test of a Luce project: [{failing}]", failing == "ok    in main\nFAIL  in an orphan\n      src/orphan.luc:2:5: assert failed: 1 + 1 == 3\nok    after the failure\n2 passed\n1 failed")
     files.remove_file(paths.join(demo, "src/orphan.luc"))
     # a Luce program importing a Base module is tested built, and the Base modules' own

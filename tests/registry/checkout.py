@@ -44,7 +44,8 @@ def check(binary, compiler):
         run(True)
         assert (output / 'package.prisma').read_bytes() == manifest
         assert (output / 'main.lucb').read_bytes() == main
-        assert (output / 'run.sh').stat().st_mode & 0o100
+        # Windows keeps no executable bit
+        assert os.name == 'nt' or (output / 'run.sh').stat().st_mode & 0o100
         assert not (output / '.git').exists()
         run()  # Existing destination stays untouched.
         assert (output / 'main.lucb').read_bytes() == main

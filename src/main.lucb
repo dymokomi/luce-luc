@@ -1363,9 +1363,10 @@ func usage(out: io.Writer) -> !:
 ## installed beside luc, since a release puts luc, luce and luce-base in one `bin/` that
 ## belong together, else `name` on the path. Beside luc before the path, so an older
 ## luce-base elsewhere on the path (a build from source) is never picked up by mistake.
+## A copy of the variable's value: on Windows the next `os.env` call overwrites it.
 func toolchain_compiler(name: str, variable: str) -> str!:
     if let chosen = os.env((c.str)variable):
-        return chosen
+        return try strings.copy(chosen)
     let exe = os.executable() catch failure:
         _ = failure
         return name

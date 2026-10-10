@@ -50,9 +50,12 @@ pub func home() -> str!:
 ## LUC_HOME when it names a place other than the default ~/.luce: what a command run from
 ## another shell, which may not have it set, must be told. None for the default.
 pub func chosen_home() -> str?!:
-    let chosen = os.env((c.str)"LUC_HOME") else return none
-    if chosen.length == 0:
+    let value = os.env((c.str)"LUC_HOME") else return none
+    if value.length == 0:
         return none
+    # a copy: on Windows the next `os.env` call, user_home's, overwrites the value
+    let chosen = try strings.copy(value)
+    defer strings.release(chosen)
     let user = user_home() catch:
         return try strings.copy(chosen)
     defer strings.release(user)

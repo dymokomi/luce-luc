@@ -404,7 +404,9 @@ test "a long report shows the last lines":
     assert(strings.ends_with(report, "\n29\n"))
 
 test "only a dependency without a path is fetched":
-    let directory = try files.create_temporary_directory("/tmp")
+    # under build/, which every system has, rather than /tmp, which Windows has not
+    try files.ensure_directory("build")
+    let directory = try files.create_temporary_directory("build")
     defer _ = files.remove_tree((c.str)directory.value) catch: recover ()
     defer directory.release()
     assert(not try registry_dependencies(directory.value))
