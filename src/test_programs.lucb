@@ -4,8 +4,12 @@
 ## LUC_HOME point at a fresh scratch directory, removed afterwards, so no test touches the
 ## user's settings, libraries or keychain. It passes when it exits 0 and, when its directory
 ## has an `expected` file, its standard output is that file's text exactly; one that exits 0
-## after printing a line `skip: reason` is skipped. The programs build and run in parallel,
-## as many at once as the machine has cores, and are reported in the order of their names.
+## after printing a line `skip: reason` is skipped.
+##
+## The programs build and run in parallel, `--jobs` at a time (half the processors unless
+## told), and are reported in the order of their names, each with all it has to show. Each
+## compile is itself parallel inside the compiler, so a build or a run of a program gets
+## LUCE_BASE_JOBS set to its share of the processors, unless the environment sets it.
 import c
 import interop
 import io
@@ -25,6 +29,8 @@ pub struct Settings:
     pub var base: str
     ## `--diagnostic`: build with the diagnostic profile.
     pub var diagnostic: bool
+    ## `--jobs`: how many programs build and run at once, at least one.
+    pub var jobs: usize
 
 ## One program: where it lives and, once it ran, how it went.
 struct Program:
@@ -48,11 +54,16 @@ struct Program:
         strings.release(self.source)
         if self.report.length > 0: strings.release(self.report)
 
-## The programs a run works through, shared by its workers: each takes the next index.
-struct Run:
+## The programs a run works through, shared by its workers: each takes the next index and
+## builds and runs that program.
+pub struct Run:
     var programs: Program[]
     var settings: Settings
     var next: @u64
+    var workers: thread.Handle[]
+    var started: usize
+    ## The LUCE_BASE_JOBS each compile beside others gets (`compile_jobs`), or zero.
+    var share: usize
 
 ## How many lines of a failed program's output its report shows: the end, where it failed.
 let tail_lines: usize = 20
@@ -146,33 +157,62 @@ pub struct Counts:
     pub var failed: u64
     pub var skipped: u64
 
-## Build and run every test program, report each, and answer how many passed, failed and
-## were skipped.
-pub func run(settings: Settings) -> Counts!:
-    var shared = Run(programs = try find(settings.root), settings = settings)
-    defer release_all(shared.programs)
-    var counts = Counts(passed = 0, failed = 0, skipped = 0)
-    if shared.programs.length == 0: return counts
+## How many programs run at once unless `--jobs` says: half the processors, at least one.
+## A program's build is parallel inside the compiler too, so with half as many builds as
+## processors each has two threads of its own (`compile_jobs`), rather than every build
+## contending for every processor.
+pub func default_jobs() -> usize:
+    let half = (usize)os.cpus() // 2
+    return half if half > 0 else 1
+
+## The threads each of `jobs` compiles running at once may use, its share of the
+## processors: the LUCE_BASE_JOBS it is given. Zero when the environment sets
+## LUCE_BASE_JOBS, which is then left as it is. Four programs on sixteen processors build
+## with four threads each, whatever `--jobs` allowed.
+func compile_jobs(jobs: usize) -> usize:
+    if os.env("LUCE_BASE_JOBS") != none: return 0
+    let share = (usize)os.cpus() // (jobs if jobs > 0 else 1)
+    return share if share > 0 else 1
+
+## The test programs under the package, found, with the registry dependencies they declare
+## fetched, ready to `launch`; `finish` or `stop` releases them.
+pub func prepare(settings: Settings) -> Run!:
+    let programs = try find(settings.root)
+    errdefer release_all(programs)
     # a program with a package.prisma of its own may declare registry dependencies the
     # package lacks; fetch them before any build, one program at a time
-    for program in shared.programs:
+    for program in programs:
         if try registry_dependencies(program.directory): try packages.prepare(program.directory)
-    var wanted = (usize)os.cpus()
-    if wanted > shared.programs.length: wanted = shared.programs.length
-    if wanted == 0: wanted = 1
-    let workers = try new thread.Handle[wanted] --- in memory.heap
-    defer free(workers) in memory.heap
-    var started: usize = 0
-    while started < workers.length:
-        workers[started] = thread.spawn(worker, (void*)&shared, name = "luc test") catch failure:
+    var wanted = settings.jobs if settings.jobs > 0 else 1
+    if wanted > programs.length: wanted = programs.length
+    var workers: thread.Handle[]
+    if wanted > 0: workers = try new thread.Handle[wanted] --- in memory.heap
+    return Run(programs = programs, settings = settings, workers = workers, started = 0,
+        share = compile_jobs(wanted) if wanted > 0 else 0)
+
+## The LUCE_BASE_JOBS a compile running beside the programs gets: each worker's share of
+## the processors, or zero when there are no programs or the environment sets it.
+pub func compile_share(run: Run*) -> usize:
+    return run.share
+
+## Start building and running the programs, on as many threads as `--jobs` asks; the caller
+## may run its own work beside them until `finish`. With no thread to spare, `finish` runs
+## them itself.
+pub func launch(run: Run*):
+    while run.started < run.workers.length:
+        run.workers[run.started] = thread.spawn(worker, (void*)run, name = "luc test") catch failure:
             _ = failure
             break
-        started += 1
-    # with no thread to spare, the programs run here
-    if started == 0: worker((void*)&shared)
-    # report in the order of the names, each as soon as it and those before it are done
-    for index in 0..<shared.programs.length:
-        let program = &shared.programs[index]
+        run.started += 1
+
+## Report every program in the order of their names, each as soon as it and those before it
+## are done, release them, and answer how many passed, failed and were skipped.
+pub func finish(run: Run*) -> Counts!:
+    defer stop(run)
+    var counts = Counts(passed = 0, failed = 0, skipped = 0)
+    if run.started == 0 and run.programs.length > 0: worker((void*)run)
+    for index in 0..<run.programs.length:
+        let program = &run.programs[index]
         while not program.done.load(.acquire): thread.sleep(20)
         if program.skipped:
             counts.skipped += 1
@@ -184,9 +224,24 @@ pub func run(settings: Settings) -> Counts!:
             counts.failed += 1
             try io.stdout().write(f"FAIL  tests/{program.name}\n")
             try write_indented(program.report)
-    for index in 0..<started: try workers[index].join()
     return counts
 
+## Wait for the workers and release the programs: at the end of `finish`, or on the way out
+## when the caller fails between `launch` and `finish`. A second call does nothing.
+pub func stop(run: Run*):
+    for index in 0..<run.started:
+        _ = run.workers[index].join() catch failure:
+            _ = failure
+            recover ()
+    run.started = 0
+    release_all(run.programs)
+    if run.workers.length > 0: free(run.workers) in memory.heap
+    var no_programs: Program[]
+    var no_workers: thread.Handle[]
+    run.programs = no_programs
+    run.workers = no_workers
+
+## A worker: take the next program until none is left, and build and run it.
 func worker(raw: void*?):
     let shared = (Run*)(raw else return)
     with memory.heap:
@@ -194,19 +249,26 @@ func worker(raw: void*?):
             let index = (usize)shared.next.add(1, .relaxed)
             if index >= shared.programs.length: return
             let program = &shared.programs[index]
-            program.passed = run_one(program, shared.settings) catch failure:
-                program.report = strings.copy(failure.message) catch again:
-                    _ = again
-                    recover ""
-                recover false
+            program.passed = attempt(program, shared)
             program.done.store(true, .release)
 
+## `run_one`, a failure of luc's own (a directory it cannot list, say) failing the program
+## with its message.
+func attempt(program: Program*, shared: Run*) -> bool:
+    let passed = run_one(program, shared.settings, shared.share) catch failure:
+        program.report = strings.copy(failure.message) catch again:
+            _ = again
+            recover ""
+        recover false
+    return passed
+
 ## Build `program` into build/luc-test/<name>/ and run it from the package root with a fresh
-## home there; answer whether it passed, leaving in its report what to show if not. The
-## program's own scratch space, build/tests/<name>/, is made a directory (whatever stood
-## there that was not one is replaced) and otherwise left to it: what luc writes lives apart,
-## so the program cannot remove its own binary by clearing its scratch.
-func run_one(program: Program*, settings: Settings) -> bool!:
+## home there, each with `share` as its LUCE_BASE_JOBS; answer whether it passed, leaving in
+## its report what to show if not. The program's own scratch space, build/tests/<name>/, is
+## made a directory (whatever stood there that was not one is replaced) and otherwise left
+## to it: what luc writes lives apart, so the program cannot remove its own binary by
+## clearing its scratch.
+func run_one(program: Program*, settings: Settings, share: usize) -> bool!:
     let build = try paths.join(settings.root, "build")
     defer build.release()
     let under = try paths.join(build.value, "luc-test")
@@ -235,13 +297,13 @@ func run_one(program: Program*, settings: Settings) -> bool!:
         words = try append(words, ["--profile"])
         words = try append(words, ["diagnostic"])
     let compiler = settings.luce if program.luce else settings.base
-    let built = try execute(compiler, words, settings, none)
+    let built = try execute(compiler, words, settings, none, share)
     defer built.release()
     if built.value.exit_code != 0:
         program.report = try tail("build failed", built.value.output, built.value.error_output)
         return false
     var nothing: str[]
-    let ran = try execute(binary.value, nothing, settings, Scratch(home = home.value, directory = program.directory))
+    let ran = try execute(binary.value, nothing, settings, Scratch(home = home.value, directory = program.directory), share)
     defer ran.release()
     _ = files.remove_tree((c.str)home.value) catch failure:
         _ = failure
@@ -298,8 +360,9 @@ func skip_reason(output: str) -> str?:
 ## Run `program` with `words` from the package root (luc's own directory) and capture what
 ## it wrote, with LUCE and LUCE_BASE naming the compilers under test, so a program that
 ## builds or runs Luce uses the same toolchain. A test program also gets `scratch`: HOME,
-## USERPROFILE and LUC_HOME are its home, and LUC_TEST_DIR its own directory.
-func execute(program: str, words: str[], settings: Settings, scratch: Scratch?) -> interop.Owned[process.Completed]!:
+## USERPROFILE and LUC_HOME are its home, and LUC_TEST_DIR its own directory. A `share`
+## above zero is its LUCE_BASE_JOBS, beside other programs.
+func execute(program: str, words: str[], settings: Settings, scratch: Scratch?, share: usize) -> interop.Owned[process.Completed]!:
     var settings_texts: str[]
     defer free_words(settings_texts)
     let luce = try located(settings.luce)
@@ -308,6 +371,9 @@ func execute(program: str, words: str[], settings: Settings, scratch: Scratch?) 
     defer strings.release(base)
     settings_texts = try append(settings_texts, ["LUCE=", luce])
     settings_texts = try append(settings_texts, ["LUCE_BASE=", base])
+    if share > 0:
+        var share_text: u8[24]
+        settings_texts = try append(settings_texts, ["LUCE_BASE_JOBS=", try strings.format(share_text, f"{share}")])
     if let given = scratch:
         settings_texts = try append(settings_texts, ["HOME=", given.home])
         settings_texts = try append(settings_texts, ["LUC_HOME=", given.home])

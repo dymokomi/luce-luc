@@ -47,7 +47,7 @@ is described in [luce-pkg/docs/PACKAGE_PRISMA.md](https://github.com/dymokomi/lu
 | --- | --- |
 | `luc build [--release] [--diagnostic]` | builds into `build/<name>`; an application also gets `build/Name.app` |
 | `luc run [--release] [--diagnostic] [-- args]` | builds and runs the program |
-| `luc test [--diagnostic]` | runs the `test` blocks of every module, imported or not, and every test program under `tests/` |
+| `luc test [--diagnostic] [--jobs N]` | runs the `test` blocks of every module, imported or not, and every test program under `tests/`, N programs at a time |
 | `luc test --list` | names the test programs and the test blocks without running them |
 | `luc check` | type-checks without building |
 | `luc fmt [--check]` | formats the sources |
@@ -88,14 +88,22 @@ pytest collects both test functions and test files without being told where they
   any module of the package, private ones too, as code under `src/` does, and the package's
   dependencies; one with a `package.prisma` of its own is a package of its own, with
   dependencies only it needs, and imports the package's public modules as any dependent
-  does. The programs run in parallel, as many as the machine has cores, each with `HOME`
-  and `LUC_HOME` pointing at a fresh scratch directory that is removed afterwards, so no
+  does. Each runs with `HOME` and `LUC_HOME` pointing at a fresh scratch directory that is removed afterwards, so no
   test touches your settings, libraries, crash reports or keychain, and with `LUCE` and
   `LUCE_BASE` naming the compilers `luc test` uses. luc builds each into
   `build/luc-test/<name>/`; `build/tests/<name>/` is the program's own scratch space, which
   luc makes a directory (replacing a file left there) and otherwise leaves to the program.
   A directory under `tests/` without a `main`, or with an `ORDER` or `TESTS` file, is not a
   program and stays as it is.
+
+The test programs build and run in parallel, `--jobs N` at a time, beside the test-block
+runs. The default is half the processors (8 on a 16-core machine): each build is itself
+parallel inside the compiler, so half as many builds as processors keeps every core busy
+without each build waiting on the others. A build or run beside others gets `LUCE_BASE_JOBS`
+set to its share, the processors divided by the programs running at once, and the test-block
+runs get the same share; set `LUCE_BASE_JOBS` yourself and luc leaves it as it is. Whatever
+order the programs finish in, they are reported in the order of their names, so the output
+of two runs can be compared line by line.
 
 ```text
 ok    parses a header

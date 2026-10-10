@@ -87,7 +87,7 @@ pub func main(arguments: list[str]) -> int!:
     test_checks(work, luc, luce)
     license_checks(work, luc)
     files.remove_tree(work)
-    print("ok luc: new/init, add/remove, task DAG, clean, --diagnostic, every module's tests and failures, test programs, a failed test-block build, libraries without a starter module, mixed Luce/Base packages, license, update with LUC_HOME")
+    print("ok luc: new/init, add/remove, task DAG, clean, --diagnostic, every module's tests and failures, test programs, --jobs, a failed test-block build, libraries without a starter module, mixed Luce/Base packages, license, update with LUC_HOME")
     return 0
 
 # update/upgrade run the official installer into the release tree luc runs from, reached
@@ -299,8 +299,40 @@ func program_checks(project: str, luc: str) -> unit!:
     let failing = refused("failing test programs", project, luc, ["test", "--diagnostic"])
     check(f"failing test programs: [{failing}]", failing == "ok    in helper\nok    in main\n2 passed\nFAIL  tests/exits\n      exit status 5\n      about to fail\nFAIL  tests/greets\n      its standard output differs from its expected file\n      2\ntotal: 2 passed, 2 failed (2 test blocks, 2 programs)")
     files.remove_tree(paths.join(project, "tests"))
+    jobs_checks(project, luc)
     broken_block_checks(project, luc)
     scratch_checks(project, luc)
+
+# A test program that sleeps `milliseconds` and records the window it ran in, its start and
+# end on the monotonic clock in nanoseconds, in its scratch space.
+func timed_program(name: str, milliseconds: int) -> str:
+    return f"import c\nimport thread\nimport time\nimport strings\nfrom luce_std import files\n\npub func main(arguments: str[]) -> i32!:\n    _ = arguments\n    let start = time.now()\n    thread.sleep({milliseconds})\n    let end = time.now()\n    var text: u8[64]\n    try files.write((c.str)\"build/tests/{name}/window\", (try strings.format(text, f\"{{start}} {{end}}\")).bytes)\n    return 0\n"
+
+# The window a timed program recorded, as (start, end).
+func window_of(project: str, name: str) -> (int, int)!:
+    let parts = files.read_text(paths.join(project, f"build/tests/{name}/window")).split(" ")
+    return (int(parts[0]), int(parts[1]))
+
+# Whether the windows of programs `a` and `b` overlap.
+func overlap(project: str, a: str, b: str) -> bool!:
+    let (a_start, a_end) = window_of(project, a)
+    let (b_start, b_end) = window_of(project, b)
+    return a_start < b_end and b_start < a_end
+
+# --jobs: the programs run N at a time and are reported in the order of their names, whatever
+# order they finish in: the slow first one finishes last.
+func jobs_checks(project: str, luc: str) -> unit!:
+    write(paths.join(project, "tests/a_slow/main.lucb"), timed_program("a_slow", 3000))
+    write(paths.join(project, "tests/b_fast/main.lucb"), timed_program("b_fast", 10))
+    write(paths.join(project, "tests/c_fast/main.lucb"), timed_program("c_fast", 10))
+    let passing = "ok    in helper\nok    in main\n2 passed\nok    tests/a_slow\nok    tests/b_fast\nok    tests/c_fast\ntotal: 5 passed, 0 failed (2 test blocks, 3 programs)"
+    expect("luc test --jobs 3 reports in the order of the names", project, luc, ["test", "--jobs", "3"], passing)
+    check("--jobs 3 runs the programs together", overlap(project, "a_slow", "b_fast") or overlap(project, "a_slow", "c_fast"))
+    expect("luc test --jobs 1 reports the same", project, luc, ["test", "--jobs", "1"], passing)
+    check("--jobs 1 runs one program at a time", not overlap(project, "a_slow", "b_fast") and not overlap(project, "a_slow", "c_fast") and not overlap(project, "b_fast", "c_fast"))
+    _ = refused("--jobs 0", project, luc, ["test", "--jobs", "0"])
+    _ = refused("--jobs without a number", project, luc, ["test", "--jobs"])
+    files.remove_tree(paths.join(project, "tests"))
 
 # A run of the test blocks that fails without reporting a failed test (a module that does
 # not build) counts as one failure, named, and the test programs still run.

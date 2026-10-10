@@ -1295,10 +1295,19 @@ pub func main(arguments: c.str[]) -> i32!:
             # and every test program under tests/
             var diagnostic = false
             var listing = false
-            for word in own:
+            var jobs: usize = 0
+            var index: usize = 0
+            while index < own.length:
+                let word = own[index]
+                index += 1
                 if word == "--diagnostic": diagnostic = true
                 elif word == "--list": listing = true
-                else: error(usage_error, "usage: luc test [--diagnostic] [--list] [-- args]")
+                elif word == "--jobs" and index < own.length:
+                    let count = strings.parse_u64(own[index]) else error(usage_error, "luc test: --jobs takes a number of programs, at least 1")
+                    if count == 0: error(usage_error, "luc test: --jobs takes a number of programs, at least 1")
+                    jobs = (usize)count
+                    index += 1
+                else: error(usage_error, "usage: luc test [--diagnostic] [--list] [--jobs N] [-- args]")
             let starter = try project.starter()
             let entry = starter else try strings.copy("")
             defer strings.release(entry)
@@ -1306,7 +1315,7 @@ pub func main(arguments: c.str[]) -> i32!:
             let base = try toolchain_compiler("luce-base", "LUCE_BASE")
             return try package_tests.run(package_tests.Request(root = project.root, source = project.source,
                 entry = entry, luce = luce, base = base,
-                diagnostic = diagnostic, passthrough = passthrough, list = listing))
+                diagnostic = diagnostic, passthrough = passthrough, list = listing, jobs = jobs))
         if command == "check":
             return try spawn(try project.compiler(), try two("check", try project.entry_path()))
         if command == "fmt":
@@ -1335,8 +1344,10 @@ func usage(out: io.Writer) -> !:
     try out.write("  build [--release] [--diagnostic]   build into build/<name>\n")
     try out.write("  run [--release] [--diagnostic] [-- args]   build and run\n")
     try out.write("  run <task> [-- args]   run a task from package.prisma\n")
-    try out.write("  test [--diagnostic]    run the test blocks and the test programs (tests/<name>/main)\n")
+    try out.write("  test [--diagnostic] [--jobs N]   run the test blocks and the test programs (tests/<name>/main)\n")
     try out.write("  test --list            name the tests without running them\n")
+    try out.write("                         --jobs N: build and run N test programs at once (default: half\n")
+    try out.write("                         the processors)\n")
     try out.write("                         --diagnostic: the diagnostic profile, which fills unwritten\n")
     try out.write("                         storage with 0xAA and traps on double frees and writes\n")
     try out.write("                         after free; it builds into build/<name>-diagnostic\n")

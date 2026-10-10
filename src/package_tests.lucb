@@ -1,12 +1,14 @@
 ## `luc test`: the `test` blocks of every module of the package, each run by the compiler of
-## its language, and then the package's test programs (test_programs). The Luce modules go
-## to `luce test --package` and the Base modules to `luce-base test --package`, whatever the
-## package's language, so a mixed package runs both halves. Each run starts from the
-## package's entry when it is in that language and otherwise from its first module, since
-## `--package` takes every module under the source root either way. A run that fails without
-## reporting a failed test (a build error in the sources, a crash) counts as one failure,
-## named in the report. A package with no test at all is refused: every package has tests.
+## its language, and the package's test programs (test_programs), which build and run on
+## threads of their own while the test blocks run. The Luce modules go to `luce test
+## --package` and the Base modules to `luce-base test --package`, whatever the package's
+## language, so a mixed package runs both halves. Each run starts from the package's entry
+## when it is in that language and otherwise from its first module, since `--package` takes
+## every module under the source root either way. A run that fails without reporting a failed
+## test (a build error in the sources, a crash) counts as one failure, named in the report. A
+## package with no test at all is refused: every package has tests.
 import c
+import interop
 import io
 import memory
 import strings
@@ -30,6 +32,8 @@ pub struct Request:
     pub var passthrough: str[]
     ## `--list`: name the tests instead of running them.
     pub var list: bool
+    ## `--jobs`: how many test programs build and run at once; zero for the default.
+    pub var jobs: usize
 
 ## The modules a run can start from and the tests the sources declare: the first Luce
 ## module and the first Base module under the source root, a `.lucb` file or a directory
@@ -52,10 +56,21 @@ struct Outcome:
 ## Test the package and answer the exit status: the worst of the runs; 1 when a run failed
 ## without reporting a failed test, when the sources declare tests and no run reported any,
 ## or when the package has no test at all.
+##
+## The test programs start first and build and run beside the test blocks: every compile
+## writes the build cache by renaming a finished file into place, and each program builds
+## into a directory of its own, so the two cannot meet. While programs run beside them, the
+## test-block runs get the same share of the processors as each program's build.
 pub func run(request: Request) -> i32!:
     if request.list: return try list(request)
     var sources = try scan(request.root, request.source)
     defer sources.release()
+    let jobs = request.jobs if request.jobs > 0 else test_programs.default_jobs()
+    var programs_run = try test_programs.prepare(test_programs.Settings(root = request.root,
+        luce = request.luce, base = request.base, diagnostic = request.diagnostic, jobs = jobs))
+    errdefer test_programs.stop(&programs_run)
+    test_programs.launch(&programs_run)
+    let share = test_programs.compile_share(&programs_run)
     # each compiler starts from the entry when it is in its language, else its first module
     let luce_start = request.entry if strings.ends_with(request.entry, ".luc") else sources.luce
     let base_start = request.entry if strings.ends_with(request.entry, ".lucb") else sources.base
@@ -67,7 +82,7 @@ pub func run(request: Request) -> i32!:
         if start.length == 0: continue
         let luce = strings.ends_with(start, ".luc")
         let compiler = request.luce if luce else request.base
-        let outcome = try test_with(compiler, start, request)
+        let outcome = try test_with(compiler, start, request, share)
         if outcome.status != 0 and total.status == 0: total.status = outcome.status
         total.passed += outcome.passed
         total.failed += outcome.failed
@@ -83,8 +98,7 @@ pub func run(request: Request) -> i32!:
         total.status = 1
         try io.stdout().write(f"FAIL  the test blocks: the sources declare {sources.declared} test(s) but none ran\n")
     let blocks = total.passed + total.failed
-    let programs = try test_programs.run(test_programs.Settings(root = request.root,
-        luce = request.luce, base = request.base, diagnostic = request.diagnostic))
+    let programs = try test_programs.finish(&programs_run)
     let program_count = programs.passed + programs.failed + programs.skipped
     if programs.failed > 0 and total.status == 0: total.status = 1
     total.passed += programs.passed
@@ -126,8 +140,9 @@ func list(request: Request) -> i32!:
     return 0
 
 ## Run `compiler test start --package` with the request's profile and arguments, show what
-## it wrote, and read the counts from its report.
-func test_with(compiler: str, start: str, request: Request) -> Outcome!:
+## it wrote, and read the counts from its report. A `share` above zero is the LUCE_BASE_JOBS
+## it runs with, beside the test programs.
+func test_with(compiler: str, start: str, request: Request, share: usize) -> Outcome!:
     var words: str[8] = ---
     var count: usize = 0
     for word in ["test", start, "--package"]:
@@ -148,7 +163,7 @@ func test_with(compiler: str, start: str, request: Request) -> Outcome!:
         made += 1
     let program = try strings.copy(compiler)
     defer strings.release(program)
-    let ran = try process.run((c.str)program, argv)
+    let ran = try run_sharing(program, argv, share)
     defer ran.release()
     var outcome = Outcome(status = ran.value.exit_code, passed = 0, failed = 0)
     read_counts(ran.value.output, &outcome)
@@ -158,6 +173,17 @@ func test_with(compiler: str, start: str, request: Request) -> Outcome!:
     if ran.value.output.length > 0 and not empty: try io.stdout().write(ran.value.output)
     if ran.value.error_output.length > 0: try io.stderr().write(ran.value.error_output)
     return outcome
+
+## `process.run`, with LUCE_BASE_JOBS set to `share` when it is above zero.
+func run_sharing(program: str, arguments: c.str[], share: usize) -> interop.Owned[process.Completed]!:
+    if share == 0: return try process.run((c.str)program, arguments)
+    var number: u8[24]
+    let setting = try strings.join(["LUCE_BASE_JOBS=", try strings.format(number, f"{share}")], "")
+    defer strings.release(setting)
+    let environment = try new c.str[1] --- in memory.heap
+    defer free(environment) in memory.heap
+    environment[0] = (c.str)setting
+    return try process.run((c.str)program, arguments, "", environment)
 
 func release_arguments(arguments: c.str[], count: usize):
     for i in 0..<count: strings.release((str)arguments[i])
