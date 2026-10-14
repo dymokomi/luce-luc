@@ -1,7 +1,7 @@
 # luc's commands, driven from outside: build luc from this checkout, then put throwaway
 # projects through new/init, add/remove, run and tasks, clean, --diagnostic, test (blocks,
 # failures, libraries without a starter module, mixed Luce/Base packages, test programs),
-# licenses, and update/upgrade with LUC_HOME. `luc test` runs it with LUCE and LUCE_BASE
+# licenses, application usage sentences, and update/upgrade with LUC_HOME. `luc test` runs it with LUCE and LUCE_BASE
 # naming the toolchain under test.
 from luce_std import files, paths, process
 
@@ -94,8 +94,9 @@ pub func main(arguments: list[str]) -> int!:
     check_checks(work, luc)
     test_checks(work, luc, luce)
     license_checks(work, luc)
+    bundle_checks(work, luc)
     files.remove_tree(work)
-    print("ok luc: new/init, add/remove, task DAG, clean, --diagnostic, every module checked for every target, every module's tests and failures, test programs, --jobs, serial programs, a failed test-block build, libraries without a starter module, mixed Luce/Base packages, license, update with LUC_HOME")
+    print("ok luc: new/init, add/remove, task DAG, clean, --diagnostic, every module checked for every target, every module's tests and failures, test programs, --jobs, serial programs, a failed test-block build, libraries without a starter module, mixed Luce/Base packages, license, an application's usage sentences in its signed bundle, update with LUC_HOME")
     return 0
 
 # update/upgrade run the official installer into the release tree luc runs from, reached
@@ -467,3 +468,23 @@ func license_checks(work: str, luc: str) -> unit!:
     check(f"a property set twice: [{twice.error_output}]", "package.prisma:" in twice.error_output + twice.output and " set twice in one element" in twice.error_output + twice.output)
     files.remove_tree(project)
 
+# An application says why it uses a protected resource; on macOS the sentence goes into the
+# bundle's Info.plist, escaped, and the bundle stays validly signed. Elsewhere it builds as
+# before, since Windows and Linux take no such sentence.
+func bundle_checks(work: str, luc: str) -> unit!:
+    let project = paths.join(work, "recorder")
+    let usage = "        str microphone = \"Recorder records from your <audio> input & more.\"\n"
+    write(paths.join(project, "package.prisma"), f"#prisma 4.0\ndef package \"recorder\" {{\n    str owner = \"dymokomi\"\n    str version = \"0.1.0\"\n    str kind = \"application\"\n    str language = \"luce-base\"\n    str entry = \"src/main.lucb\"\n    def application \"bundle\" {{\n        str name = \"Recorder\"\n        str identifier = \"com.example.recorder\"\n{usage}    }}\n}}\n")
+    write(paths.join(project, "src/main.lucb"), "pub func main(arguments: str[]) -> i32:\n    return 0\n")
+    ok("build an application with a usage sentence", project, luc, ["build"])
+    # macOS: the one system with plutil
+    if files.exists("/usr/bin/plutil"):
+        let plist = paths.join(project, "build/Recorder.app/Contents/Info.plist")
+        let text = files.read_text(plist)
+        check(f"Info.plist carries the microphone's sentence: [{text}]", "<key>NSMicrophoneUsageDescription</key>\n    <string>Recorder records from your &lt;audio&gt; input &amp; more.</string>" in text)
+        ok("plutil -lint", project, "/usr/bin/plutil", ["-lint", plist])
+        ok("the bundle is signed, Info.plist sealed", project, "/usr/bin/codesign", ["--verify", "--strict", paths.join(project, "build/Recorder.app")])
+    files.write_text(paths.join(project, "package.prisma"), files.read_text(paths.join(project, "package.prisma")).replace("str microphone", "str scanner"))
+    let refusal = refused_saying("an unknown resource", project, luc, ["build"])
+    check(f"an unknown resource is refused: [{refusal}]", "microphone, camera, photos, location, contacts and bluetooth" in refusal)
+    files.remove_tree(project)

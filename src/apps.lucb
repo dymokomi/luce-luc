@@ -10,6 +10,7 @@
 ## the default: its built executable as bin/<name>, linked as <name>.
 import c
 from luce_std import files
+import io
 import memory
 import os
 from luce_std import paths, process
@@ -293,7 +294,7 @@ pub func bundle(root: str, definition: pkg.Definition*) -> !:
     if definition.application.icon.length > 0: icon_name = paths.base(definition.application.icon)
     let icon_source = try paths.join(root, definition.application.icon)
     defer icon_source.release()
-    let text = try new u8[8192] --- in memory.heap
+    let text = try new u8[16384] --- in memory.heap
     defer free(text) in memory.heap
     if os.macos:
         let contents = try child(bundle_root.value, "Contents")
@@ -306,8 +307,10 @@ pub func bundle(root: str, definition: pkg.Definition*) -> !:
         if icon_name.length > 0: try copy_into(icon_source.value, resources, icon_name, 0o644)
         let plist = try paths.join(contents, "Info.plist")
         defer plist.release()
-        let icon_entry = try strings.format(text[4096..], f"    <key>CFBundleIconFile</key>\n    <string>{icon_name}</string>\n") if icon_name.length > 0 else ""
-        try write_text(plist.value, try strings.format(text[..<4096], f"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n    <key>CFBundleName</key>\n    <string>{definition.application.name}</string>\n    <key>CFBundleDisplayName</key>\n    <string>{definition.application.name}</string>\n    <key>CFBundleIdentifier</key>\n    <string>{definition.application.identifier}</string>\n    <key>CFBundleExecutable</key>\n    <string>{definition.name}</string>\n    <key>CFBundleVersion</key>\n    <string>{definition.version}</string>\n    <key>CFBundleShortVersionString</key>\n    <string>{definition.version}</string>\n    <key>CFBundlePackageType</key>\n    <string>APPL</string>\n    <key>CFBundleInfoDictionaryVersion</key>\n    <string>6.0</string>\n{icon_entry}    <key>NSHighResolutionCapable</key>\n    <true/>\n    <key>NSPrincipalClass</key>\n    <string>NSApplication</string>\n</dict>\n</plist>\n"))
+        let icon_entry = try strings.format(text[4096..<4352], f"    <key>CFBundleIconFile</key>\n    <string>{icon_name}</string>\n") if icon_name.length > 0 else ""
+        let usage_entries = try usage_keys(&definition.application, text[4352..])
+        try write_text(plist.value, try strings.format(text[..<4096], f"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n    <key>CFBundleName</key>\n    <string>{definition.application.name}</string>\n    <key>CFBundleDisplayName</key>\n    <string>{definition.application.name}</string>\n    <key>CFBundleIdentifier</key>\n    <string>{definition.application.identifier}</string>\n    <key>CFBundleExecutable</key>\n    <string>{definition.name}</string>\n    <key>CFBundleVersion</key>\n    <string>{definition.version}</string>\n    <key>CFBundleShortVersionString</key>\n    <string>{definition.version}</string>\n    <key>CFBundlePackageType</key>\n    <string>APPL</string>\n    <key>CFBundleInfoDictionaryVersion</key>\n    <string>6.0</string>\n{icon_entry}{usage_entries}    <key>NSHighResolutionCapable</key>\n    <true/>\n    <key>NSPrincipalClass</key>\n    <string>NSApplication</string>\n</dict>\n</plist>\n"))
+        try sign(bundle_root.value)
         return
     if os.windows:
         # the program folder: the executable and its icon, as a Start Menu shortcut expects
@@ -332,6 +335,50 @@ pub func bundle(root: str, definition: pkg.Definition*) -> !:
         if icon_name.bytes[i] == '.': stem = (str)icon_name.bytes[..<i]
     let icon_line = try strings.format(text[4096..], f"Icon={stem}\n") if stem.length > 0 else ""
     try write_text(desktop.value, try strings.format(text[..<4096], f"[Desktop Entry]\nType=Application\nName={definition.application.name}\nExec=AppRun\n{icon_line}Terminal=false\nStartupWMClass={definition.name}\nX-Luce-Identifier={definition.application.identifier}\nX-Luce-Version={definition.version}\n"))
+
+# mark: macOS bundle details ==================================================================
+
+## The Info.plist keys that carry each usage sentence of pkg.usage_names, by its index: a
+## sentence macOS shows when the program first reaches the resource, which it refuses a
+## program without one. Location has its older key too.
+let usage_plist_keys: (usize, str)[7] = [(0, "NSMicrophoneUsageDescription"), (1, "NSCameraUsageDescription"),
+    (2, "NSPhotoLibraryUsageDescription"), (3, "NSLocationUsageDescription"), (3, "NSLocationWhenInUseUsageDescription"),
+    (4, "NSContactsUsageDescription"), (5, "NSBluetoothAlwaysUsageDescription")]
+
+## The Info.plist entries for the application's usage sentences, written into `room`, with
+## `&`, `<` and `>` escaped as XML needs; empty when it gives none.
+func usage_keys(application: const pkg.Application*, room: u8[]) -> str!:
+    var used: usize = 0
+    for (index, key) in usage_plist_keys:
+        let usage = application.usages[index]
+        if usage.length == 0: continue
+        for part in ["    <key>", key, "</key>\n    <string>"]: try put(room, &used, part)
+        for i in 0..<usage.length:
+            let byte = usage.bytes[i]
+            let escaped = "&amp;" if byte == '&' else ("&lt;" if byte == '<' else ("&gt;" if byte == '>' else (str)usage.bytes[i..<i + 1]))
+            try put(room, &used, escaped)
+        try put(room, &used, "</string>\n")
+    return (str)room[..<used]
+
+## Append `text` to `room` after its first `*used` bytes.
+func put(room: u8[], used: usize*, text: str) -> !:
+    if *used + text.length > room.length: error(invalid, "the application's Info.plist entries are too long")
+    for byte in text.bytes:
+        room[*used] = byte
+        *used += 1
+
+## Sign the bundle at `path` ad hoc, as the linker signs the executable alone: the signature
+## seals Info.plist and the resources too and names the program by its bundle identifier,
+## which macOS's privacy settings remember it by.
+func sign(path: str) -> !:
+    let target = try strings.copy(path)
+    defer strings.release(target)
+    let arguments: c.str[4] = ["--force", "--sign", "-", (c.str)target]
+    let ran = try process.run("/usr/bin/codesign", arguments)
+    defer ran.release()
+    if ran.value.exit_code != 0:
+        try io.stderr().write(ran.value.error_output)
+        error(invalid, "codesign could not sign the bundle")
 
 # mark: Where applications are installed ======================================================
 

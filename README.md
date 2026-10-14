@@ -33,6 +33,15 @@ def package "hello" {
 | `tool` | a program run in a terminal | `luc new <dir> --tool` (the default) | a command on your PATH |
 | `application` | a windowed desktop program | `luc new <dir> --application` | `Name.app` on macOS, a desktop entry on Linux |
 
+An application's `def application "bundle"` element names it for the desktop (`name`,
+`identifier`, optional `icon`) and says why it uses each protected resource it reaches, in a
+sentence the system shows the user the first time: `str microphone = "Luced Music records
+from your audio input."`, and likewise `camera`, `photos`, `location`, `contacts` and
+`bluetooth` (docs/PACKAGE_PRISMA.md in luce-pkg). macOS refuses the resource to a program
+without one; luc writes them into the bundle's `Info.plist` and signs the bundle ad hoc, so
+the plist is sealed and macOS remembers the user's answer by the bundle identifier. Windows
+and Linux ask without a sentence from the program, so there they change nothing.
+
 A package published to the registry can also say what it is for and how it may be used:
 `str description = "..."` (one line), `str license = "MIT OR Apache-2.0"` (an SPDX
 expression) and `str readme = "README.md"`; the registry shows them on the package's page.
