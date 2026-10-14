@@ -58,6 +58,13 @@ func refused(what: str, directory: str, program: str, arguments: list[str]) -> s
         error(failed, f"{what}: should have failed")
     return output
 
+# `refused`, answering what it wrote to standard error and then to standard output.
+func refused_saying(what: str, directory: str, program: str, arguments: list[str]) -> str!:
+    let done = process.run(program, arguments, directory)
+    if done.exit_code == 0:
+        error(failed, f"{what}: should have failed")
+    return (done.error_output + done.output).replace("\r\n", "\n")
+
 func check(what: str, condition: bool) -> unit!:
     if not condition:
         error(failed, what)
@@ -84,10 +91,11 @@ pub func main(arguments: list[str]) -> int!:
         sibling_checks(work, luc)
     scaffold_checks(work, luc)
     project_checks(work, luc)
+    check_checks(work, luc)
     test_checks(work, luc, luce)
     license_checks(work, luc)
     files.remove_tree(work)
-    print("ok luc: new/init, add/remove, task DAG, clean, --diagnostic, every module's tests and failures, test programs, --jobs, serial programs, a failed test-block build, libraries without a starter module, mixed Luce/Base packages, license, update with LUC_HOME")
+    print("ok luc: new/init, add/remove, task DAG, clean, --diagnostic, every module checked for every target, every module's tests and failures, test programs, --jobs, serial programs, a failed test-block build, libraries without a starter module, mixed Luce/Base packages, license, update with LUC_HOME")
     return 0
 
 # update/upgrade run the official installer into the release tree luc runs from, reached
@@ -133,9 +141,10 @@ func sibling_checks(work: str, luc: str) -> unit!:
     let search = f"PATH={paths.join(sibling, "path")}:{process.variable("PATH") else ""}"
     ok("sibling scaffold", sibling, "env", ["-u", "LUCE_BASE", search, own, "new", "demo"])
     let demo = paths.join(sibling, "demo")
-    expect("luc prefers the luce-base beside it", demo, "env", ["-u", "LUCE_BASE", search, own, "check"], "beside")
+    # a check runs the compiler once for each target system
+    expect("luc prefers the luce-base beside it", demo, "env", ["-u", "LUCE_BASE", search, own, "check"], "beside\nbeside\nbeside")
     files.remove_file(paths.join(sibling, "bin/luce-base"))
-    expect("luc falls back to the path", demo, "env", ["-u", "LUCE_BASE", search, own, "check"], "path")
+    expect("luc falls back to the path", demo, "env", ["-u", "LUCE_BASE", search, own, "check"], "path\npath\npath")
     files.remove_tree(sibling)
 
 # Scaffolding: a new app builds and runs, a new package checks, and an app depends on a
@@ -166,6 +175,29 @@ func scaffold_checks(work: str, luc: str) -> unit!:
     ok("remove", app, luc, ["remove", "mylib"])
     check("dependency removed", not ("mylib" in files.read_text(paths.join(app, "package.prisma"))))
     files.remove_tree(scaffold)
+
+# `luc check`: every module of a Base package, the ones its starter module does not import
+# too, for every target system.
+func check_checks(work: str, luc: str) -> unit!:
+    ok("new checked", work, luc, ["new", "checked", "--package"])
+    let project = paths.join(work, "checked")
+    ok("check of a new package", project, luc, ["check"])
+    # a module nothing imports, with an error a check finds only in it
+    files.write_text(paths.join(project, "src/unreached.lucb"), "func three() -> i32:\n    return \"three\"\n")
+    let unreached = refused_saying("check of a package with an unreached module", project, luc, ["check"])
+    check(f"check names the unreached module's error: [{unreached}]", "unreached.lucb:2:12: expected `i32`, got `str`" in unreached)
+    # a public module the starter does not import, with a local shadowing an import
+    files.remove_file(paths.join(project, "src/unreached.lucb"))
+    files.write_text(paths.join(project, "src/other.lucb"), "import strings\n\npub func other() -> bool:\n    let strings = 2\n    return strings == 2\n")
+    let shadowed = refused_saying("check of a shadowed import", project, luc, ["check"])
+    check(f"check names the shadowed import: [{shadowed}]", "other.lucb:4:5: this name is an import; a local may not shadow it" in shadowed)
+    # an error under one target alone: a socket is an isize on Windows and an i32 elsewhere
+    files.write_text(paths.join(project, "src/other.lucb"), "import platform\n\npub func other(socket: platform.SocketDescriptor) -> i32:\n    return socket\n")
+    let windows_only = refused_saying("check of an error under one target", project, luc, ["check"])
+    check(f"check finds an error under one target: [{windows_only}]", "other.lucb:4:12: expected `i32`, got `isize`" in windows_only)
+    files.write_text(paths.join(project, "src/other.lucb"), "import platform\n\npub func other(socket: platform.SocketDescriptor) -> i64:\n    return (i64)socket\n")
+    ok("check after the fixes", project, luc, ["check"])
+    files.remove_tree(project)
 
 let tasks_manifest = """#prisma 4.0
 def package "hello" {
@@ -396,6 +428,16 @@ func luce_checks(work: str, luc: str) -> unit!:
     let failing = positions(refused("luc test of a Luce project with a failing test", demo, luc, ["test"]), demo)
     check(f"luc test of a Luce project: [{failing}]", failing == "ok    in main\nFAIL  in an orphan\n      src/orphan.luc:2:5: assert failed: 1 + 1 == 3\nok    after the failure\n2 passed\n1 failed")
     files.remove_file(paths.join(demo, "src/orphan.luc"))
+    # `luc check` checks every Luce module and every Base one, imported or not
+    files.write_text(paths.join(demo, "src/orphan.luc"), "func three() -> int:\n    return \"three\"\n")
+    let luce_unreached = refused_saying("luc check of a Luce module nothing imports", demo, luc, ["check"])
+    check(f"luc check of a Luce module nothing imports: [{luce_unreached}]", "orphan.luc:2:" in luce_unreached)
+    files.remove_file(paths.join(demo, "src/orphan.luc"))
+    files.write_text(paths.join(demo, "src/orphan.lucb"), "func three() -> i32:\n    return \"three\"\n")
+    let base_unreached = refused_saying("luc check of a Base module in a Luce package", demo, luc, ["check"])
+    check(f"luc check of a Base module in a Luce package: [{base_unreached}]", "orphan.lucb:2:12: expected `i32`, got `str`" in base_unreached)
+    files.remove_file(paths.join(demo, "src/orphan.lucb"))
+    ok("luc check of a Luce project", demo, luc, ["check"])
     # a Luce program importing a Base module is tested built, and the Base modules' own
     # tests run too, counted with the Luce ones; the Base run, with no test block of its
     # own yet, shows nothing
@@ -424,3 +466,4 @@ func license_checks(work: str, luc: str) -> unit!:
     let twice = process.run(luc, ["check"], project)
     check(f"a property set twice: [{twice.error_output}]", "package.prisma:" in twice.error_output + twice.output and " set twice in one element" in twice.error_output + twice.output)
     files.remove_tree(project)
+

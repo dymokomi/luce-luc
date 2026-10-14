@@ -1303,7 +1303,14 @@ pub func main(arguments: c.str[]) -> i32!:
                 entry = entry, luce = luce, base = base,
                 diagnostic = diagnostic, passthrough = passthrough, list = listing, jobs = jobs))
         if command == "check":
-            return try spawn(try project.compiler(), try two("check", try project.entry_path()))
+            # every module of the package, imported by the entry or not, for every target
+            if own.length != 0: error(usage_error, "usage: luc check [-- args]")
+            let starter = try project.starter()
+            let entry = starter else try strings.copy("")
+            defer strings.release(entry)
+            let luce = try toolchain_compiler("luce", "LUCE")
+            let base = try toolchain_compiler("luce-base", "LUCE_BASE")
+            return try package_tests.check(project.root, project.source, entry, luce, base, passthrough)
         if command == "fmt":
             var formatted = try two("fmt", try project.entry_path())
             if has(own, "--check"):
@@ -1338,7 +1345,7 @@ func usage(out: io.Writer) -> !:
     try out.write("                         --diagnostic: the diagnostic profile, which fills unwritten\n")
     try out.write("                         storage with 0xAA and traps on double frees and writes\n")
     try out.write("                         after free; it builds into build/<name>-diagnostic\n")
-    try out.write("  check                  type-check without building\n")
+    try out.write("  check [-- args]        type-check every module, for every target, without building\n")
     try out.write("  fmt [--check]          format the sources\n")
     try out.write("  clean [cache]          remove build/, or only its cache\n\n")
     try out.write("Dependencies\n")

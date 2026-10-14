@@ -49,7 +49,7 @@ is described in [luce-pkg/docs/PACKAGE_PRISMA.md](https://github.com/dymokomi/lu
 | `luc run [--release] [--diagnostic] [-- args]` | builds and runs the program |
 | `luc test [--diagnostic] [--jobs N]` | runs the `test` blocks of every module, imported or not, and every test program under `tests/`, N programs at a time |
 | `luc test --list` | names the test programs and the test blocks without running them |
-| `luc check` | type-checks without building |
+| `luc check [-- args]` | type-checks every module, imported or not, without building: the Base ones for the host and again for each other system's target (`--target`), so an error only Windows sees is found on a Mac; `args` go to the compiler (`-- -W` prints warnings) |
 | `luc fmt [--check]` | formats the sources |
 | `luc clean [cache]` | removes `build/`, or only its cache |
 | `luc run <task>` | runs a named task from `package.prisma`, after the tasks it depends on |

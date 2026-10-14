@@ -1,4 +1,5 @@
-## `luc test`: the `test` blocks of every module of the package, each run by the compiler of
+## `luc test` and `luc check`. `luc test`: the `test` blocks of every module of the package,
+## each run by the compiler of
 ## its language, and the package's test programs (test_programs), which build and run on
 ## threads of their own while the test blocks run. The Luce modules go to `luce test
 ## --package` and the Base modules to `luce-base test --package`, whatever the package's
@@ -6,11 +7,13 @@
 ## when it is in that language and otherwise from its first module, since `--package` takes
 ## every module under the source root either way. A run that fails without reporting a failed
 ## test (a build error in the sources, a crash) counts as one failure, named in the report. A
-## package with no test at all is refused: every package has tests.
+## package with no test at all is refused: every package has tests. `luc check` checks the
+## same modules from the same starts without building, the Base ones for every target.
 import c
 import interop
 import io
 import memory
+import os
 import strings
 from luce_std import files, paths, process
 import test_programs
@@ -121,6 +124,71 @@ pub func run(request: Request) -> i32!:
         if programs.failed > 0: try io.stdout().write(f"{programs.failed} failed\n")
         if programs.skipped > 0: try io.stdout().write(f"{programs.skipped} skipped\n")
     return total.status
+
+## The targets a check of the Base modules sees in turn (base.md §19.5), besides the host:
+## each decides the platform constants its own way, so a branch for one target is checked
+## under that target. One per system; the host's own system is the plain check.
+let other_targets = ["arm64-macos", "x86_64-linux", "x86_64-windows"]
+
+## `luc check`: every module of the package under `root`/`source`, imported by the entry or
+## not, type-checked without building: the Luce modules by `luce check --package` and the
+## Base modules by `luce-base check --package`, for the host and then for each other system's
+## target, each from the entry when it is in that language and otherwise from its first
+## module, as `run` starts. The first failing check ends it, since every target would mostly
+## report the same errors again. `passthrough` goes to every run (`-W`, say). The exit status
+## is the failed run's; a package with no module is refused.
+pub func check(root: str, source: str, entry: str, luce: str, base: str, passthrough: str[]) -> i32!:
+    var sources = try scan(root, source)
+    defer sources.release()
+    let luce_start = entry if strings.ends_with(entry, ".luc") else sources.luce
+    let base_start = entry if strings.ends_with(entry, ".lucb") else sources.base
+    if luce_start.length == 0 and base_start.length == 0:
+        try io.stderr().write(f"luc check: no module to check under {source}\n")
+        return 1
+    if luce_start.length > 0:
+        let status = try check_with(luce, luce_start, "", passthrough)
+        if status != 0: return status
+    if base_start.length > 0:
+        let host = "-macos" if os.macos else ("-linux" if os.linux else "-windows")
+        var status = try check_with(base, base_start, "", passthrough)
+        for target in other_targets:
+            if status != 0: return status
+            if not strings.ends_with(target, host):
+                status = try check_with(base, base_start, target, passthrough)
+        return status
+    return 0
+
+## Run `compiler check start --package`, for `target` when there is one, show what it wrote
+## and answer its status.
+func check_with(compiler: str, start: str, target: str, passthrough: str[]) -> i32!:
+    var words: str[5] = ---
+    var count: usize = 0
+    for word in ["check", start, "--package"]:
+        words[count] = word
+        count += 1
+    if target.length > 0:
+        words[count] = "--target"
+        words[count + 1] = target
+        count += 2
+    let argv = try new c.str[count + passthrough.length] ---
+    var made: usize = 0
+    defer release_arguments(argv, made)
+    for i in 0..<count:
+        argv[made] = (c.str)try strings.copy(words[i])
+        made += 1
+    for word in passthrough:
+        argv[made] = (c.str)try strings.copy(word)
+        made += 1
+    let program = try strings.copy(compiler)
+    defer strings.release(program)
+    let ran = try process.run((c.str)program, argv)
+    defer ran.release()
+    if ran.value.output.length > 0: try io.stdout().write(ran.value.output)
+    if ran.value.error_output.length > 0:
+        # another target's failure is named, since the host's passed
+        if target.length > 0 and ran.value.exit_code != 0: try io.stderr().write(f"luc check: for {target}:\n")
+        try io.stderr().write(ran.value.error_output)
+    return ran.value.exit_code
 
 ## `luc test --list`: the test programs, then the test blocks the sources declare, one per
 ## line, without building anything.
