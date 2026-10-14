@@ -1,9 +1,13 @@
 ## Releasing without tokens.
 ##
-## `luc publish -m "notes"` pushes the current branch to the registry and publishes the
-## version in package.prisma: it creates the registry repository if needed, points the
-## `pkg` remote at it, tags `v<version>` with the notes, and pushes the tag. The registry
-## turns that tag into the release.
+## `luc publish -m "notes"` publishes the version in package.prisma. The registry is for
+## installing and updating; GitHub keeps the history. So publish sends one snapshot: the
+## files of HEAD without the development paths (`tests`, `dev` and those the package
+## declares, which installs leave out anyway), as a commit with no parents whose message
+## names HEAD (`Source-Commit:`), under the release tag `v<version>` with the notes. No
+## branch and no history go up, and HEAD must already be on GitHub (`origin`). It creates
+## the registry repository if needed and points the `pkg` remote at it; the tag is local
+## only while it is pushed. The registry turns the tag into the release.
 ##
 ## `luc git-credential` is a Git credential helper. publish configures it for the
 ## registry only, so plain `git push pkg` and `git fetch pkg` need no password either:
@@ -31,7 +35,7 @@ struct Output:
     func close():
         self.ran.release()
 
-func git(root: str, arguments: const str[]) -> Output!:
+func git(root: str, arguments: const str[], environment: const str[]? = none) -> Output!:
     let argv = try new c.str[arguments.length] --- in memory.heap
     defer free(argv) in memory.heap
     var filled: usize
@@ -41,79 +45,61 @@ func git(root: str, arguments: const str[]) -> Output!:
         filled += 1
     let directory = try strings.copy(root)
     defer strings.release(directory)
-    let ran = try process.run((c.str)"git", argv, (c.str)directory)
+    var count: usize = 0
+    if let overrides = environment: count = overrides.length
+    let variables = try new c.str[count] --- in memory.heap
+    defer free(variables) in memory.heap
+    var set: usize
+    defer release_arguments(variables, &set)
+    if let overrides = environment:
+        while set < overrides.length:
+            variables[set] = (c.str)try strings.copy(overrides[set])
+            set += 1
+    let ran = try process.run((c.str)"git", argv, (c.str)directory, variables if count > 0 else none)
     return Output(status = ran.value.exit_code, out = ran.value.output, err = ran.value.error_output, ran = ran)
 
 func release_arguments(arguments: c.str[], filled: usize*):
     for i in 0..<*filled: strings.release((str)arguments[i])
 
 ## Run git and fail with its own message when it does.
-func must(root: str, arguments: const str[], what: str) -> !:
-    var result = try git(root, arguments)
+func must(root: str, arguments: const str[], what: str, environment: const str[]? = none) -> !:
+    var result = try git(root, arguments, environment)
     defer result.close()
     if result.status == 0: return
     try io.stderr().write(result.err)
     error(invalid, what)
 
-## Push the current branch to the registry. One push carries at most what the registry
-## takes in a pack (its objects and bytes are bounded); a history larger than that, a long
-## repository published the first time, goes up in steps: the commits the registry lacks,
-## oldest first, as many to a push as fit, the step halved each time the registry refuses
-## one as too large.
-func push_branch(root: str) -> !:
-    var whole = try git(root, ["push", "pkg", "HEAD"])
-    defer whole.close()
-    if whole.status == 0: return
-    if not too_large(whole.err):
-        try io.stderr().write(whole.err)
-        error(invalid, "the push was refused")
-    var head = try git(root, ["rev-parse", "--abbrev-ref", "HEAD"])
-    defer head.close()
-    let branch = strings.trim(head.out)
-    var listing = try git(root, ["rev-list", "--reverse", "--first-parent", "HEAD", "--not", "--remotes=pkg"])
-    defer listing.close()
-    let commits = try lines_of(listing.out)
-    defer free(commits) in memory.heap
-    var done: usize = 0
-    var step = commits.length // 2 if commits.length > 1 else 1
-    while done < commits.length:
-        let last = (done + step if done + step < commits.length else commits.length) - 1
-        var spelled: u8[512]
-        let refspec = try strings.format(spelled, f"{commits[last]}:refs/heads/{branch}")
-        var pushed = try git(root, ["push", "pkg", refspec])
-        defer pushed.close()
-        if pushed.status == 0:
-            done = last + 1
-            continue
-        if not too_large(pushed.err) or step == 1:
-            try io.stderr().write(pushed.err)
-            error(invalid, "one commit is larger than the registry takes in a push" if step == 1 and too_large(pushed.err) else "the push was refused")
-        step = step // 2
-
-## Whether the registry refused a push for one of the limits on what a push carries: a
-## named limit of its pack, or the request's size, which the server answers with 413 or by
-## closing the connection before Git has sent it all (`RPC failed`).
-func too_large(err: str) -> bool:
-    return strings.contains(err, "limit exceeded") or strings.contains(err, "HTTP 413") or strings.contains(err, "RPC failed")
-
-## The lines of `text`, each a slice of it, in a heap list the caller frees.
-func lines_of(text: str) -> str[]!:
-    var count: usize = 0
-    for byte in text.bytes:
-        if byte == '\n': count += 1
-    let lines = try new str[count + 1] --- in memory.heap
-    var used: usize = 0
-    var start: usize = 0
-    for i in 0..<text.length:
-        if text.bytes[i] != '\n': continue
-        if i > start:
-            lines[used] = (str)text.bytes[start..<i]
-            used += 1
-        start = i + 1
-    if start < text.length:
-        lines[used] = (str)text.bytes[start..]
-        used += 1
-    return lines[..<used]
+## The tree of HEAD without the development paths, written through a scratch index so
+## the working tree, the real index and the refs stay as they are; its id in `id`.
+func snapshot_tree(root: str, definition: pkg.Definition*, id: u8[40]*) -> !:
+    var located = try git(root, ["rev-parse", "--absolute-git-dir"])
+    defer located.close()
+    if located.status != 0: error(invalid, "could not find the Git directory")
+    var index_buffer: u8[1200]
+    let index = try strings.format(index_buffer, f"GIT_INDEX_FILE={strings.trim(located.out)}/luc-publish-index")
+    let environment = [index]
+    try must(root, ["read-tree", "HEAD"], "could not read HEAD's tree", environment)
+    # luce-pkg's default development paths, then the package's own
+    var removed: str[18]
+    removed[0] = "tests"
+    removed[1] = "dev"
+    for i in 0..<definition.development_count: removed[2 + i] = definition.development[i]
+    var arguments: str[24]
+    let leading = ["rm", "--cached", "-r", "-q", "--ignore-unmatch", "--"]
+    for i in 0..<leading.length: arguments[i] = leading[i]
+    let count = 2 + definition.development_count
+    for i in 0..<count: arguments[leading.length + i] = removed[i]
+    try must(root, arguments[..<leading.length + count], "could not leave out the development paths", environment)
+    var written = try git(root, ["write-tree"], environment)
+    defer written.close()
+    var cleared = try git(root, ["read-tree", "--empty"], environment)
+    cleared.close()
+    if written.status != 0:
+        try io.stderr().write(written.err)
+        error(invalid, "could not write the release's tree")
+    let tree = strings.trim(written.out)
+    if tree.length != 40: error(invalid, "Git wrote an unexpected tree id")
+    for i in 0..<(usize)40: (*id)[i] = tree.bytes[i]
 
 ## `luc git-credential get|store|erase`, speaking Git's helper protocol on stdin/stdout.
 pub func credential_helper(action: str, session: str) -> i32!:
@@ -197,18 +183,49 @@ pub func publish(root: str, origin: str, session: str, notes: str) -> i32!:
     tagged.close()
     if exists: error(invalid, "this version is already tagged; raise `version` in package.prisma and commit")
 
+    # GitHub keeps the history: what is released must already be there.
+    var fetched = try git(root, ["fetch", "-q", "origin"])
+    let reachable = fetched.status == 0
+    fetched.close()
+    if not reachable: error(invalid, "could not fetch origin, the package's GitHub repository; publish needs HEAD pushed there first")
+    var holding = try git(root, ["branch", "-r", "--contains", "HEAD"])
+    defer holding.close()
+    var on_github = false
+    let branches = try strings.split(holding.out, '\n')
+    defer free(branches)
+    for line in branches:
+        if strings.starts_with(strings.trim(line), "origin/"): on_github = true
+    if not on_github: error(invalid, "HEAD is not on GitHub yet: push it to origin first (GitHub keeps the history; the registry gets the release)")
+    var head = try git(root, ["rev-parse", "HEAD"])
+    defer head.close()
+    let source = strings.trim(head.out)
+    if source.length != 40: error(invalid, "could not read HEAD's commit")
+
+    var tree: u8[40]
+    try snapshot_tree(root, &definition, &tree)
+    var title_buffer: u8[200]
+    let title = try strings.format(title_buffer, f"{definition.name} {definition.version}")
+    var trailer_buffer: u8[64]
+    let trailer = try strings.format(trailer_buffer, f"Source-Commit: {source}")
+    var snapshot = try git(root, ["commit-tree", (str)tree[0..], "-m", title, "-m", trailer])
+    defer snapshot.close()
+    if snapshot.status != 0:
+        try io.stderr().write(snapshot.err)
+        error(invalid, "could not make the release commit")
+    let commit = strings.trim(snapshot.out)
+
     if try credentials.ensure_repository(origin, definition.name, session):
         try io.stdout().write(f"created {definition.owner}/{definition.name} on the registry\n")
     try configure(root, origin, definition.owner, definition.name)
-    try push_branch(root)
-    try must(root, ["tag", "-a", tag, "-m", notes], "could not create the release tag")
-    var pushed = try git(root, ["push", "pkg", tag])
+    try must(root, ["tag", "-a", tag, commit, "-m", notes], "could not create the release tag")
+    # The tag lives on the registry only: the local one goes whatever the push did.
+    var pushed = try git(root, ["push", "pkg", try strings.format(tag_ref, f"refs/tags/{tag}")])
     defer pushed.close()
+    var dropped = try git(root, ["tag", "-d", tag])
+    dropped.close()
     if pushed.status != 0:
-        # The registry's reason is in Git's output. Drop the tag so the release can be retried.
+        # The registry's reason is in Git's output.
         try io.stderr().write(pushed.err)
-        var dropped = try git(root, ["tag", "-d", tag])
-        dropped.close()
         error(invalid, "the registry refused the release")
     try io.stdout().write(f"published {definition.owner}/{definition.name} {definition.version}\n{origin}/{definition.owner}/{definition.name}/\n")
     return 0
