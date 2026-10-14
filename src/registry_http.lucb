@@ -39,23 +39,6 @@ pub func valid(origin: str) -> bool:
         return false
     return true
 
-## Return the canonical origin-prefix length of a full repository URL. A slash
-## and repository path must follow it; user-info, query origins and fragments
-## are never accepted.
-pub func url_origin_length(url: str) -> usize!:
-    if strings.starts_with(url, production_origin):
-        if url.length <= production_origin.length or url.bytes[production_origin.length] != '/':
-            error(invalid, "production registry URL has no repository path")
-        return production_origin.length
-    let prefix = "http://127.0.0.1:"
-    if not strings.starts_with(url, prefix):
-        error(invalid, "unsupported registry repository URL")
-    var at = prefix.length
-    while at < url.length and url.bytes[at] != '/': at += 1
-    if at == url.length: error(invalid, "registry repository URL has no path")
-    _ = try parse((str)url.bytes[..<at])
-    return at
-
 ## Perform one bounded registry request. Request headers are validated before
 ## either transport opens a socket. Public HTTPS authenticates the complete
 ## certificate path under ISRG Root X2 through luce-http-client/luce-tls.

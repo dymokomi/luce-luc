@@ -1,10 +1,30 @@
 """Pack checkout oracle: byte/mode fidelity, hostile paths and no-clobber rollback."""
+import hashlib
 import os
 from pathlib import Path
+import struct
 import subprocess
 import sys
 import tempfile
-from fetch import identity, pack
+import zlib
+
+
+def identity(kind, payload):
+    return hashlib.sha1(kind + b' ' + str(len(payload)).encode() + b'\0' + payload).hexdigest().encode()
+
+
+def pack(objects):
+    wire = b'PACK' + struct.pack('>II', 2, len(objects))
+    for kind, payload in objects:
+        size = len(payload)
+        header = bytearray([({'commit': 1, 'tree': 2, 'blob': 3, 'tag': 4}[kind] << 4) | (size & 15)])
+        size >>= 4
+        while size:
+            header[-1] |= 128
+            header.append(size & 127)
+            size >>= 7
+        wire += header + zlib.compress(payload)
+    return wire + hashlib.sha1(wire).digest()
 
 
 def fixture(entries):

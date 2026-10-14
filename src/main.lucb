@@ -21,8 +21,6 @@ from luce_std import process
 import strings
 import memory
 from luce_pkg import pkg
-import remote
-import pack_check
 import credentials
 import checkout
 import project_file
@@ -1163,12 +1161,6 @@ pub func main(arguments: c.str[]) -> i32!:
         if command == "--help" or command == "help":
             try usage(io.stdout())
             return 0
-        if command == "remote-refs":
-            if arguments.length == 6 and (str)arguments[3] == "--vault" and (str)arguments[5] == "--password-stdin":
-                if ((str)arguments[4]).length == 0: error(usage_error, "vault path is required")
-                return try remote.refs((str)arguments[2], (str)arguments[4])
-            if arguments.length != 3: error(usage_error, "usage: luc remote-refs <registry-git-url>")
-            return try remote.refs((str)arguments[2])
         if command == "git-credential":
             if arguments.length != 3: return 0
             let session = try default_vault()
@@ -1235,14 +1227,8 @@ pub func main(arguments: c.str[]) -> i32!:
             if command == "repo-create":
                 if rest.length != 1: error(usage_error, "usage: luc repo-create <name>")
                 return try credentials.create_repository(origin, rest[0], vault if vault.length > 0 else fallback)
-            if rest.length != 2: error(usage_error, "usage: luc git-token <repository> <read|write>")
-            return try credentials.issue_git_token(origin, rest[0], rest[1], vault if vault.length > 0 else fallback)
-        if command == "remote-fetch":
-            if arguments.length == 8 and (str)arguments[5] == "--vault" and (str)arguments[7] == "--password-stdin":
-                if ((str)arguments[6]).length == 0: error(usage_error, "vault path is required")
-                return try remote.fetch((str)arguments[2], (str)arguments[3], (str)arguments[4], (str)arguments[6])
-            if arguments.length != 5: error(usage_error, "usage: luc remote-fetch <registry-git-url> <commit-id> <new-pack-path>")
-            return try remote.fetch((str)arguments[2], (str)arguments[3], (str)arguments[4])
+            if rest.length != 1: error(usage_error, "usage: luc git-token <repository>")
+            return try credentials.issue_git_token(origin, rest[0], vault if vault.length > 0 else fallback)
         if command == "checkout-pack":
             # `--install` leaves the development paths out, as an install does.
             let install = arguments.length == 6 and (str)arguments[5] == "--install"

@@ -1,8 +1,8 @@
 # luc against registries, servers and Git that Python stands up beside it: anonymous
-# packages (add, lock, sync, offline use, tamper refusal, installs), remote refs, sessions,
-# registration, fetch and checkout. Each check is a script here that serves the fixtures
-# over loopback HTTP and drives a luc built from this checkout; stock Git builds the
-# fixtures, so the oracles are independent of luc's own Git code.
+# packages (add, lock, sync, offline use, tamper refusal, installs), sessions, registration
+# and checkout. Each check is a script here that serves the fixtures over loopback HTTP and
+# drives a luc built from this checkout; stock Git builds the fixtures, so the oracles are
+# independent of luc's own Git code.
 from luce_std import files, paths, process
 
 let failed = ErrorCode.package(1)
@@ -23,7 +23,7 @@ pub func main(arguments: list[str]) -> int!:
     # read back as "malformed digest or commit"; a failed login, and a session file whose
     # 0600 mode Windows does not keep), luc's own gaps to close.
     let windows = (process.variable("OS") else "") == "Windows_NT"
-    for script in ["packages.py", "remote.py", "session.py", "register.py", "fetch.py", "checkout.py"]:
+    for script in ["packages.py", "session.py", "register.py", "checkout.py"]:
         if windows and (script == "register.py" or script == "packages.py" or script == "session.py"):
             print(f"{script}: not run on Windows")
             continue

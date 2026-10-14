@@ -10,8 +10,8 @@
 ## only while it is pushed. The registry turns the tag into the release.
 ##
 ## `luc git-credential` is a Git credential helper. publish configures it for the
-## registry only, so plain `git push pkg` and `git fetch pkg` need no password either:
-## the helper mints a five-minute git:write password from the saved session.
+## registry only: the helper mints a five-minute git:write password from the saved
+## session for the push. The registry takes release tags only; there is nothing to fetch.
 import c
 import interop
 import io

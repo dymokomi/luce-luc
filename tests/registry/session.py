@@ -72,7 +72,7 @@ def check(binary):
             assert b'Created remote repository' in run(['repo-create', 'demo']).stdout
             run(['repo-create', 'demo'], success=False)             # 409: already exists
             assert state['calls'] == ['/v1/repositories', '/v1/repositories'], 'no password prompt, no login'
-            assert run(['git-token', 'demo', 'write']).stdout.strip() == b'd' * 64
+            assert run(['git-token', 'demo']).stdout.strip() == b'd' * 64
             # The saved session belongs to this registry only.
             other = dict(env, LUC_REGISTRY='http://127.0.0.1:9')
             result = subprocess.run([str(binary), 'repo-create', 'demo'], capture_output=True, timeout=60, env=other)
