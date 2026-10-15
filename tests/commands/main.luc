@@ -342,6 +342,12 @@ func program_checks(project: str, luc: str) -> unit!:
 func timed_program(name: str, milliseconds: int) -> str:
     return f"import c\nimport thread\nimport time\nimport strings\nfrom luce_std import files\n\npub func main(arguments: str[]) -> i32!:\n    _ = arguments\n    let start = time.now()\n    thread.sleep({milliseconds})\n    let end = time.now()\n    var text: u8[64]\n    try files.write((c.str)\"build/tests/{name}/window\", (try strings.format(text, f\"{{start}} {{end}}\")).bytes)\n    return 0\n"
 
+# A program that marks it has started, then waits up to `limit` milliseconds for `other` to
+# mark the same before recording its window: two of them both see the other's mark only
+# when they run at the same time, however late a loaded machine starts either.
+func meeting_program(name: str, other: str, limit: int) -> str:
+    return f"import c\nimport thread\nimport time\nimport strings\nfrom luce_std import files\n\npub func main(arguments: str[]) -> i32!:\n    _ = arguments\n    let start = time.now()\n    try files.write((c.str)\"build/tests/{name}/started\", b\"\")\n    var waited = 0\n    while not files.exists(\"build/tests/{other}/started\") and waited < {limit}:\n        thread.sleep(10)\n        waited += 10\n    let end = time.now()\n    var text: u8[64]\n    try files.write((c.str)\"build/tests/{name}/window\", (try strings.format(text, f\"{{start}} {{end}}\")).bytes)\n    return 0\n"
+
 # The window a timed program recorded, as (start, end).
 func window_of(project: str, name: str) -> (int, int)!:
     let parts = files.read_text(paths.join(project, f"build/tests/{name}/window")).split(" ")
@@ -356,12 +362,18 @@ func overlap(project: str, a: str, b: str) -> bool!:
 # --jobs: the programs run N at a time and are reported in the order of their names, whatever
 # order they finish in: the slow first one finishes last.
 func jobs_checks(project: str, luc: str) -> unit!:
-    write(paths.join(project, "tests/a_slow/main.lucb"), timed_program("a_slow", 3000))
-    write(paths.join(project, "tests/b_fast/main.lucb"), timed_program("b_fast", 10))
+    # a_slow and b_fast wait for each other rather than sleeping a fixed time, so a loaded
+    # machine that starts either late still shows the two running together
+    if files.exists(paths.join(project, "build/tests")):
+        files.remove_tree(paths.join(project, "build/tests"))
+    write(paths.join(project, "tests/a_slow/main.lucb"), meeting_program("a_slow", "b_fast", 60000))
+    write(paths.join(project, "tests/b_fast/main.lucb"), meeting_program("b_fast", "a_slow", 60000))
     write(paths.join(project, "tests/c_fast/main.lucb"), timed_program("c_fast", 10))
     let passing = "ok    in helper\nok    in main\n2 passed\nok    tests/a_slow\nok    tests/b_fast\nok    tests/c_fast\ntotal: 5 passed, 0 failed (2 test blocks, 3 programs)"
     expect("luc test --jobs 3 reports in the order of the names", project, luc, ["test", "--jobs", "3"], passing)
     check("--jobs 3 runs the programs together", overlap(project, "a_slow", "b_fast") or overlap(project, "a_slow", "c_fast"))
+    write(paths.join(project, "tests/a_slow/main.lucb"), timed_program("a_slow", 300))
+    write(paths.join(project, "tests/b_fast/main.lucb"), timed_program("b_fast", 10))
     expect("luc test --jobs 1 reports the same", project, luc, ["test", "--jobs", "1"], passing)
     check("--jobs 1 runs one program at a time", not overlap(project, "a_slow", "b_fast") and not overlap(project, "a_slow", "c_fast") and not overlap(project, "b_fast", "c_fast"))
     _ = refused("--jobs 0", project, luc, ["test", "--jobs", "0"])
